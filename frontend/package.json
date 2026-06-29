@@ -1,0 +1,28 @@
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@mdi/font": "^7.4.47",
+    "@visactor/vtable": "^1.23.3",
+    "@visactor/vtable-editors": "^1.26.1",
+    "@visactor/vtable-plugins": "^1.23.3",
+    "echarts": "^6.1.0",
+    "exceljs": "^4.4.0",
+    "three": "^0.184.0",
+    "vue": "^3.5.34",
+    "vue-i18n": "^11.0.0",
+    "vue-router": "^4.5.1",
+    "vuetify": "^3.11.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.6",
+    "vite": "^8.0.12"
+  }
+}
