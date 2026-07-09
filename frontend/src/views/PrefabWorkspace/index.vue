@@ -6,11 +6,13 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   fetchArrivalFileRows,
   fetchArrivalFiles,
+  fetchArrivalDashboard,
+  fetchAntiCorrosionDashboard,
+  fetchAntiCorrosionPreSchedule,
+  fetchCuttingDashboard,
   fetchCuttingPreSchedule,
   fetchCuttingVisualization,
   fetchInitializationStats,
-  syncInitializationData,
-  updateInitializationProjectMetrics,
   commitStagedPlan,
   fetchStagedPlanFileRows,
   generateFutureSchedule,
@@ -19,6 +21,7 @@ import {
   uploadArrivalFileRequest,
 } from '../../api/workflow'
 import ArrivalModule from './ArrivalModule.vue'
+import AntiCorrosionModule from './AntiCorrosionModule.vue'
 import CuttingModule from './CuttingModule.vue'
 import FutureScheduleModule from './FutureScheduleModule.vue'
 import GenericModule from './GenericModule.vue'
@@ -28,6 +31,7 @@ import WeldingModule from './WeldingModule.vue'
 import { selectedProjectId, selectedProjectParams } from '../../services/projectState'
 import { localizedModuleTitle } from '../../services/navigationLabels'
 import { getBasicVTableTheme, getVTablePalette, vTableThemeKey } from '../../services/vtableTheme'
+import { attachVTableColumnSelectionCount, createVTableSelectionLayout } from '../../services/vtableSelectionCount'
 import {
   errorMessage,
   formatSize,
@@ -43,6 +47,8 @@ import {
 
 const route = useRoute()
 const router = useRouter()
+let workspaceLoadController = null
+let workspaceLoadTimer = null
 const initializationLoading = ref(false)
 const initializationError = ref('')
 const initializationStats = ref({
@@ -55,12 +61,6 @@ const initializationStats = ref({
   units: [],
   sources: {},
 })
-const initializationSyncLoading = ref(false)
-const initializationSyncMessage = ref('')
-const initializationSyncError = ref('')
-const projectMetricsLoading = ref(false)
-const projectMetricsMessage = ref('')
-const projectMetricsError = ref('')
 const weldingDashboardLoading = ref(false)
 const weldingDashboardError = ref('')
 const weldingDashboard = ref({
@@ -110,6 +110,11 @@ const holidayConflictDialog = ref({
   dates: [],
   resolve: null,
 })
+const materialLibraryConfirmDialog = ref({
+  show: false,
+  files: [],
+  resolve: null,
+})
 const futureScheduleConfig = ref({
   dateMode: 'auto',
   weldStartDate: '',
@@ -125,6 +130,12 @@ const futureScheduleConfig = ref({
 const arrivalActiveTab = ref('overview')
 const arrivalLoading = ref(false)
 const arrivalError = ref('')
+const arrivalDashboardLoading = ref(false)
+const arrivalDashboardError = ref('')
+const arrivalDashboard = ref(emptyArrivalDashboard())
+const antiCorrosionDashboardLoading = ref(false)
+const antiCorrosionDashboardError = ref('')
+const antiCorrosionDashboard = ref(emptyAntiCorrosionDashboard())
 const arrivalFiles = ref({
   path: '',
   total: 0,
@@ -154,6 +165,9 @@ const selectedArrivalSheet = ref('')
 const arrivalImportCompleteKey = ref(0)
 const cuttingLoading = ref(false)
 const cuttingError = ref('')
+const cuttingDashboardLoading = ref(false)
+const cuttingDashboardError = ref('')
+const cuttingDashboard = ref(emptyCuttingDashboard())
 const preScheduleLoading = ref(false)
 const preScheduleError = ref('')
 const preScheduleActiveSheet = ref('')
@@ -166,7 +180,51 @@ const preScheduleData = ref({
   rows: [],
 })
 const preScheduleOptions = ref({
-  onlyAutoWeld: true,
+  onlyAutoWeld: false,
+  ignoreAntiCorrosionStatus: false,
+  concentrationDimension: 'segment',
+  concentrationThresholdPercent: 50,
+})
+const antiCorrosionPreScheduleOptions = ref({
+  onlyAutoWeld: false,
+  concentrationDimension: 'segment',
+  concentrationThresholdPercent: 50,
+})
+const antiCorrosionCommissionOptions = ref({
+  commissionArea: 400,
+  dateMode: 'auto',
+  weldStartDate: '',
+  manualWeldDates: '',
+  maxDays: '',
+  skipHolidays: true,
+  holidayDates: '',
+  canceledWeekendDates: '',
+})
+const antiCorrosionCommissionMessage = ref('')
+const antiCorrosionCommissionError = ref('')
+const antiCorrosionPendingStage = ref(null)
+const antiCorrosionStageSaving = ref(false)
+const antiCorrosionPendingPreviewLoading = ref(false)
+const antiCorrosionPendingPreviewError = ref('')
+const antiCorrosionPendingPreview = ref({
+  file: null,
+  sheet: '',
+  sheets: [],
+  total: 0,
+  columns: [],
+  rows: [],
+})
+const antiCorrosionSelectedRows = ref([])
+const antiCorrosionPreScheduleLoading = ref(false)
+const antiCorrosionPreScheduleError = ref('')
+const antiCorrosionPreScheduleActiveSheet = ref('')
+const antiCorrosionPreScheduleData = ref({
+  path: '',
+  sheet: '',
+  sheets: [],
+  total: 0,
+  columns: [],
+  rows: [],
 })
 const cuttingTableContainer = ref(null)
 const cuttingTooltip = ref({
@@ -185,10 +243,60 @@ const cuttingData = ref({
   averageUtilization: 0,
 })
 let cuttingVTable = null
+let releaseCuttingSelectionCount = null
 const cuttingSegmentHitBoxes = new Map()
 const cuttingSegmentMinWidth = 40
 const cuttingMergeThreshold = 8
 let resizeObserver = null
+
+function emptyArrivalDashboard() {
+  return {
+    summaries: {
+      pipe: { expectedQty: 0, actualQty: 0, requiredActualQty: 0, extraQty: 0, differenceQty: 0, arrivalRate: 0, materialCount: 0 },
+      other: { expectedQty: 0, actualQty: 0, requiredActualQty: 0, extraQty: 0, differenceQty: 0, arrivalRate: 0, materialCount: 0 },
+    },
+    rows: [],
+  }
+}
+
+function emptyAntiCorrosionDashboard() {
+  return {
+    planCount: 0,
+    todayPlanCount: 0,
+    commissionCount: 0,
+    segmentCount: 0,
+    totalArea: 0,
+    preSchedule: {
+      path: '',
+      totalRows: 0,
+      schedulableRows: 0,
+      rejectedRows: 0,
+      statusRows: [],
+    },
+    rows: [],
+    recentPlans: [],
+  }
+}
+
+function emptyCuttingDashboard() {
+  return {
+    planCount: 0,
+    todayPlanCount: 0,
+    orderCount: 0,
+    todayOrderCount: 0,
+    weldCount: 0,
+    todayWeldCount: 0,
+    diameterTotal: 0,
+    preSchedule: {
+      path: '',
+      totalRows: 0,
+      schedulableRows: 0,
+      rejectedRows: 0,
+      statusRows: [],
+    },
+    rows: [],
+  }
+}
 
 const activeModule = computed(() => {
   return summary.value.modules.find((item) => item.key === route.params.moduleKey) || summary.value.modules[0]
@@ -204,6 +312,13 @@ const showWeldingDashboard = computed(() => activeModule.value?.key === 'welding
 const showFutureSchedule = computed(() => activeModule.value?.key === 'schedule')
 const showCuttingChart = computed(() => showCuttingVisualization.value)
 const showArrivalTabs = computed(() => activeModule.value?.key === 'arrival')
+const showAntiCorrosionPreSchedule = computed(() => activeModule.value?.key === 'antiCorrosion')
+const antiCorrosionPreScheduleAction = computed(() => {
+  return activeModule.value?.actions?.find((action) => action.key === 'anti-corrosion-pre-schedule') || null
+})
+const antiCorrosionOverviewActions = computed(() => {
+  return activeModule.value?.actions?.filter((action) => action.key !== 'anti-corrosion-pre-schedule') || []
+})
 const cuttingOverviewActions = computed(() => {
   return activeModule.value?.actions?.filter((action) => !['weld-pre-schedule', 'confirm-cutting-pre-schedule'].includes(action.key)) || []
 })
@@ -225,11 +340,18 @@ const futureScheduleDateModeOptions = computed(() => [
   { title: t('autoGenerateDates'), value: 'auto' },
   { title: t('manualSelectDates'), value: 'manual' },
 ])
+const pipelineConcentrationDimensionOptions = computed(() => [
+  { title: t('segmentConcentration'), value: 'segment' },
+  { title: t('weldConcentration'), value: 'weld' },
+])
 const scheduleCalendarStart = computed(() => `${new Date().getFullYear()}-01-01`)
 const scheduleCalendarEnd = computed(() => `${new Date().getFullYear() + 3}-12-31`)
 const manualWeldDateList = computed(() => parseDateList(futureScheduleConfig.value.manualWeldDates))
 const holidayDateList = computed(() => parseDateList(futureScheduleConfig.value.holidayDates))
 const canceledWeekendDateList = computed(() => parseDateList(futureScheduleConfig.value.canceledWeekendDates))
+const antiCorrosionManualDateList = computed(() => parseDateList(antiCorrosionCommissionOptions.value.manualWeldDates))
+const antiCorrosionHolidayDateList = computed(() => parseDateList(antiCorrosionCommissionOptions.value.holidayDates))
+const antiCorrosionCanceledWeekendDateList = computed(() => parseDateList(antiCorrosionCommissionOptions.value.canceledWeekendDates))
 const calendarWeekendDates = computed(() => weekendDatesBetween(scheduleCalendarStart.value, scheduleCalendarEnd.value))
 const holidayCalendarDateList = computed(() => {
   if (!futureScheduleConfig.value.skipHolidays) return []
@@ -237,6 +359,14 @@ const holidayCalendarDateList = computed(() => {
   return Array.from(new Set([
     ...calendarWeekendDates.value.filter((date) => !canceled.has(date)),
     ...holidayDateList.value,
+  ])).sort()
+})
+const antiCorrosionHolidayCalendarDateList = computed(() => {
+  if (!antiCorrosionCommissionOptions.value.skipHolidays) return []
+  const canceled = new Set(antiCorrosionCanceledWeekendDateList.value)
+  return Array.from(new Set([
+    ...calendarWeekendDates.value.filter((date) => !canceled.has(date)),
+    ...antiCorrosionHolidayDateList.value,
   ])).sort()
 })
 const arrivalFileTableColumns = computed(() => [
@@ -359,6 +489,10 @@ function setDateList(key, dates) {
   futureScheduleConfig.value[key] = dates.join(', ')
 }
 
+function setAntiCorrosionDateList(key, dates) {
+  antiCorrosionCommissionOptions.value[key] = dates.join(', ')
+}
+
 function updateDateList(key, value) {
   const dates = Array.isArray(value) ? value.map(formatDateForInput).filter(Boolean) : parseDateList(value)
   setDateList(key, Array.from(new Set(dates)).sort())
@@ -428,6 +562,26 @@ function updateHolidayDateList(value) {
 
 function updateWeldStartDate(value) {
   futureScheduleConfig.value.weldStartDate = formatDateForInput(value)
+}
+
+function updateAntiCorrosionStartDate(value) {
+  antiCorrosionCommissionOptions.value.weldStartDate = formatDateForInput(value)
+}
+
+function updateAntiCorrosionManualDateList(value) {
+  const dates = Array.isArray(value) ? Array.from(new Set(value.map(formatDateForInput).filter(Boolean))).sort() : parseDateList(value)
+  setAntiCorrosionDateList('manualWeldDates', dates)
+}
+
+function updateAntiCorrosionHolidayDateList(value) {
+  const selectedDates = Array.isArray(value) ? value.map(formatDateForInput).filter(Boolean) : parseDateList(value)
+  const selectedSet = new Set(selectedDates)
+  const allWeekendSet = new Set(calendarWeekendDates.value)
+  const weekdayHolidays = selectedDates.filter((date) => !isWeekendDate(date))
+  const canceledWeekends = calendarWeekendDates.value.filter((date) => !selectedSet.has(date))
+
+  setAntiCorrosionDateList('holidayDates', Array.from(new Set(weekdayHolidays)).sort())
+  setAntiCorrosionDateList('canceledWeekendDates', Array.from(new Set(canceledWeekends)).filter((date) => allWeekendSet.has(date)).sort())
 }
 
 function updateWeldingDate(value) {
@@ -531,12 +685,15 @@ function releaseCuttingVTable() {
     cuttingVTable.release()
     cuttingVTable = null
   }
+  releaseCuttingSelectionCount?.()
+  releaseCuttingSelectionCount = null
   cuttingSegmentHitBoxes.clear()
   hideCuttingTooltip()
 }
 
 function cuttingVTableRecords() {
   return cuttingData.value.rows.map((pipe) => ({
+    inventoryType: pipe.inventoryType || '-',
     materialCode: pipe.materialCode,
     pipeNo: pipe.pipeNo || '-',
     originalLength: formatLength(pipe.originalLength),
@@ -706,7 +863,7 @@ function calculateSegmentDisplayWidths(segments, originalLength, barWidth) {
 
 function cuttingChartColumnWidth() {
   const containerWidth = cuttingTableContainer.value?.clientWidth || 1240
-  return Math.max(containerWidth - 170 - 120 - 130 - 130 - 6, 620)
+  return Math.max(containerWidth - 100 - 170 - 120 - 130 - 130 - 6, 620)
 }
 
 function cuttingVTableOptions() {
@@ -718,6 +875,7 @@ function cuttingVTableOptions() {
   return {
     records: cuttingVTableRecords(),
     columns: [
+      { field: 'inventoryType', title: t('inventoryType'), width: 100, sort: true, filter: true },
       { field: 'materialCode', title: t('materialCode'), width: 170, sort: true, filter: true },
       { field: 'pipeNo', title: t('pipeNo'), width: 120, sort: true, filter: true },
       { field: 'originalLength', title: t('originalLength'), width: 130, sort: true, filter: true },
@@ -756,21 +914,26 @@ function cuttingVTableOptions() {
 function handleCuttingCellMouseMove(event) {
   const col = event?.col
   const row = event?.row
-  if (col !== 4 || typeof row !== 'number' || row < 1) {
+  const cuttingColumn = 5
+  if (col !== cuttingColumn || typeof row !== 'number' || row < 1) {
     hideCuttingTooltip()
     return
   }
 
   const hitData = cuttingSegmentHitBoxes.get(`${col}:${row}`)
   const nativeEvent = event?.event || event?.nativeEvent || event
-  const rect = cuttingTableContainer.value?.getBoundingClientRect()
+  const tableRect = cuttingVTable?.getElement?.()?.getBoundingClientRect?.()
+  const rect = tableRect || cuttingTableContainer.value?.getBoundingClientRect()
   if (!hitData || !nativeEvent || !rect) {
     hideCuttingTooltip()
     return
   }
 
   const localX = nativeEvent.clientX - rect.left
-  const cellLeft = 170 + 120 + 130 + 130
+  let cellLeft = 0
+  for (let index = 0; index < cuttingColumn; index += 1) {
+    cellLeft += Number(cuttingVTable?.getColWidth?.(index)) || 0
+  }
   const cellX = localX - cellLeft
   const hit = hitData.boxes.find((box) => cellX >= box.x1 && cellX <= box.x2)
   if (!hit) {
@@ -795,7 +958,9 @@ async function renderCuttingVTable() {
     })
     return
   }
-  cuttingVTable = new VTable.ListTable(cuttingTableContainer.value, cuttingVTableOptions())
+  const selectionLayout = createVTableSelectionLayout(cuttingTableContainer.value)
+  cuttingVTable = new VTable.ListTable(selectionLayout.viewport, cuttingVTableOptions())
+  releaseCuttingSelectionCount = attachVTableColumnSelectionCount(cuttingVTable, selectionLayout)
   cuttingVTable.on(VTable.ListTable.EVENT_TYPE.MOUSEMOVE_CELL, handleCuttingCellMouseMove)
   cuttingVTable.on(VTable.ListTable.EVENT_TYPE.MOUSELEAVE_CELL, hideCuttingTooltip)
   cuttingVTable.on(VTable.ListTable.EVENT_TYPE.MOUSELEAVE_TABLE, hideCuttingTooltip)
@@ -830,13 +995,16 @@ function setupCuttingResizeObserver() {
   resizeObserver.observe(cuttingTableContainer.value)
 }
 
-async function loadInitializationStats() {
+async function loadInitializationStats(options = {}) {
   if (!showInitializationStats.value) return
   initializationLoading.value = true
   initializationError.value = ''
   try {
-    initializationStats.value = await fetchInitializationStats(selectedProjectParams())
+    const payload = await fetchInitializationStats(selectedProjectParams(), options)
+    if (options.signal?.aborted) return
+    initializationStats.value = payload
   } catch (error) {
+    if (error?.name === 'AbortError') return
     initializationStats.value = {
       totalWeldCount: 0,
       prefabWeldCount: 0,
@@ -849,49 +1017,18 @@ async function loadInitializationStats() {
     }
     initializationError.value = t('initializationStatsReadFailed', { message: error.message })
   } finally {
-    initializationLoading.value = false
+    if (!options.signal?.aborted) initializationLoading.value = false
   }
 }
 
-async function syncCurrentInitializationData() {
-  if (!showInitializationStats.value) return
-  initializationSyncLoading.value = true
-  initializationSyncMessage.value = ''
-  initializationSyncError.value = ''
-  try {
-    const payload = await syncInitializationData(selectedProjectParams())
-    if (payload.stats) {
-      initializationStats.value = payload.stats
-    }
-    summary.value.modules = payload.summary || summary.value.modules
-    initializationSyncMessage.value = t('initializationSyncedToMysql', { count: payload.total || 0 })
-  } catch (error) {
-    initializationSyncError.value = t('initializationSyncToMysqlFailed', { message: error.message })
-  } finally {
-    initializationSyncLoading.value = false
+function syncAntiCorrosionWeekendHolidayDates() {
+  if (!antiCorrosionCommissionOptions.value.skipHolidays) {
+    setAntiCorrosionDateList('holidayDates', [])
+    setAntiCorrosionDateList('canceledWeekendDates', [])
+    return
   }
-}
-
-async function updateCurrentProjectMetrics() {
-  if (!showInitializationStats.value) return
-  projectMetricsLoading.value = true
-  projectMetricsMessage.value = ''
-  projectMetricsError.value = ''
-  try {
-    const payload = await updateInitializationProjectMetrics(selectedProjectParams())
-    summary.value.modules = payload.summary || summary.value.modules
-    await loadSummary()
-    await loadInitializationStats()
-    const project = payload.project || {}
-    projectMetricsMessage.value = t('projectMetricsUpdated', {
-      segments: project.pipe_segment || 0,
-      welds: project.prefab_weld_count || 0,
-    })
-  } catch (error) {
-    projectMetricsError.value = t('projectMetricsUpdateFailed', { message: error.message })
-  } finally {
-    projectMetricsLoading.value = false
-  }
+  setAntiCorrosionDateList('holidayDates', antiCorrosionHolidayDateList.value.filter((date) => !isWeekendDate(date)).sort())
+  setAntiCorrosionDateList('canceledWeekendDates', antiCorrosionCanceledWeekendDateList.value.filter((date) => isWeekendDate(date)).sort())
 }
 
 function resetWeldingDashboard() {
@@ -914,35 +1051,40 @@ function resetWeldingDashboard() {
   }
 }
 
-async function loadWeldingDashboard() {
+async function loadWeldingDashboard(options = {}) {
   if (!showWeldingDashboard.value) return
   weldingDashboardLoading.value = true
   weldingDashboardError.value = ''
   try {
-    weldingDashboard.value = await fetchWeldingDashboard(selectedProjectParams())
+    const payload = await fetchWeldingDashboard(selectedProjectParams(), options)
+    if (options.signal?.aborted) return
+    weldingDashboard.value = payload
   } catch (error) {
+    if (error?.name === 'AbortError') return
     resetWeldingDashboard()
     weldingDashboardError.value = t('weldingDashboardReadFailed', { message: error.message })
   } finally {
-    weldingDashboardLoading.value = false
+    if (!options.signal?.aborted) weldingDashboardLoading.value = false
   }
 }
 
-async function loadArrivalFiles() {
+async function loadArrivalFiles(options = {}) {
   if (!showArrivalTabs.value) return
   arrivalLoading.value = true
   arrivalError.value = ''
   try {
-    const payload = await fetchArrivalFiles(selectedProjectParams())
+    const payload = await fetchArrivalFiles(selectedProjectParams(), options)
+    if (options.signal?.aborted) return
     arrivalFiles.value = payload
     const hasSelectedFile = payload.files?.some((file) => file.name === selectedArrivalFile.value)
     if ((!selectedArrivalFile.value || !hasSelectedFile) && payload.files?.length) {
       selectedArrivalFile.value = payload.files[0].name
     }
     if (selectedArrivalFile.value) {
-      await loadArrivalFileDetail(selectedArrivalFile.value)
+      await loadArrivalFileDetail(selectedArrivalFile.value, '', options)
     }
   } catch (error) {
+    if (error?.name === 'AbortError') return
     arrivalFiles.value = {
       path: '',
       total: 0,
@@ -963,13 +1105,16 @@ async function loadArrivalFiles() {
   }
 }
 
-async function loadTodayArrival() {
+async function loadTodayArrival(options = {}) {
   if (!showArrivalTabs.value) return
   arrivalLoading.value = true
   arrivalError.value = ''
   try {
-    todayArrival.value = await fetchTodayArrival(selectedProjectParams())
+    const payload = await fetchTodayArrival(selectedProjectParams(), options)
+    if (options.signal?.aborted) return
+    todayArrival.value = payload
   } catch (error) {
+    if (error?.name === 'AbortError') return
     todayArrival.value = {
       date: '',
       file: null,
@@ -982,20 +1127,73 @@ async function loadTodayArrival() {
     }
     arrivalError.value = t('todayArrivalReadFailed', { message: error.message })
   } finally {
-    arrivalLoading.value = false
+    if (!options.signal?.aborted) arrivalLoading.value = false
   }
 }
 
-async function loadArrivalFileDetail(fileName = selectedArrivalFile.value, sheet = selectedArrivalSheet.value) {
+async function loadArrivalDashboard(options = {}) {
+  if (!showArrivalTabs.value) return
+  arrivalDashboardLoading.value = true
+  arrivalDashboardError.value = ''
+  try {
+    const payload = await fetchArrivalDashboard(selectedProjectParams(), options)
+    if (options.signal?.aborted) return
+    arrivalDashboard.value = payload
+  } catch (error) {
+    if (error?.name === 'AbortError') return
+    arrivalDashboard.value = emptyArrivalDashboard()
+    arrivalDashboardError.value = t('arrivalDashboardReadFailed', { message: error.message })
+  } finally {
+    if (!options.signal?.aborted) arrivalDashboardLoading.value = false
+  }
+}
+
+async function loadAntiCorrosionDashboard(options = {}) {
+  if (!showAntiCorrosionPreSchedule.value) return
+  antiCorrosionDashboardLoading.value = true
+  antiCorrosionDashboardError.value = ''
+  try {
+    const payload = await fetchAntiCorrosionDashboard(selectedProjectParams(), options)
+    if (options.signal?.aborted) return
+    antiCorrosionDashboard.value = payload
+  } catch (error) {
+    if (error?.name === 'AbortError') return
+    antiCorrosionDashboard.value = emptyAntiCorrosionDashboard()
+    antiCorrosionDashboardError.value = t('antiCorrosionDashboardReadFailed', { message: error.message })
+  } finally {
+    if (!options.signal?.aborted) antiCorrosionDashboardLoading.value = false
+  }
+}
+
+async function loadCuttingDashboard(options = {}) {
+  if (!showCuttingVisualization.value) return
+  cuttingDashboardLoading.value = true
+  cuttingDashboardError.value = ''
+  try {
+    const payload = await fetchCuttingDashboard(selectedProjectParams(), options)
+    if (options.signal?.aborted) return
+    cuttingDashboard.value = payload
+  } catch (error) {
+    if (error?.name === 'AbortError') return
+    cuttingDashboard.value = emptyCuttingDashboard()
+    cuttingDashboardError.value = t('cuttingDashboardReadFailed', { message: error.message })
+  } finally {
+    if (!options.signal?.aborted) cuttingDashboardLoading.value = false
+  }
+}
+
+async function loadArrivalFileDetail(fileName = selectedArrivalFile.value, sheet = selectedArrivalSheet.value, options = {}) {
   if (!showArrivalTabs.value || !fileName) return
   arrivalLoading.value = true
   arrivalError.value = ''
   try {
-    const payload = await fetchArrivalFileRows(selectedProjectParams(), fileName, sheet)
+    const payload = await fetchArrivalFileRows(selectedProjectParams(), fileName, sheet, options)
+    if (options.signal?.aborted) return
     arrivalFileDetail.value = payload
     selectedArrivalFile.value = payload.file?.name || fileName
     selectedArrivalSheet.value = payload.sheet || ''
   } catch (error) {
+    if (error?.name === 'AbortError') return
     arrivalFileDetail.value = {
       file: null,
       sheet: '',
@@ -1007,7 +1205,7 @@ async function loadArrivalFileDetail(fileName = selectedArrivalFile.value, sheet
     }
     arrivalError.value = t('arrivalFileReadFailed', { message: error.message })
   } finally {
-    arrivalLoading.value = false
+    if (!options.signal?.aborted) arrivalLoading.value = false
   }
 }
 
@@ -1037,6 +1235,7 @@ async function uploadArrivalFile(files) {
     selectedArrivalSheet.value = ''
     await loadArrivalFiles()
     await loadTodayArrival()
+    await loadArrivalDashboard()
     await loadSummary()
     arrivalImportCompleteKey.value += 1
   } catch (error) {
@@ -1046,17 +1245,19 @@ async function uploadArrivalFile(files) {
   }
 }
 
-async function loadPreScheduleRows(sheet = preScheduleActiveSheet.value) {
+async function loadPreScheduleRows(sheet = preScheduleActiveSheet.value, options = {}) {
   if (!showCuttingVisualization.value) return
   preScheduleLoading.value = true
   preScheduleError.value = ''
   try {
     const params = selectedProjectParams()
     if (sheet) params.set('sheet', sheet)
-    const payload = await fetchCuttingPreSchedule(params)
+    const payload = await fetchCuttingPreSchedule(params, options)
+    if (options.signal?.aborted) return
     preScheduleData.value = payload
     preScheduleActiveSheet.value = payload.sheet || ''
   } catch (error) {
+    if (error?.name === 'AbortError') return
     preScheduleData.value = {
       path: '',
       sheet: '',
@@ -1067,7 +1268,7 @@ async function loadPreScheduleRows(sheet = preScheduleActiveSheet.value) {
     }
     preScheduleError.value = t('preScheduleReadFailed', { message: error.message })
   } finally {
-    preScheduleLoading.value = false
+    if (!options.signal?.aborted) preScheduleLoading.value = false
   }
 }
 
@@ -1076,18 +1277,123 @@ async function changePreScheduleSheet(sheet) {
   await loadPreScheduleRows(sheet)
 }
 
-async function loadCuttingVisualization() {
+async function loadAntiCorrosionPreScheduleRows(
+  sheet = antiCorrosionPreScheduleActiveSheet.value,
+  options = {},
+) {
+  if (!showAntiCorrosionPreSchedule.value) return
+  antiCorrosionPreScheduleLoading.value = true
+  antiCorrosionPreScheduleError.value = ''
+  try {
+    const params = selectedProjectParams()
+    if (sheet) params.set('sheet', sheet)
+    const payload = await fetchAntiCorrosionPreSchedule(params, options)
+    if (options.signal?.aborted) return
+    antiCorrosionPreScheduleData.value = payload
+    antiCorrosionPreScheduleActiveSheet.value = payload.sheet || ''
+  } catch (error) {
+    if (error?.name === 'AbortError') return
+    antiCorrosionPreScheduleData.value = {
+      path: '',
+      sheet: '',
+      sheets: [],
+      total: 0,
+      columns: [],
+      rows: [],
+    }
+    antiCorrosionPreScheduleError.value = t('antiCorrosionPreScheduleReadFailed', { message: error.message })
+  } finally {
+    if (!options.signal?.aborted) antiCorrosionPreScheduleLoading.value = false
+  }
+}
+
+async function changeAntiCorrosionPreScheduleSheet(sheet) {
+  antiCorrosionPreScheduleActiveSheet.value = sheet
+  await loadAntiCorrosionPreScheduleRows(sheet)
+}
+
+function resetAntiCorrosionPendingPreview() {
+  antiCorrosionPendingPreviewLoading.value = false
+  antiCorrosionPendingPreviewError.value = ''
+  antiCorrosionPendingPreview.value = {
+    file: null,
+    sheet: '',
+    sheets: [],
+    total: 0,
+    columns: [],
+    rows: [],
+  }
+}
+
+async function loadAntiCorrosionPendingFile(file, sheet = '') {
+  if (!file || !antiCorrosionPendingStage.value?.token) return
+  antiCorrosionPendingPreviewLoading.value = true
+  antiCorrosionPendingPreviewError.value = ''
+  try {
+    const payload = await fetchStagedPlanFileRows(
+      selectedProjectParams(),
+      antiCorrosionPendingStage.value.token,
+      file.path,
+      file.sourceKey,
+      sheet,
+    )
+    antiCorrosionPendingPreview.value = {
+      file,
+      sheet: payload.sheet || '',
+      sheets: payload.sheets || [],
+      total: payload.total || 0,
+      columns: payload.columns || [],
+      rows: payload.rows || [],
+    }
+  } catch (error) {
+    if (error?.name === 'AbortError') return
+    resetAntiCorrosionPendingPreview()
+    antiCorrosionPendingPreviewError.value = t('stagedPlanFileReadFailed', { message: error.message })
+  } finally {
+    antiCorrosionPendingPreviewLoading.value = false
+  }
+}
+
+function changeAntiCorrosionCommissionPreviewSheet(sheet) {
+  const file = antiCorrosionPendingPreview.value.file || antiCorrosionPendingStage.value?.files?.[0]
+  if (!file) return
+  return loadAntiCorrosionPendingFile(file, sheet)
+}
+
+async function saveAntiCorrosionPendingStage() {
+  if (!antiCorrosionPendingStage.value?.token) return
+  antiCorrosionCommissionError.value = ''
+  antiCorrosionStageSaving.value = true
+  try {
+    const payload = await commitStagedPlan(selectedProjectParams(), antiCorrosionPendingStage.value.token)
+    summary.value.modules = payload.summary || summary.value.modules
+    antiCorrosionPendingStage.value = null
+    resetAntiCorrosionPendingPreview()
+    antiCorrosionCommissionMessage.value = t('commissionSavedToLibrary', { count: payload.savedFiles?.length || 0 })
+    await loadAntiCorrosionDashboard()
+    await loadAntiCorrosionPreScheduleRows()
+    await loadSummary()
+  } catch (error) {
+    antiCorrosionCommissionError.value = t('stagedPlansSaveFailed', { message: error.message })
+  } finally {
+    antiCorrosionStageSaving.value = false
+  }
+}
+
+async function loadCuttingVisualization(options = {}) {
   if (!showCuttingVisualization.value) return
   cuttingLoading.value = true
   cuttingError.value = ''
   try {
-    const payload = await fetchCuttingVisualization(selectedProjectParams())
+    const payload = await fetchCuttingVisualization(selectedProjectParams(), options)
+    if (options.signal?.aborted) return
     cuttingData.value = payload
     if (showCuttingChart.value) {
       await renderCuttingVTable()
       setupCuttingResizeObserver()
     }
   } catch (error) {
+    if (error?.name === 'AbortError') return
     cuttingData.value = {
       rows: [],
       total: 0,
@@ -1099,28 +1405,87 @@ async function loadCuttingVisualization() {
     cuttingError.value = t('cuttingVisualizationReadFailed', { message: error.message })
     releaseCuttingVTable()
   } finally {
-    cuttingLoading.value = false
+    if (!options.signal?.aborted) cuttingLoading.value = false
   }
 }
 
-async function refreshWorkspace() {
-  await loadSummary()
+async function loadActiveModuleData(options = {}) {
+  await loadInitializationStats(options)
+  await loadTodayArrival(options)
+  await loadArrivalFiles(options)
+  await loadArrivalDashboard(options)
+  await loadWeldingDashboard(options)
+  await loadAntiCorrosionDashboard(options)
+  await loadAntiCorrosionPreScheduleRows(antiCorrosionPreScheduleActiveSheet.value, options)
+  await loadCuttingDashboard(options)
+  await loadPreScheduleRows(preScheduleActiveSheet.value, options)
+  await loadCuttingVisualization(options)
+}
+
+function cancelWorkspaceLoad() {
+  if (workspaceLoadTimer) {
+    window.clearTimeout(workspaceLoadTimer)
+    workspaceLoadTimer = null
+  }
+  workspaceLoadController?.abort()
+  workspaceLoadController = null
+  initializationLoading.value = false
+  weldingDashboardLoading.value = false
+  arrivalDashboardLoading.value = false
+  antiCorrosionDashboardLoading.value = false
+  cuttingDashboardLoading.value = false
+  antiCorrosionPreScheduleLoading.value = false
+  preScheduleLoading.value = false
+  cuttingLoading.value = false
+}
+
+async function runWorkspaceLoad({ includeSummary = false } = {}) {
+  cancelWorkspaceLoad()
+  const controller = new AbortController()
+  workspaceLoadController = controller
+  const options = { signal: controller.signal }
+  if (includeSummary) {
+    await loadSummary(options)
+  }
   ensureModuleRoute()
-  await loadInitializationStats()
-  await loadTodayArrival()
-  await loadArrivalFiles()
-  await loadWeldingDashboard()
-  await loadPreScheduleRows()
-  await loadCuttingVisualization()
+  if (!controller.signal.aborted) {
+    await loadActiveModuleData(options)
+  }
+  if (workspaceLoadController === controller) {
+    workspaceLoadController = null
+  }
+}
+
+function scheduleWorkspaceLoad(options = {}) {
+  cancelWorkspaceLoad()
+  workspaceLoadTimer = window.setTimeout(() => {
+    workspaceLoadTimer = null
+    runWorkspaceLoad(options)
+  }, 150)
+}
+
+async function refreshWorkspace() {
+  await runWorkspaceLoad({ includeSummary: true })
 }
 
 async function executeAction(actionKey) {
+  if (actionKey === 'arrival-library') {
+    const shouldContinue = await confirmExistingMaterialLibraries()
+    if (!shouldContinue) return
+  }
   const options = actionOptionsPayload(actionKey)
   if (actionKey === 'auto-weld-schedule') {
     weldingScheduleError.value = ''
     weldingScheduleMessage.value = ''
   }
-  await runAction(actionKey, options)
+  if (actionKey === 'anti-corrosion-schedule') {
+    antiCorrosionCommissionError.value = ''
+    antiCorrosionCommissionMessage.value = ''
+    antiCorrosionPendingStage.value = null
+    resetAntiCorrosionPendingPreview()
+  }
+  const started = await runAction(actionKey, options)
+  if (!started) return
   if (actionKey === 'auto-weld-schedule') {
     const payload = lastRun.value || {}
     if (payload.ok && payload.stageToken) {
@@ -1134,12 +1499,27 @@ async function executeAction(actionKey) {
       weldingScheduleMessage.value = t('allPlansGenerated')
     }
   }
+  if (actionKey === 'anti-corrosion-schedule') {
+    const payload = lastRun.value || {}
+    if (payload.ok && payload.stageToken) {
+      const files = buildStagedFileRows(payload.stagedFiles || [])
+      antiCorrosionPendingStage.value = {
+        token: payload.stageToken,
+        files,
+      }
+      antiCorrosionCommissionMessage.value = t('commissionStagedForSave', { count: files.length })
+      if (files[0]) {
+        await loadAntiCorrosionPendingFile(files[0])
+      }
+    }
+  }
   if (showInitializationStats.value) {
     await loadSummary()
     await loadInitializationStats()
   }
   if (showCuttingVisualization.value && ['weld-pre-schedule', 'confirm-cutting-pre-schedule'].includes(actionKey)) {
     await loadSummary()
+    await loadCuttingDashboard()
     await loadPreScheduleRows()
     await loadCuttingVisualization()
   }
@@ -1147,11 +1527,66 @@ async function executeAction(actionKey) {
     await loadSummary()
     await loadWeldingDashboard()
   }
+  if (showAntiCorrosionPreSchedule.value && ['anti-corrosion-pre-schedule', 'anti-corrosion-schedule'].includes(actionKey)) {
+    await loadSummary()
+    await loadAntiCorrosionDashboard()
+    await loadAntiCorrosionPreScheduleRows()
+  }
+  if (showArrivalTabs.value) {
+    await loadArrivalDashboard()
+  }
+}
+
+function existingMaterialLibraryFiles() {
+  const libraryNames = new Set([
+    '库管理/管子材料库.xlsx',
+    '库管理/管件法兰材料库.xlsx',
+    '库管理/防腐管子材料库.xlsx',
+    '库管理/防腐管件法兰材料库.xlsx',
+  ])
+  return (summary.value.modules || [])
+    .flatMap((module) => module.files || [])
+    .filter((file) => libraryNames.has(file.name) && Number(file.count || 0) > 0)
+    .map((file) => file.name.replace('库管理/', '').replace('.xlsx', ''))
+}
+
+function confirmExistingMaterialLibraries() {
+  const files = existingMaterialLibraryFiles()
+  if (!files.length) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    materialLibraryConfirmDialog.value = {
+      show: true,
+      files,
+      resolve,
+    }
+  })
+}
+
+function resolveMaterialLibraryConfirmation(confirmed) {
+  const resolve = materialLibraryConfirmDialog.value.resolve
+  materialLibraryConfirmDialog.value = {
+    show: false,
+    files: [],
+    resolve: null,
+  }
+  resolve?.(confirmed)
 }
 
 function actionOptionsPayload(actionKey) {
   if (actionKey === 'weld-pre-schedule') {
     return { ...preScheduleOptions.value }
+  }
+  if (actionKey === 'anti-corrosion-pre-schedule') {
+    return { ...antiCorrosionPreScheduleOptions.value }
+  }
+  if (actionKey === 'anti-corrosion-schedule') {
+    return {
+      ...antiCorrosionCommissionOptions.value,
+      stageOnly: true,
+      selectedLibrarySeqs: antiCorrosionSelectedRows.value
+        .map((row) => row?.['库序号'])
+        .filter((value) => value !== undefined && value !== null && String(value).trim() !== ''),
+    }
   }
   if (actionKey === 'auto-weld-schedule') {
     return { ...generationOptionsPayload(weldingScheduleConfig.value), stageOnly: true }
@@ -1178,12 +1613,30 @@ function buildStagedFileRows(files) {
     const parts = String(path || '').includes(':')
       ? String(path || '').split(':')
       : String(path || '').split(/[\\/]/)
+    const name = typeof file === 'string' ? parts.at(-1) : file.name
+    const planKey = typeof file === 'string' ? parts[0] : file.planKey
+    const planDate = typeof file === 'string' ? parts[1] || '' : file.planDate
+    const normalizedDate = String(planDate || '').replaceAll('-', '')
+    const displayDate = normalizedDate.length === 8
+      ? `${normalizedDate.slice(0, 4)}-${normalizedDate.slice(4, 6)}-${normalizedDate.slice(6)}`
+      : String(planDate || '')
+    const extensionIndex = String(name || '').lastIndexOf('.')
+    const displayName = ['welding', 'cutting'].includes(planKey) && displayDate
+      ? (
+          extensionIndex > 0
+            ? `${name.slice(0, extensionIndex)}-${displayDate}${name.slice(extensionIndex)}`
+            : `${name}-${displayDate}`
+        )
+      : name
     return {
       path,
       sourceKey: typeof file === 'string' ? '' : file.sourceKey,
-      name: typeof file === 'string' ? parts.at(-1) : file.name,
-      planType: typeof file === 'string' ? parts[0] : file.planType,
-      planDate: typeof file === 'string' ? parts[1] || '' : file.planDate,
+      name,
+      displayName,
+      planType: typeof file === 'string' ? parts[0] : (file.planName || file.planKey),
+      planDate,
+      weldDate: typeof file === 'string' ? parts[1] || '' : file.weldDate,
+      cutDate: typeof file === 'string' ? '' : file.cutDate,
       sizeText: typeof file === 'string' ? '-' : formatSize(file.size),
       updatedText: typeof file === 'string' ? '-' : formatTime(file.updatedAt),
     }
@@ -1227,6 +1680,7 @@ async function loadFuturePendingFile(file, sheet = '') {
       rows: payload.rows || [],
     }
   } catch (error) {
+    if (error?.name === 'AbortError') return
     if (selectedFuturePendingFilePath.value !== file.path) return
     futurePendingPreview.value = {
       file,
@@ -1341,26 +1795,31 @@ watch(
   syncWeekendHolidayDates,
   { immediate: true },
 )
-watch(() => route.params.moduleKey, async () => {
+watch(
+  [
+    () => antiCorrosionCommissionOptions.value.skipHolidays,
+    () => antiCorrosionCommissionOptions.value.dateMode,
+    () => antiCorrosionCommissionOptions.value.weldStartDate,
+    () => antiCorrosionCommissionOptions.value.maxDays,
+    () => antiCorrosionCommissionOptions.value.manualWeldDates,
+  ],
+  syncAntiCorrosionWeekendHolidayDates,
+  { immediate: true },
+)
+watch(() => route.params.moduleKey, () => {
   ensureModuleRoute()
-  if (showInitializationStats.value) {
-    await loadInitializationStats()
-  }
-  if (showArrivalTabs.value) {
-    await loadTodayArrival()
-    await loadArrivalFiles()
-  }
-  if (showWeldingDashboard.value) {
-    await loadWeldingDashboard()
-  }
-  if (showCuttingVisualization.value) {
-    await loadPreScheduleRows()
-    await loadCuttingVisualization()
-  } else {
+  if (!showCuttingVisualization.value) {
     releaseCuttingVTable()
   }
+  scheduleWorkspaceLoad()
 })
-watch(selectedProjectId, refreshWorkspace)
+const antiCorrosionPreScheduleTableColumns = computed(() => {
+  return buildDynamicColumns(antiCorrosionPreScheduleData.value.columns)
+})
+const antiCorrosionCommissionPreviewColumns = computed(() => {
+  return buildDynamicColumns(antiCorrosionPendingPreview.value.columns)
+})
+watch(selectedProjectId, () => scheduleWorkspaceLoad({ includeSummary: true }))
 watch(vTableThemeKey, async () => {
   if (cuttingVTable) {
     await cuttingVTable.updateOption(cuttingVTableOptions(), {
@@ -1371,20 +1830,12 @@ watch(vTableThemeKey, async () => {
 })
 
 onMounted(async () => {
-  if (!summary.value.modules.length) {
-  await loadSummary()
-  }
-  ensureModuleRoute()
-  await loadInitializationStats()
-  await loadTodayArrival()
-  await loadArrivalFiles()
-  await loadWeldingDashboard()
-  await loadPreScheduleRows()
-  await loadCuttingVisualization()
+  await runWorkspaceLoad({ includeSummary: !summary.value.modules.length })
 })
 
-onBeforeUnmount(releaseCuttingVTable)
 onBeforeUnmount(() => {
+  cancelWorkspaceLoad()
+  releaseCuttingVTable()
   if (resizeObserver) {
     resizeObserver.disconnect()
     resizeObserver = null
@@ -1408,17 +1859,9 @@ onBeforeUnmount(() => {
     :initialization-loading="initializationLoading"
     :initialization-stats="initializationStats"
     :initialization-error="initializationError"
-    :initialization-sync-loading="initializationSyncLoading"
-    :initialization-sync-message="initializationSyncMessage"
-    :initialization-sync-error="initializationSyncError"
-    :project-metrics-loading="projectMetricsLoading"
-    :project-metrics-message="projectMetricsMessage"
-    :project-metrics-error="projectMetricsError"
     :running-key="runningKey"
     @execute-action="executeAction"
     @refresh-stats="loadInitializationStats"
-    @sync-initialization="syncCurrentInitializationData"
-    @update-project-metrics="updateCurrentProjectMetrics"
   />
 
   <ArrivalModule
@@ -1428,6 +1871,9 @@ onBeforeUnmount(() => {
     :arrival-active-tab="arrivalActiveTab"
     :arrival-loading="arrivalLoading"
     :arrival-error="arrivalError"
+    :arrival-dashboard="arrivalDashboard"
+    :arrival-dashboard-loading="arrivalDashboardLoading"
+    :arrival-dashboard-error="arrivalDashboardError"
     :today-arrival="todayArrival"
     :today-arrival-summary-rows="todayArrivalSummaryRows"
     :arrival-summary-table-columns="arrivalSummaryTableColumns"
@@ -1446,20 +1892,67 @@ onBeforeUnmount(() => {
     @change-tab="arrivalActiveTab = $event"
     @execute-action="executeAction"
     @refresh-today-arrival="loadTodayArrival"
+    @refresh-arrival-dashboard="loadArrivalDashboard"
     @refresh-arrival-files="loadArrivalFiles"
     @confirm-arrival-import="confirmArrivalImport"
     @change-arrival-file="changeArrivalFile"
     @change-arrival-sheet="changeArrivalSheet"
   />
 
+  <AntiCorrosionModule
+    v-else-if="activeModule && showAntiCorrosionPreSchedule"
+    :active-module="activeModule"
+    :active-module-title="activeModuleTitle"
+    :dashboard="antiCorrosionDashboard"
+    :dashboard-loading="antiCorrosionDashboardLoading"
+    :dashboard-error="antiCorrosionDashboardError"
+    :pre-schedule-action="antiCorrosionPreScheduleAction"
+    :pre-schedule-options="antiCorrosionPreScheduleOptions"
+    :commission-options="antiCorrosionCommissionOptions"
+    :date-mode-options="futureScheduleDateModeOptions"
+    :schedule-calendar-start="scheduleCalendarStart"
+    :schedule-calendar-end="scheduleCalendarEnd"
+    :manual-date-list="antiCorrosionManualDateList"
+    :holiday-calendar-date-list="antiCorrosionHolidayCalendarDateList"
+    :commission-message="antiCorrosionCommissionMessage"
+    :commission-error="antiCorrosionCommissionError"
+    :commission-pending-stage="antiCorrosionPendingStage"
+    :commission-stage-saving="antiCorrosionStageSaving"
+    :commission-preview-loading="antiCorrosionPendingPreviewLoading"
+    :commission-preview-error="antiCorrosionPendingPreviewError"
+    :commission-preview-data="antiCorrosionPendingPreview"
+    :commission-preview-columns="antiCorrosionCommissionPreviewColumns"
+    :concentration-dimension-options="pipelineConcentrationDimensionOptions"
+    :overview-actions="antiCorrosionOverviewActions"
+    :pre-schedule-loading="antiCorrosionPreScheduleLoading"
+    :pre-schedule-error="antiCorrosionPreScheduleError"
+    :pre-schedule-data="antiCorrosionPreScheduleData"
+    :pre-schedule-active-sheet="antiCorrosionPreScheduleActiveSheet"
+    :pre-schedule-table-columns="antiCorrosionPreScheduleTableColumns"
+    :running-key="runningKey"
+    @execute-action="executeAction"
+    @change-pre-schedule-sheet="changeAntiCorrosionPreScheduleSheet"
+    @change-commission-preview-sheet="changeAntiCorrosionCommissionPreviewSheet"
+    @selection-change="antiCorrosionSelectedRows = $event.rows || []"
+    @save-commission-stage="saveAntiCorrosionPendingStage"
+    @preview-commission-file="loadAntiCorrosionPendingFile"
+    @update-start-date="updateAntiCorrosionStartDate"
+    @update-manual-date-list="updateAntiCorrosionManualDateList"
+    @update-holiday-date-list="updateAntiCorrosionHolidayDateList"
+  />
+
   <CuttingModule
     v-else-if="activeModule && showCuttingVisualization"
     :active-module="activeModule"
     :active-module-title="activeModuleTitle"
+    :dashboard="cuttingDashboard"
+    :dashboard-loading="cuttingDashboardLoading"
+    :dashboard-error="cuttingDashboardError"
     :pre-schedule-loading="preScheduleLoading"
     :cutting-loading="cuttingLoading"
     :pre-schedule-data="preScheduleData"
     :pre-schedule-options="preScheduleOptions"
+    :concentration-dimension-options="pipelineConcentrationDimensionOptions"
     :pre-schedule-active-sheet="preScheduleActiveSheet"
     :pre-schedule-error="preScheduleError"
     :pre-schedule-table-columns="preScheduleTableColumns"
@@ -1551,6 +2044,24 @@ onBeforeUnmount(() => {
         </v-btn>
         <v-btn color="primary" variant="tonal" @click="resolveHolidayConflict(true)">
           {{ t('confirmUseWorkday') }}
+        </v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
+
+  <v-dialog v-model="materialLibraryConfirmDialog.show" max-width="520" persistent>
+    <v-card class="schedule-confirm-dialog" variant="flat">
+      <v-card-title>{{ t('materialLibraryExistsTitle') }}</v-card-title>
+      <v-card-text>
+        {{ t('materialLibraryExistsText', { files: materialLibraryConfirmDialog.files.join('、') }) }}
+      </v-card-text>
+      <v-card-actions>
+        <v-spacer />
+        <v-btn variant="text" @click="resolveMaterialLibraryConfirmation(false)">
+          {{ t('cancel') }}
+        </v-btn>
+        <v-btn color="warning" variant="tonal" @click="resolveMaterialLibraryConfirmation(true)">
+          {{ t('continueGenerateMaterialLibrary') }}
         </v-btn>
       </v-card-actions>
     </v-card>

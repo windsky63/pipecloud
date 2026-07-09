@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import ArrivalDashboardPanel from '../../components/ArrivalDashboardPanel.vue'
 import DataVTable from '../../components/DataVTable.vue'
 import FileUploadDropzone from '../../components/FileUploadDropzone.vue'
 import InfoTooltip from '../../components/InfoTooltip.vue'
@@ -12,6 +13,9 @@ const props = defineProps({
   arrivalActiveTab: { type: String, required: true },
   arrivalLoading: { type: Boolean, default: false },
   arrivalError: { type: String, default: '' },
+  arrivalDashboard: { type: Object, required: true },
+  arrivalDashboardLoading: { type: Boolean, default: false },
+  arrivalDashboardError: { type: String, default: '' },
   todayArrival: { type: Object, required: true },
   todayArrivalSummaryRows: { type: Array, default: () => [] },
   arrivalSummaryTableColumns: { type: Array, default: () => [] },
@@ -33,6 +37,7 @@ const emit = defineEmits([
   'change-tab',
   'execute-action',
   'refresh-today-arrival',
+  'refresh-arrival-dashboard',
   'refresh-arrival-files',
   'confirm-arrival-import',
   'change-arrival-file',
@@ -195,6 +200,16 @@ watch(() => props.arrivalImportCompleteKey, () => {
 </script>
 
 <template>
+  <ArrivalDashboardPanel
+    :title="t('arrivalDashboardTitle')"
+    :description="t('arrivalDashboardDescription')"
+    :dashboard="arrivalDashboard"
+    :loading="arrivalDashboardLoading"
+    :error="arrivalDashboardError"
+    show-refresh
+    @refresh="$emit('refresh-arrival-dashboard')"
+  />
+
   <v-card class="module-panel" :loading="arrivalLoading">
     <div class="section-head">
       <div>
@@ -222,6 +237,7 @@ watch(() => props.arrivalImportCompleteKey, () => {
               color="primary"
               variant="tonal"
               :loading="runningKey === action.key"
+              :disabled="Boolean(runningKey)"
               @click="$emit('execute-action', action.key)"
             >
               {{ localizedActionName(action) }}
@@ -260,12 +276,6 @@ watch(() => props.arrivalImportCompleteKey, () => {
 
       <v-window-item value="arrivalFiles">
         <div class="arrival-tab-content">
-          <div class="arrival-toolbar">
-            <div>
-              <v-btn :loading="arrivalLoading" prepend-icon="mdi-refresh" @click="$emit('refresh-arrival-files')">{{ t('refresh') }}</v-btn>
-            </div>
-          </div>
-
           <div class="arrival-file-controls">
             <v-select
               :model-value="selectedArrivalFile"
@@ -444,6 +454,7 @@ watch(() => props.arrivalImportCompleteKey, () => {
 }
 
 .arrival-overview-actions {
+  margin-top: 18px;
   margin-bottom: 18px;
 }
 

@@ -21,7 +21,8 @@ const moduleDescriptionKeys = {
 const actionNameKeys = {
   'prefab-weld-library': 'actionPrefabWeldLibrary',
   'arrival-library': 'actionArrivalLibrary',
-  'prepare-anti-corrosion-libraries': 'actionPrepareAntiCorrosionLibraries',
+  'update-weld-arrival-status': 'actionUpdateWeldArrivalStatus',
+  'anti-corrosion-pre-schedule': 'actionAntiCorrosionPreSchedule',
   'anti-corrosion-schedule': 'actionAntiCorrosionSchedule',
   'auto-weld-schedule': 'actionAutoWeldSchedule',
   'weld-pre-schedule': 'actionWeldPreSchedule',
@@ -35,6 +36,7 @@ const libraryTitleKeys = {
   'fitting-library': 'fittingLibrary',
   'anti-pipe-library': 'antiCorrosionPipeLibrary',
   'anti-fitting-library': 'antiCorrosionFittingLibrary',
+  'anti-corrosion-commission-library': 'antiCorrosionCommissionLibrary',
   'master-schedule-library': 'masterScheduleLibrary',
 }
 

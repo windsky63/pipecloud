@@ -25,6 +25,136 @@ class Project(models.Model):
         return self.project_name or f'项目 {self.pk}'
 
 
+class ProjectSchedulePolicy(models.Model):
+    project = models.OneToOneField(
+        Project,
+        verbose_name='项目',
+        related_name='schedule_policy',
+        on_delete=models.CASCADE,
+    )
+    auto_rollover_enabled = models.BooleanField('启用未完成计划自动滚动', default=True)
+    target_diameter = models.DecimalField('普通排产目标寸径', max_digits=10, decimal_places=2, default=260)
+    rollover_max_diameter = models.DecimalField('滚动排产最大寸径', max_digits=10, decimal_places=2, default=300)
+    orders_per_day = models.PositiveIntegerField('每日排产单数', default=3)
+    skip_holidays = models.BooleanField('跳过节假日', default=True)
+    holiday_dates = models.JSONField('节假日日期', default=list, blank=True)
+    canceled_weekend_dates = models.JSONField('调休工作日', default=list, blank=True)
+    cutting_lead_days = models.PositiveIntegerField('下料提前天数', default=1)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '项目排产策略'
+        verbose_name_plural = '项目排产策略'
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(target_diameter__gt=0),
+                name='pipecloud_schedule_target_diameter_positive',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(rollover_max_diameter__gte=models.F('target_diameter')),
+                name='pipecloud_schedule_rollover_max_gte_target',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(orders_per_day__gt=0),
+                name='pipecloud_schedule_orders_per_day_positive',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.project} 排产策略'
+
+
+class ProjectConstraint(models.Model):
+    project = models.ForeignKey(
+        Project,
+        verbose_name='项目',
+        related_name='business_constraints',
+        on_delete=models.CASCADE,
+    )
+    rule_key = models.CharField('规则标识', max_length=120)
+    enabled = models.BooleanField('是否启用', default=False)
+    parameters = models.JSONField('规则参数', default=dict, blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        ordering = ['project_id', 'rule_key']
+        verbose_name = '项目约束'
+        verbose_name_plural = '项目约束'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['project', 'rule_key'],
+                name='pipecloud_project_constraint_unique_rule',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.project} - {self.rule_key}'
+
+
+class ScheduledTaskRun(models.Model):
+    STATUS_CHOICES = [
+        ('running', '执行中'),
+        ('succeeded', '成功'),
+        ('failed', '失败'),
+        ('skipped', '跳过'),
+    ]
+
+    project = models.ForeignKey(Project, verbose_name='项目', on_delete=models.CASCADE)
+    task_name = models.CharField('任务名称', max_length=80)
+    business_date = models.DateField('业务日期')
+    status = models.CharField('执行状态', max_length=16, choices=STATUS_CHOICES, default='running')
+    stats = models.JSONField('执行统计', default=dict, blank=True)
+    error_message = models.TextField('错误信息', blank=True)
+    started_at = models.DateTimeField('开始时间', auto_now_add=True)
+    finished_at = models.DateTimeField('完成时间', null=True, blank=True)
+
+    class Meta:
+        ordering = ['-business_date', '-started_at']
+        verbose_name = '定时任务执行记录'
+        verbose_name_plural = '定时任务执行记录'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['project', 'task_name', 'business_date'],
+                name='pipecloud_scheduled_task_run_unique_day',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.project} {self.task_name} {self.business_date} {self.status}'
+
+
+class WeldRolloverLog(models.Model):
+    project = models.ForeignKey(Project, verbose_name='项目', on_delete=models.CASCADE)
+    task_run = models.ForeignKey(
+        ScheduledTaskRun,
+        verbose_name='任务执行记录',
+        related_name='rollover_logs',
+        on_delete=models.CASCADE,
+    )
+    weld_key = models.CharField('焊口唯一键', max_length=1000)
+    weld_key_hash = models.CharField('焊口唯一键哈希', max_length=64)
+    from_date = models.DateField('原计划日期')
+    to_date = models.DateField('滚动后计划日期')
+    diameter = models.DecimalField('寸径', max_digits=10, decimal_places=2, default=0)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        ordering = ['-from_date', 'to_date', 'id']
+        verbose_name = '焊口滚动记录'
+        verbose_name_plural = '焊口滚动记录'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['project', 'weld_key_hash', 'from_date', 'to_date'],
+                name='pipecloud_weld_rollover_unique_move',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.project} {self.weld_key} {self.from_date} -> {self.to_date}'
+
+
 class PlanRecord(models.Model):
     PLAN_TYPES = [
         ('anti-corrosion', '防腐'),
@@ -41,6 +171,7 @@ class PlanRecord(models.Model):
     file_count = models.IntegerField('文件数量', default=0)
     folder_updated_at = models.FloatField('文件夹更新时间', default=0)
     files = models.JSONField('计划文件', default=list, blank=True)
+    summary = models.JSONField('计划摘要', default=dict, blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -93,6 +224,7 @@ class ParserJob(models.Model):
         ('running', '解析中'),
         ('completed', '已完成'),
         ('failed', '失败'),
+        ('canceled', '已中断'),
     ]
 
     job_id = models.CharField('任务ID', max_length=64, unique=True)
@@ -140,6 +272,7 @@ class ParserSubtask(models.Model):
     result_path = models.CharField('结果路径', max_length=500, blank=True)
     result_payload = models.JSONField('结果载荷', default=dict, blank=True)
     error = models.TextField('错误信息', blank=True)
+    process_id = models.IntegerField('解析进程ID', null=True, blank=True)
     started_at = models.DateTimeField('开始时间', null=True, blank=True)
     finished_at = models.DateTimeField('完成时间', null=True, blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
@@ -160,6 +293,167 @@ class ParserSubtask(models.Model):
         return f'{self.job.job_id} #{self.index}'
 
 
+class ParserArtifact(models.Model):
+    project = models.ForeignKey(Project, verbose_name='项目', related_name='parser_artifacts', on_delete=models.CASCADE)
+    job = models.ForeignKey(
+        ParserJob,
+        verbose_name='解析任务',
+        related_name='artifacts',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+    )
+    source = models.CharField('来源', max_length=24)
+    filename = models.CharField('文件名', max_length=255)
+    content = models.BinaryField('文件内容')
+    file_size = models.BigIntegerField('文件大小', default=0)
+    content_hash = models.CharField('内容哈希', max_length=64, db_index=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        verbose_name = '解析结果文件'
+        verbose_name_plural = '解析结果文件'
+
+    def __str__(self):
+        return self.filename
+
+
+class IdfModelVersion(models.Model):
+    STATUS_CHOICES = [
+        ('importing', '导入中'),
+        ('ready', '可用'),
+        ('failed', '失败'),
+    ]
+
+    job = models.OneToOneField(
+        ParserJob,
+        verbose_name='解析任务',
+        related_name='idf_model',
+        on_delete=models.CASCADE,
+    )
+    project = models.ForeignKey(
+        Project,
+        verbose_name='项目',
+        related_name='idf_models',
+        on_delete=models.CASCADE,
+    )
+    status = models.CharField('状态', max_length=24, choices=STATUS_CHOICES, default='importing')
+    part_count = models.IntegerField('模型分片数', default=0)
+    component_count = models.IntegerField('元件数量', default=0)
+    weld_count = models.IntegerField('焊口数量', default=0)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at', '-id']
+        verbose_name = 'IDF模型版本'
+        verbose_name_plural = 'IDF模型版本'
+        indexes = [
+            models.Index(fields=['project', 'status', '-updated_at'], name='pipecloud_idf_model_latest'),
+        ]
+
+    def __str__(self):
+        return f'{self.project} IDF {self.job.job_id}'
+
+
+class IdfModelPart(models.Model):
+    model = models.ForeignKey(
+        IdfModelVersion,
+        verbose_name='模型版本',
+        related_name='parts',
+        on_delete=models.CASCADE,
+    )
+    subtask_index = models.IntegerField('子任务序号')
+    metadata = models.JSONField('模型元数据', default=dict, blank=True)
+    component_count = models.IntegerField('元件数量', default=0)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        ordering = ['model', 'subtask_index']
+        verbose_name = 'IDF模型分片'
+        verbose_name_plural = 'IDF模型分片'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['model', 'subtask_index'],
+                name='pipecloud_idf_part_unique',
+            ),
+        ]
+
+
+class IdfComponent(models.Model):
+    model = models.ForeignKey(
+        IdfModelVersion,
+        verbose_name='模型版本',
+        related_name='components',
+        on_delete=models.CASCADE,
+    )
+    part = models.ForeignKey(
+        IdfModelPart,
+        verbose_name='模型分片',
+        related_name='components',
+        on_delete=models.CASCADE,
+    )
+    subtask_index = models.IntegerField('子任务序号')
+    component_id = models.CharField('元件ID', max_length=255)
+    component_type = models.CharField('元件类型', max_length=40, blank=True)
+    pipeline_id = models.CharField('管线ID', max_length=255, blank=True)
+    pipeline_name = models.CharField('管线号', max_length=255, blank=True)
+    payload = models.JSONField('元件数据', default=dict)
+
+    class Meta:
+        ordering = ['model', 'subtask_index', 'id']
+        verbose_name = 'IDF元件'
+        verbose_name_plural = 'IDF元件'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['model', 'subtask_index', 'component_id'],
+                name='pipecloud_idf_component_unique',
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=['model', 'subtask_index', 'component_id'],
+                name='pipecloud_idf_component_find',
+            ),
+        ]
+
+
+class IdfWeldLookup(models.Model):
+    model = models.ForeignKey(
+        IdfModelVersion,
+        verbose_name='模型版本',
+        related_name='weld_lookups',
+        on_delete=models.CASCADE,
+    )
+    component = models.ForeignKey(
+        IdfComponent,
+        verbose_name='焊口元件',
+        related_name='lookup_keys',
+        on_delete=models.CASCADE,
+    )
+    line_key = models.CharField('标准化管线号', max_length=255)
+    weld_key = models.CharField('标准化焊口号', max_length=120)
+
+    class Meta:
+        ordering = ['model', 'line_key', 'weld_key', 'id']
+        verbose_name = 'IDF焊口索引'
+        verbose_name_plural = 'IDF焊口索引'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['model', 'component', 'line_key', 'weld_key'],
+                name='pipecloud_idf_weld_lookup_unique',
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=['model', 'line_key', 'weld_key'],
+                name='pipecloud_idf_weld_find',
+            ),
+        ]
+
+
 class InitializationWeldRow(models.Model):
     project = models.ForeignKey(Project, verbose_name='项目', on_delete=models.CASCADE)
     source_file = models.ForeignKey(DataSourceFile, verbose_name='来源文件', on_delete=models.CASCADE)
@@ -167,79 +461,114 @@ class InitializationWeldRow(models.Model):
     row_index = models.IntegerField('行号', default=0)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
-    library_seq = models.CharField('库序号', max_length=80, blank=True)
-    creator = models.CharField('创建人(必填)', max_length=120, blank=True)
-    created_time_text = models.CharField('创建时间(必填)', max_length=120, blank=True)
-    data_status = models.CharField('数据状态', max_length=80, blank=True)
-    custom_page_no = models.CharField('自定义页码', max_length=80, blank=True)
+    library_seq = models.CharField('库序号', max_length=80)
     unit = models.CharField('单元号', max_length=120, blank=True)
-    unit_name = models.CharField('单元名称', max_length=255, blank=True)
     pipeline = models.CharField('管线号', max_length=255, blank=True)
     segment_no = models.CharField('管段号', max_length=120, blank=True)
     joint_type = models.CharField('接头类型', max_length=120, blank=True)
     wall_thickness = models.CharField('壁厚', max_length=80, blank=True)
-    wall_thickness_no = models.CharField('壁厚号', max_length=80, blank=True)
+    nominal_diameter = models.CharField('公称直径', max_length=120, blank=True)
     diameter = models.CharField('寸径', max_length=80, blank=True)
     outer_diameter = models.CharField('外径', max_length=80, blank=True)
     weld_area = models.CharField('焊接区域', max_length=120, blank=True)
-    wps_no = models.CharField('WPS号', max_length=120, blank=True)
-    material = models.CharField('材质', max_length=120, blank=True)
-    material_code_name = models.CharField('材质代号', max_length=120, blank=True)
-    inspection_code = models.CharField('抽检代号', max_length=120, blank=True)
     weld_no_start = models.CharField('初始焊口号', max_length=120, blank=True)
     weld_no_final = models.CharField('最终焊口号', max_length=120, blank=True)
-    cover_date = models.CharField('盖面日期', max_length=120, blank=True)
-    weld_method = models.CharField('焊接方法', max_length=120, blank=True)
-    weld_position = models.CharField('焊接位置', max_length=120, blank=True)
-    root_weld = models.CharField('打底', max_length=120, blank=True)
-    cover_weld = models.CharField('盖面', max_length=120, blank=True)
-    original_root_weld = models.CharField('原打底', max_length=120, blank=True)
-    original_cover_weld = models.CharField('原盖面', max_length=120, blank=True)
+    material = models.CharField('材质', max_length=120, blank=True)
+    material_type = models.CharField('材质代号', max_length=120, blank=True)
     material_mark_1 = models.CharField('材料代号1', max_length=120, blank=True)
     material_mark_2 = models.CharField('材料代号2', max_length=120, blank=True)
-    heat_no_a = models.CharField('炉批号A', max_length=120, blank=True)
-    heat_no_b = models.CharField('炉批号B', max_length=120, blank=True)
-    material_unique_1 = models.TextField('材料唯一码1', blank=True)
-    material_unique_2 = models.TextField('材料唯一码2', blank=True)
     material_code_1 = models.CharField('材料代码1', max_length=120, blank=True)
     material_code_2 = models.CharField('材料代码2', max_length=120, blank=True)
     material_paint_1 = models.CharField('材料油漆1', max_length=120, blank=True)
     material_paint_2 = models.CharField('材料油漆2', max_length=120, blank=True)
-    quantity_1 = models.CharField('数量1', max_length=80, blank=True)
-    quantity_2 = models.CharField('数量2', max_length=80, blank=True)
     description_1 = models.TextField('描述1', blank=True)
     description_2 = models.TextField('描述2', blank=True)
-    completed_flag = models.CharField('是否完成', max_length=80, blank=True)
-    priority = models.CharField('优先级', max_length=80, blank=True)
-    schedule_order_no = models.CharField('排产单号', max_length=120, blank=True)
-    change_order_no = models.CharField('变更单号', max_length=120, blank=True)
-    change_date = models.CharField('变更日期', max_length=120, blank=True)
-    change_type = models.CharField('变更类型', max_length=120, blank=True)
-    drawing_page = models.CharField('图纸页次', max_length=120, blank=True)
-    pressure_test_package = models.CharField('试压包号', max_length=120, blank=True)
+    material_unique_1 = models.TextField('材料唯一码1', blank=True)
+    material_unique_2 = models.TextField('材料唯一码2', blank=True)
+    quantity_1 = models.CharField('数量1', max_length=80, blank=True)
+    quantity_2 = models.CharField('数量2', max_length=80, blank=True)
+    material_unit_1 = models.CharField('单位1', max_length=80, blank=True)
+    material_unit_2 = models.CharField('单位2', max_length=80, blank=True)
     weld_coordinate = models.CharField('焊点坐标', max_length=255, blank=True)
-    zone_info = models.CharField('分区信息', max_length=255, blank=True)
-    pressure_pipe_grade = models.CharField('压力管道等级', max_length=120, blank=True)
-    auto_weld_segment = models.CharField('自动焊管段', max_length=120, blank=True)
-    auto_weld_joint = models.CharField('自动焊口', max_length=120, blank=True)
-    revision = models.CharField('版次', max_length=80, blank=True)
-    need_heat_treatment = models.CharField('是否需热处理', max_length=80, blank=True)
-    fitup_date = models.CharField('组对日期', max_length=120, blank=True)
-    fitter = models.CharField('组对管工', max_length=120, blank=True)
-    schedule_date = models.CharField('排产日期', max_length=120, blank=True)
-    is_flange_weld = models.CharField('是否法兰口', max_length=80, blank=True)
-    root_weld_date = models.CharField('打底日期', max_length=120, blank=True)
-    data_id = models.CharField('数据ID(不可修改)', max_length=120, blank=True)
-    data_title = models.CharField('数据标题', max_length=255, blank=True)
-    owner = models.CharField('拥有者(必填)', max_length=120, blank=True)
-    department = models.CharField('所属部门(必填)', max_length=120, blank=True)
-    required_updated_time = models.CharField('修改时间(必填)', max_length=120, blank=True)
-    init_note = models.TextField('初始化备注', blank=True)
 
     class Meta:
         ordering = ['source_file', 'row_index']
         verbose_name = '焊口初始化数据'
         verbose_name_plural = '焊口初始化数据'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['project', 'library_seq'],
+                name='pipecloud_init_weld_project_seq_unique',
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=['project', 'pipeline', 'segment_no'],
+                name='pipecloud_init_weld_find',
+            ),
+        ]
+
+
+class InitializationWeldExtraData(models.Model):
+    project = models.ForeignKey(
+        Project,
+        verbose_name='项目',
+        on_delete=models.CASCADE,
+        related_name='initialization_weld_extra_rows',
+    )
+    weld = models.OneToOneField(
+        InitializationWeldRow,
+        verbose_name='焊口',
+        on_delete=models.CASCADE,
+        related_name='extra_data',
+    )
+    library_seq = models.CharField('库序号', max_length=80)
+    custom_fields = models.JSONField('自定义字段', default=dict, blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        ordering = ['project', 'weld']
+        verbose_name = '焊口初始化扩展数据'
+        verbose_name_plural = '焊口初始化扩展数据'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['project', 'library_seq'],
+                name='pipecloud_init_extra_project_seq_unique',
+            ),
+        ]
+
+
+class InitializationMaterialRow(models.Model):
+    project = models.ForeignKey(Project, verbose_name='项目', on_delete=models.CASCADE)
+    source_file = models.ForeignKey(DataSourceFile, verbose_name='来源文件', on_delete=models.CASCADE)
+    sheet_name = models.CharField('工作表', max_length=120, blank=True)
+    row_index = models.IntegerField('行号', default=0)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+    unit = models.CharField('单元号', max_length=120, blank=True)
+    pipeline = models.CharField('管线号', max_length=255, blank=True)
+    material_description = models.TextField('材料描述', blank=True)
+    material_code = models.CharField('材料代码', max_length=120, blank=True)
+    specification = models.CharField('规格', max_length=255, blank=True)
+    record_id = models.TextField('record id', blank=True)
+    skey = models.CharField('skey', max_length=120, blank=True)
+    material_seq = models.CharField('序号', max_length=80, blank=True)
+    quantity = models.CharField('数量', max_length=80, blank=True)
+    unit_name = models.CharField('单位', max_length=80, blank=True)
+    no_material_flag = models.CharField('不出料标识', max_length=80, blank=True)
+    opening_weld_no_material = models.CharField('开口焊不计料', max_length=80, blank=True)
+
+    class Meta:
+        ordering = ['source_file', 'row_index']
+        verbose_name = 'IDF解析材料'
+        verbose_name_plural = 'IDF解析材料'
+        indexes = [
+            models.Index(
+                fields=['project', 'material_code'],
+                name='pipecloud_init_material_code',
+            ),
+        ]
 
 
 class WeldLibraryRow(models.Model):
@@ -275,7 +604,10 @@ class WeldLibraryRow(models.Model):
     description_1 = models.TextField('描述1', blank=True)
     description_2 = models.TextField('描述2', blank=True)
     welding_mode = models.CharField('焊接方式', max_length=120, blank=True)
-    completed_flag = models.BooleanField('是否完成', default=False)
+    material_arrival_status = models.BooleanField('材料到货状态', default=False)
+    material_anti_corrosion_status = models.BooleanField('材料防腐状态', default=False)
+    material_cutting_status = models.BooleanField('材料下料状态', default=False)
+    completed_flag = models.BooleanField('材料焊接状态', default=False)
     priority = models.CharField('优先级', max_length=80, blank=True)
 
     class Meta:
@@ -317,9 +649,13 @@ class WeldPreScheduleRow(models.Model):
     description_1 = models.TextField('描述1', blank=True)
     description_2 = models.TextField('描述2', blank=True)
     welding_mode = models.CharField('焊接方式', max_length=120, blank=True)
-    completed_flag = models.CharField('是否完成', max_length=80, blank=True)
+    material_arrival_status = models.BooleanField('材料到货状态', default=False)
+    material_anti_corrosion_status = models.BooleanField('材料防腐状态', default=False)
+    material_cutting_status = models.BooleanField('材料下料状态', default=False)
+    completed_flag = models.BooleanField('材料焊接状态', default=False)
     priority = models.CharField('优先级', max_length=80, blank=True)
     pre_schedule_seq = models.CharField('预排产序号', max_length=120, blank=True)
+    anti_corrosion_area = models.CharField('防腐面积', max_length=80, blank=True)
     pre_schedule_status = models.CharField('预排产状态', max_length=120, blank=True)
     pre_schedule_reason = models.TextField('不可预排产原因', blank=True)
 
@@ -327,6 +663,60 @@ class WeldPreScheduleRow(models.Model):
         ordering = ['project', 'row_index']
         verbose_name = '焊口预排产匹配结果'
         verbose_name_plural = '焊口预排产匹配结果'
+
+
+class AntiCorrosionCommissionRow(models.Model):
+    project = models.ForeignKey(Project, verbose_name='项目', on_delete=models.CASCADE)
+    source_file = models.ForeignKey(DataSourceFile, verbose_name='来源文件', on_delete=models.CASCADE)
+    sheet_name = models.CharField('工作表', max_length=120, blank=True)
+    row_index = models.IntegerField('行号', default=0)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+    commission_no = models.CharField('防腐委托单号', max_length=120, blank=True)
+    commission_date = models.CharField('委托日期', max_length=80, blank=True)
+    commission_limit_area = models.CharField('委托单防腐面积', max_length=80, blank=True)
+    pre_schedule_seq = models.CharField('预排产序号', max_length=120, blank=True)
+    anti_corrosion_area = models.CharField('防腐面积', max_length=80, blank=True)
+    library_seq = models.CharField('库序号', max_length=80, blank=True)
+    unit = models.CharField('单元号', max_length=120, blank=True)
+    unit_name = models.CharField('单元名称', max_length=255, blank=True)
+    pipeline = models.CharField('管线号', max_length=255, blank=True)
+    segment_no = models.CharField('管段号', max_length=120, blank=True)
+    joint_type = models.CharField('接头类型', max_length=120, blank=True)
+    wall_thickness = models.CharField('壁厚', max_length=80, blank=True)
+    wall_thickness_no = models.CharField('壁厚号', max_length=80, blank=True)
+    diameter = models.CharField('寸径', max_length=80, blank=True)
+    outer_diameter = models.CharField('外径', max_length=80, blank=True)
+    weld_area = models.CharField('焊接区域', max_length=120, blank=True)
+    material = models.CharField('材质', max_length=120, blank=True)
+    material_code_name = models.CharField('材质代号', max_length=120, blank=True)
+    weld_no_start = models.CharField('初始焊口号', max_length=120, blank=True)
+    weld_no_final = models.CharField('最终焊口号', max_length=120, blank=True)
+    material_mark_1 = models.CharField('材料代号1', max_length=120, blank=True)
+    material_mark_2 = models.CharField('材料代号2', max_length=120, blank=True)
+    material_unique_1 = models.TextField('材料唯一码1', blank=True)
+    material_unique_2 = models.TextField('材料唯一码2', blank=True)
+    material_code_1 = models.CharField('材料代码1', max_length=120, blank=True)
+    material_code_2 = models.CharField('材料代码2', max_length=120, blank=True)
+    material_paint_1 = models.CharField('材料油漆1', max_length=120, blank=True)
+    material_paint_2 = models.CharField('材料油漆2', max_length=120, blank=True)
+    quantity_1 = models.CharField('数量1', max_length=80, blank=True)
+    quantity_2 = models.CharField('数量2', max_length=80, blank=True)
+    description_1 = models.TextField('描述1', blank=True)
+    description_2 = models.TextField('描述2', blank=True)
+    welding_mode = models.CharField('焊接方式', max_length=120, blank=True)
+    material_arrival_status = models.BooleanField('材料到货状态', default=False)
+    material_anti_corrosion_status = models.BooleanField('材料防腐状态', default=False)
+    material_cutting_status = models.BooleanField('材料下料状态', default=False)
+    completed_flag = models.BooleanField('材料焊接状态', default=False)
+    priority = models.CharField('优先级', max_length=80, blank=True)
+    pre_schedule_status = models.CharField('预排产状态', max_length=120, blank=True)
+    pre_schedule_reason = models.TextField('不可预排产原因', blank=True)
+
+    class Meta:
+        ordering = ['project', 'row_index']
+        verbose_name = '防腐委托库'
+        verbose_name_plural = '防腐委托库'
 
 
 class MaterialMatchDetailRow(models.Model):
@@ -381,6 +771,9 @@ class PipeMaterialRow(models.Model):
     spec_wall = models.CharField('规格*壁厚', max_length=120, blank=True)
     unit = models.CharField('单位', max_length=40, blank=True)
     need_anti_corrosion = models.CharField('是否需防腐', max_length=80, blank=True)
+    anti_corrosion_status = models.CharField('防腐状态', max_length=80, blank=True)
+    unit_area = models.CharField('单位面积', max_length=80, blank=True)
+    anti_corrosion_area = models.CharField('防腐面积', max_length=80, blank=True)
     source_arrival_file = models.CharField('来源入库单文件', max_length=255, blank=True)
     arrival_date = models.CharField('入库日期', max_length=80, blank=True)
     stock_qty = models.CharField('库存数量（米）', max_length=80, blank=True)
@@ -417,6 +810,10 @@ class FittingMaterialRow(models.Model):
     unit = models.CharField('单位', max_length=40, blank=True)
     material_description = models.TextField('材料描述', blank=True)
     material_full_name = models.CharField('材质全称', max_length=255, blank=True)
+    need_anti_corrosion = models.CharField('是否需防腐', max_length=80, blank=True)
+    anti_corrosion_status = models.CharField('防腐状态', max_length=80, blank=True)
+    unit_area = models.CharField('单位面积', max_length=80, blank=True)
+    anti_corrosion_area = models.CharField('防腐面积', max_length=80, blank=True)
     library_kind = models.CharField('材料库类型', max_length=40, default='fitting')
 
     class Meta:
@@ -506,6 +903,7 @@ class WeldingPlanRow(models.Model):
     cut_date = models.CharField('下料日期', max_length=120, blank=True)
     weld_date = models.CharField('焊接日期', max_length=120, blank=True)
     source_sheet = models.CharField('来源工作表', max_length=120, blank=True)
+    library_seq = models.CharField('库序号', max_length=120, blank=True)
     material_unique_1 = models.TextField('材料唯一码1', blank=True)
     material_unique_2 = models.TextField('材料唯一码2', blank=True)
     material_code_1 = models.CharField('材料代码1', max_length=120, blank=True)

@@ -1,7 +1,10 @@
 ﻿<script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import * as VTable from '@visactor/vtable'
+import { InputEditor } from '@visactor/vtable-editors'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import {
+  deletePlan,
   exportPlanPatchRows,
   fetchPlanFileRows,
   fetchPlanRows,
@@ -13,6 +16,8 @@ import PlanViewerHeader from './PlanViewerHeader.vue'
 import UnsavedChangesDialog from '../../components/UnsavedChangesDialog.vue'
 import { formatSize, formatTime, t } from '../../services/pipecloudState'
 import { selectedProjectId, selectedProjectParams } from '../../services/projectState'
+import { getBasicVTableTheme, vTableThemeKey } from '../../services/vtableTheme'
+import { attachVTableColumnSelectionCount, createVTableSelectionLayout } from '../../services/vtableSelectionCount'
 
 const route = useRoute()
 const router = useRouter()
@@ -41,7 +46,9 @@ const selectedPlan = ref(null)
 const selectedFile = ref(null)
 const selectedSheet = ref('')
 const planImportInput = ref(null)
+const planTableContainer = ref(null)
 const movingPlanId = ref(null)
+const deletingPlanId = ref(null)
 const draggingPlan = ref(null)
 const planTableViewTab = ref('calendar')
 const pendingPlanDateMoves = ref([])
@@ -49,6 +56,10 @@ const planDateDialog = ref({
   show: false,
   plan: null,
   date: '',
+})
+const planDeleteDialog = ref({
+  show: false,
+  plan: null,
 })
 const planData = ref({
   key: '',
@@ -77,6 +88,10 @@ const planSectionOpen = ref({
 const unsavedChangesDialog = ref(null)
 let planLoadRequestId = 0
 let fileLoadRequestId = 0
+let planVTable = null
+let planTableResizeObserver = null
+let releasePlanSelectionCount = null
+const planTextEditor = new InputEditor()
 
 const activePlanKey = computed(() => route.params.planKey || 'anti-corrosion')
 const isGanttView = computed(() => activePlanKey.value === 'gantt')
@@ -121,6 +136,100 @@ const planTablePeriodTitle = computed(() => {
   }
   return calendarMonthTitle.value
 })
+
+function releasePlanVTable() {
+  if (planVTable) {
+    planVTable.release()
+    planVTable = null
+  }
+  releasePlanSelectionCount?.()
+  releasePlanSelectionCount = null
+  if (planTableResizeObserver) {
+    planTableResizeObserver.disconnect()
+    planTableResizeObserver = null
+  }
+}
+
+function planVTableOptions() {
+  return {
+    records: editableRows.value.map((row, index) => ({
+      __index: index + 1,
+      ...row,
+    })),
+    columns: [
+      {
+        field: '__index',
+        title: '#',
+        width: 64,
+        fixed: 'left',
+        headerStyle: { textAlign: 'center', fontWeight: 700 },
+        style: { textAlign: 'center', color: '#64748b', fontWeight: 600 },
+      },
+      ...editableColumns.value.map((column) => ({
+        field: column,
+        title: column,
+        width: 150,
+        minWidth: 120,
+        sort: true,
+        editor: canEditSelectedFile.value ? planTextEditor : undefined,
+        headerStyle: { fontWeight: 700 },
+      })),
+    ],
+    editCellTrigger: ['doubleclick', 'keydown'],
+    widthMode: 'standard',
+    heightMode: 'standard',
+    defaultRowHeight: 36,
+    defaultHeaderRowHeight: 40,
+    frozenColCount: 1,
+    autoWrapText: false,
+    keyboardOptions: {
+      copySelected: true,
+    },
+    tooltip: {
+      isShowOverflowTextTooltip: true,
+    },
+    theme: getBasicVTableTheme({ rowHeader: true }),
+  }
+}
+
+async function renderPlanVTable() {
+  await nextTick()
+  if (!planTableContainer.value || !editableColumns.value.length) {
+    releasePlanVTable()
+    return
+  }
+  if (planVTable) {
+    await planVTable.updateOption(planVTableOptions(), {
+      clearColWidthCache: false,
+      clearRowHeightCache: false,
+    })
+    return
+  }
+
+  const selectionLayout = createVTableSelectionLayout(planTableContainer.value)
+  planVTable = new VTable.ListTable(selectionLayout.viewport, planVTableOptions())
+  releasePlanSelectionCount = attachVTableColumnSelectionCount(planVTable, selectionLayout)
+  planVTable.on(VTable.ListTable.EVENT_TYPE.CHANGE_CELL_VALUE, (event) => {
+    const recordIndex = Array.isArray(event.recordIndex) ? event.recordIndex[0] : event.recordIndex
+    if (!canEditSelectedFile.value || !Number.isInteger(recordIndex) || event.field === '__index') return
+    const oldValue = editableRows.value[recordIndex]?.[event.field] ?? ''
+    const newValue = event.changedValue ?? ''
+    if (oldValue === newValue) return
+    editableRows.value[recordIndex] = {
+      ...editableRows.value[recordIndex],
+      [event.field]: newValue,
+    }
+    isDirty.value = true
+    saveMessage.value = ''
+  })
+  planTableResizeObserver = new ResizeObserver(() => {
+    planVTable?.updateOption(planVTableOptions(), {
+      clearColWidthCache: true,
+      clearRowHeightCache: false,
+    })
+  })
+  planTableResizeObserver.observe(planTableContainer.value)
+}
 
 function ensurePlanRoute() {
   if (!planTabs.some((item) => item.key === activePlanKey.value)) {
@@ -195,6 +304,33 @@ function calendarPlanColor(name) {
   return 'warning'
 }
 
+
+function planTooltipRows(plan) {
+  const summary = plan?.summary || {}
+  const rows = [
+    { label: t('planDate'), value: compactDateToIso(plan?.planDate) || plan?.planDate || '-' },
+  ]
+  const orderNumbers = summary.orderNumbers || []
+  if (orderNumbers.length) {
+    rows.push({
+      label: plan?.planKey === 'cutting' ? t('cuttingOrderNumbers') : t('weldingOrderNumbers'),
+      value: orderNumbers.join('、'),
+    })
+  }
+  const relatedOrderNumbers = summary.relatedOrderNumbers || []
+  if (plan?.planKey === 'cutting' && relatedOrderNumbers.length) {
+    rows.push({ label: t('relatedWeldingOrderNumbers'), value: relatedOrderNumbers.join('、') })
+  }
+  if (summary.weldCount !== undefined) {
+    rows.push({ label: t('weldCount'), value: summary.weldCount })
+  }
+  if (summary.diameterTotal !== undefined) {
+    rows.push({ label: t('planDiameterTotal'), value: summary.diameterTotal })
+  }
+  rows.push({ label: t('planFileCount'), value: plan?.fileCount || 0 })
+  return rows
+}
+
 function normalizeCalendarDate(value) {
   if (!value) return ''
   if (typeof value === 'string') return value
@@ -224,6 +360,7 @@ function buildCalendarPlanMap(timeline) {
           planDate: record.planDate || day.date,
           originalPlanDate: record.planDate || day.date,
           fileCount: record.fileCount || plan.fileCount || 0,
+          summary: record.summary || plan.summary || {},
           available: true,
         }))
       }
@@ -235,6 +372,7 @@ function buildCalendarPlanMap(timeline) {
         planDate: day.date,
         originalPlanDate: day.date,
         fileCount: plan.fileCount || 0,
+        summary: plan.summary || {},
         available: Boolean(plan.available),
       }]
     })
@@ -421,6 +559,58 @@ async function applyPlanDateDialog() {
   closePlanDateDialog()
 }
 
+function openPlanDeleteDialog(plan) {
+  if (!plan?.id || deletingPlanId.value === plan.id) return
+  planDeleteDialog.value = {
+    show: true,
+    plan,
+  }
+}
+
+function closePlanDeleteDialog() {
+  planDeleteDialog.value = {
+    show: false,
+    plan: null,
+  }
+}
+
+async function confirmDeletePlan() {
+  const plan = planDeleteDialog.value.plan
+  if (!plan?.id || deletingPlanId.value) return
+  deletingPlanId.value = plan.id
+  errorMessage.value = ''
+  fileError.value = ''
+  try {
+    await deletePlan(plan.planKey || activePlanKey.value, selectedProjectParams(), {
+      recordId: plan.id,
+    })
+    if (selectedPlan.value?.id === plan.id) {
+      selectedPlan.value = null
+      selectedFile.value = null
+      selectedSheet.value = ''
+      fileData.value = {
+        name: '',
+        path: '',
+        sheet: '',
+        sheets: [],
+        total: 0,
+        columns: [],
+        rows: [],
+      }
+      editableRows.value = []
+      isDirty.value = false
+      saveMessage.value = ''
+      releasePlanVTable()
+    }
+    closePlanDeleteDialog()
+    await loadPlan(selectedDate.value)
+  } catch (error) {
+    errorMessage.value = t('planDeleteFailed', { message: error.message })
+  } finally {
+    deletingPlanId.value = null
+  }
+}
+
 function startDragPlan(plan) {
   draggingPlan.value = plan
 }
@@ -529,6 +719,18 @@ function resetPlanSelection() {
 
 function isWeldingPrimaryFile(file) {
   return file?.name === WELDING_PRIMARY_FILE_NAME || String(file?.name || '').startsWith('管段焊口表')
+}
+
+function planFileDisplayName(file, plan = selectedPlan.value) {
+  const name = String(file?.name || '')
+  if (!name || !['welding', 'cutting'].includes(activePlanKey.value)) return name
+  const date = compactDateToIso(plan?.planDate || plan?.planFolder) || String(plan?.planDate || plan?.planFolder || '')
+  if (!date) return name
+  const compactDate = date.replaceAll('-', '')
+  if (name.includes(date) || name.includes(compactDate)) return name
+  const extensionIndex = name.lastIndexOf('.')
+  if (extensionIndex <= 0) return `${name}-${date}`
+  return `${name.slice(0, extensionIndex)}-${date}${name.slice(extensionIndex)}`
 }
 
 function isCuttingPrimaryFile(file) {
@@ -694,25 +896,15 @@ function cloneRows(rows) {
   return rows.map((row) => ({ ...row }))
 }
 
-function updateCell(rowIndex, column, value) {
-  if (!canEditSelectedFile.value) return
-  editableRows.value[rowIndex] = {
-    ...editableRows.value[rowIndex],
-    [column]: value,
-  }
-  isDirty.value = true
-  saveMessage.value = ''
-}
-
 function ensureCompletionColumn() {
-  const candidates = ['是否完成', '完成状态', '完工状态', '状态']
+  const candidates = ['材料焊接状态', '是否完成', '完成状态', '完工状态', '状态']
   const existingColumn = candidates.find((column) => editableColumns.value.includes(column))
   if (existingColumn) return existingColumn
   fileData.value = {
     ...fileData.value,
-    columns: [...fileData.value.columns, '是否完成'],
+    columns: [...fileData.value.columns, '材料焊接状态'],
   }
-  return '是否完成'
+  return '材料焊接状态'
 }
 
 function markTodayPlanCompleted() {
@@ -740,7 +932,7 @@ async function exportCurrentPlanFile() {
       rows: editableRows.value,
     })
     const link = document.createElement('a')
-    const baseName = String(fileData.value.name || 'plan').replace(/\.[^.]+$/, '')
+    const baseName = String(planFileDisplayName(selectedFile.value || fileData.value) || 'plan').replace(/\.[^.]+$/, '')
     const sheetName = selectedSheet.value ? `-${selectedSheet.value}` : ''
     link.href = URL.createObjectURL(blob)
     link.download = `${baseName}${sheetName}.xlsx`
@@ -852,6 +1044,11 @@ watch(selectedProjectId, () => {
   pendingPlanDateMoves.value = []
   loadPlan(routePlanDate())
 })
+watch(
+  [editableRows, editableColumns, canEditSelectedFile, () => vTableThemeKey.value],
+  renderPlanVTable,
+  { deep: true },
+)
 
 onBeforeRouteLeave(async () => confirmLeaveWithUnsyncedChanges())
 onBeforeRouteUpdate(async () => confirmLeaveWithUnsyncedChanges())
@@ -863,6 +1060,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', handleBeforeUnload)
+  releasePlanVTable()
 })
 </script>
 
@@ -908,15 +1106,28 @@ onBeforeUnmount(() => {
               <v-icon icon="mdi-calendar-today-outline" size="18" />
               <span>{{ plan.name }}</span>
               <small>{{ t('fileCount', { count: plan.fileCount }) }} · {{ formatTime(plan.updatedAt) }}</small>
-              <v-btn
-                class="plan-date-edit-btn"
-                icon="mdi-pencil-outline"
-                variant="text"
-                size="x-small"
-                :loading="movingPlanId === plan.id"
-                :aria-label="t('changePlanDate')"
-                @click.stop="openPlanDateDialog(plan)"
-              />
+              <div class="plan-tree-actions">
+                <v-icon-btn
+                  icon="mdi-pencil-outline"
+                  variant="plain"
+                  icon-color="warning"
+                  size="small"
+                  density="comfortable"
+                  :loading="movingPlanId === plan.id"
+                  :aria-label="t('changePlanDate')"
+                  @click.stop="openPlanDateDialog(plan)"
+                />
+                <v-icon-btn
+                  icon="mdi-delete-outline"
+                  variant="plain"
+                  icon-color="error"
+                  size="small"
+                  density="comfortable"
+                  :loading="deletingPlanId === plan.id"
+                  :aria-label="t('deletePlan')"
+                  @click.stop="openPlanDeleteDialog(plan)"
+                />
+              </div>
             </div>
             <span v-if="!todayPlans.length" class="plan-empty-note">{{ t('noTodayPlan') }}</span>
           </div>
@@ -946,15 +1157,28 @@ onBeforeUnmount(() => {
               <v-icon icon="mdi-calendar-month-outline" size="18" />
               <span>{{ plan.name }}</span>
               <small>{{ plan.planDate }} · {{ t('fileCount', { count: plan.fileCount }) }}</small>
-              <v-btn
-                class="plan-date-edit-btn"
-                icon="mdi-pencil-outline"
-                variant="text"
-                size="x-small"
-                :loading="movingPlanId === plan.id"
-                :aria-label="t('changePlanDate')"
-                @click.stop="openPlanDateDialog(plan)"
-              />
+              <div class="plan-tree-actions">
+                <v-icon-btn
+                  icon="mdi-pencil-outline"
+                  variant="plain"
+                  icon-color="warning"
+                  size="small"
+                  density="comfortable"
+                  :loading="movingPlanId === plan.id"
+                  :aria-label="t('changePlanDate')"
+                  @click.stop="openPlanDateDialog(plan)"
+                />
+                <v-icon-btn
+                  icon="mdi-delete-outline"
+                  variant="plain"
+                  icon-color="error"
+                  size="small"
+                  density="comfortable"
+                  :loading="deletingPlanId === plan.id"
+                  :aria-label="t('deletePlan')"
+                  @click.stop="openPlanDeleteDialog(plan)"
+                />
+              </div>
             </div>
             <span v-if="!futurePlans.length" class="plan-empty-note">{{ t('noFuturePlan') }}</span>
           </div>
@@ -984,15 +1208,28 @@ onBeforeUnmount(() => {
               <v-icon icon="mdi-history" size="18" />
               <span>{{ plan.name }}</span>
               <small>{{ plan.planDate }} · {{ t('fileCount', { count: plan.fileCount }) }}</small>
-              <v-btn
-                class="plan-date-edit-btn"
-                icon="mdi-pencil-outline"
-                variant="text"
-                size="x-small"
-                :loading="movingPlanId === plan.id"
-                :aria-label="t('changePlanDate')"
-                @click.stop="openPlanDateDialog(plan)"
-              />
+              <div class="plan-tree-actions">
+                <v-icon-btn
+                  icon="mdi-pencil-outline"
+                  variant="plain"
+                  icon-color="warning"
+                  size="small"
+                  density="comfortable"
+                  :loading="movingPlanId === plan.id"
+                  :aria-label="t('changePlanDate')"
+                  @click.stop="openPlanDateDialog(plan)"
+                />
+                <v-icon-btn
+                  icon="mdi-delete-outline"
+                  variant="plain"
+                  icon-color="error"
+                  size="small"
+                  density="comfortable"
+                  :loading="deletingPlanId === plan.id"
+                  :aria-label="t('deletePlan')"
+                  @click.stop="openPlanDeleteDialog(plan)"
+                />
+              </div>
             </div>
             <span v-if="!historyPlans.length" class="plan-empty-note">{{ t('noHistoryPlan') }}</span>
           </div>
@@ -1003,7 +1240,7 @@ onBeforeUnmount(() => {
         <div class="plan-preview-head">
           <div>
             <h3>{{ selectedPlan?.name || t('selectPlan') }}</h3>
-            <span v-if="fileData.name">{{ t('currentFile') }}：{{ fileData.name }}</span>
+            <span v-if="fileData.name">{{ t('currentFile') }}：{{ planFileDisplayName(selectedFile || fileData) }}</span>
           </div>
           <span v-if="selectedPlan">{{ formatTime(selectedPlan.updatedAt) }}</span>
         </div>
@@ -1019,7 +1256,7 @@ onBeforeUnmount(() => {
             @click="loadFile(file)"
           >
             <div class="plan-file-main">
-              <strong>{{ file.name }}</strong>
+              <strong>{{ planFileDisplayName(file) }}</strong>
               <span>{{ formatSize(file.size) }} · {{ formatTime(file.updatedAt) }}</span>
             </div>
             <div class="plan-file-meta">
@@ -1038,7 +1275,7 @@ onBeforeUnmount(() => {
               @click="loadFile(primaryPlanFile)"
             >
               <div class="plan-file-main">
-                <strong>{{ primaryPlanFile.name }}</strong>
+                <strong>{{ planFileDisplayName(primaryPlanFile) }}</strong>
                 <span>{{ formatSize(primaryPlanFile.size) }} · {{ formatTime(primaryPlanFile.updatedAt) }}</span>
               </div>
               <div class="plan-file-meta">
@@ -1058,7 +1295,7 @@ onBeforeUnmount(() => {
               @click="loadFile(file)"
             >
               <div class="plan-file-main">
-                <strong>{{ file.name }}</strong>
+                <strong>{{ planFileDisplayName(file) }}</strong>
                 <span>{{ formatSize(file.size) }} · {{ formatTime(file.updatedAt) }}</span>
               </div>
               <div class="plan-file-meta">
@@ -1123,24 +1360,7 @@ onBeforeUnmount(() => {
         <v-alert v-if="saveMessage" :text="saveMessage" type="success" density="compact" class="status-alert" />
 
         <div v-if="fileData.name" class="plan-edit-table-wrap">
-          <table class="plan-edit-table">
-            <thead>
-              <tr>
-                <th v-for="column in editableColumns" :key="column">{{ column }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(row, rowIndex) in editableRows" :key="rowIndex">
-                <td v-for="column in editableColumns" :key="column">
-                  <input
-                    :value="row[column]"
-                    :readonly="!canEditSelectedFile"
-                    @input="updateCell(rowIndex, column, $event.target.value)"
-                  />
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <div ref="planTableContainer" class="plan-edit-vtable" />
           <div v-if="!editableRows.length" class="plan-table-empty">{{ t('currentSheetNoData') }}</div>
         </div>
         <div v-else class="plan-edit-empty">{{ t('selectPlanFileOrNoData') }}</div>
@@ -1197,23 +1417,39 @@ onBeforeUnmount(() => {
               <strong>{{ day.day }}</strong>
             </div>
             <div v-if="dayPlans(day.iso).length" class="calendar-day-plans">
-              <v-chip
+              <v-tooltip
                 v-for="plan in dayPlans(day.iso)"
                 :key="`${day.iso}-${plan.id}`"
-                :color="calendarPlanColor(plan.name)"
-                :class="['calendar-day-plan-chip', calendarPlanClass(plan.name), { 'is-pending': plan.pending }]"
-                variant="flat"
-                size="x-small"
-                role="button"
-                tabindex="0"
-                draggable="true"
-                @dragstart="startDragPlan(plan)"
-                @dragend="endDragPlan"
-                @click.stop="openCalendarPlan(day.iso, plan)"
-                @keydown.enter.stop="openCalendarPlan(day.iso, plan)"
+                location="top"
+                open-delay="120"
+                max-width="420"
               >
-                {{ plan.name }}
-              </v-chip>
+                <template #activator="{ props }">
+                  <v-chip
+                    v-bind="props"
+                    :color="calendarPlanColor(plan.name)"
+                    :class="['calendar-day-plan-chip', calendarPlanClass(plan.name), { 'is-pending': plan.pending }]"
+                    variant="flat"
+                    size="x-small"
+                    role="button"
+                    tabindex="0"
+                    draggable="true"
+                    @dragstart="startDragPlan(plan)"
+                    @dragend="endDragPlan"
+                    @click.stop="openCalendarPlan(day.iso, plan)"
+                    @keydown.enter.stop="openCalendarPlan(day.iso, plan)"
+                  >
+                    {{ plan.name }}
+                  </v-chip>
+                </template>
+                <div class="plan-chip-tooltip">
+                  <strong>{{ plan.name }}</strong>
+                  <div v-for="row in planTooltipRows(plan)" :key="row.label">
+                    <span>{{ row.label }}</span>
+                    <b>{{ row.value }}</b>
+                  </div>
+                </div>
+              </v-tooltip>
             </div>
           </template>
         </div>
@@ -1247,17 +1483,32 @@ onBeforeUnmount(() => {
                   :key="`${row.name}-${column.key}`"
                   :class="['plan-gantt-hour-cell', { 'is-major': column.isMajor }]"
                 />
-                <button
+                <v-tooltip
                   v-for="plan in row.items"
                   :key="plan.key"
-                  :class="['plan-gantt-bar', row.className]"
-                  type="button"
-                  :title="`${plan.day.iso} ${plan.name} ${plan.timeText}`"
-                  :style="{ gridColumn: `${plan.startColumn} / span ${plan.span}`, gridRow: plan.row + 1 }"
-                  @click="openCalendarPlan(plan.day.iso, plan)"
+                  location="top"
+                  open-delay="120"
+                  max-width="420"
                 >
-                  {{ plan.name }} {{ plan.timeText }}
-                </button>
+                  <template #activator="{ props }">
+                    <button
+                      v-bind="props"
+                      :class="['plan-gantt-bar', row.className]"
+                      type="button"
+                      :style="{ gridColumn: `${plan.startColumn} / span ${plan.span}`, gridRow: plan.row + 1 }"
+                      @click="openCalendarPlan(plan.day.iso, plan)"
+                    >
+                      {{ plan.name }} {{ plan.timeText }}
+                    </button>
+                  </template>
+                  <div class="plan-chip-tooltip">
+                    <strong>{{ plan.name }} {{ plan.timeText }}</strong>
+                    <div v-for="detail in planTooltipRows(plan)" :key="detail.label">
+                      <span>{{ detail.label }}</span>
+                      <b>{{ detail.value }}</b>
+                    </div>
+                  </div>
+                </v-tooltip>
               </div>
             </template>
           </div>
@@ -1288,21 +1539,60 @@ onBeforeUnmount(() => {
     </v-card>
   </v-dialog>
 
+  <v-dialog v-model="planDeleteDialog.show" max-width="460">
+    <v-card class="plan-date-dialog" variant="flat">
+      <v-card-title>{{ t('deletePlan') }}</v-card-title>
+      <v-card-text>
+        {{ t('deletePlanConfirmText', {
+          name: planDeleteDialog.plan?.name || '-',
+          date: planDeleteDialog.plan?.planDate || '-',
+        }) }}
+      </v-card-text>
+      <v-card-actions>
+        <v-spacer />
+        <v-btn variant="text" @click="closePlanDeleteDialog">{{ t('cancel') }}</v-btn>
+        <v-btn
+          color="error"
+          :loading="deletingPlanId === planDeleteDialog.plan?.id"
+          @click="confirmDeletePlan"
+        >
+          {{ t('deletePlan') }}
+        </v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
+
   <UnsavedChangesDialog ref="unsavedChangesDialog" />
 </template>
 
 <style scoped>
+.plan-edit-table-wrap {
+  position: relative;
+  width: 100%;
+  height: 520px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.plan-edit-vtable {
+  width: 100%;
+  height: 100%;
+}
+
 .plan-table-empty {
-  position: sticky;
+  position: absolute;
+  top: 50%;
   left: 50%;
   display: inline-flex;
-  margin: 120px 0 0 50%;
   padding: 10px 14px;
   border: 1px dashed var(--line);
   border-radius: 6px;
   background: var(--panel-soft);
   color: var(--muted);
   font-size: 13px;
-  transform: translateX(-50%);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
 }
 </style>

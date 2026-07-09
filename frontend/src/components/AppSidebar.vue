@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
+  developerMode,
   isNavigationRouteVisible,
   navigationVisibility,
   sidebarCollapsed,
@@ -10,6 +11,7 @@ import {
 } from '../services/pipecloudState'
 import { localizedLibraryTitle, localizedModuleTitle } from '../services/navigationLabels'
 import { libraries } from '../services/weldLibraryState'
+import { notifyProjectRequired, selectedProjectId } from '../services/projectState'
 
 const route = useRoute()
 
@@ -44,22 +46,57 @@ const visiblePlanMenus = computed(() => {
 
 const visibleLibraries = computed(() => {
   return libraries.value
-    .filter((library) => isNavigationRouteVisible(`/weld-libraries/${library.key}`))
+    .filter((library) => isNavigationRouteVisible(`/libraries/${library.key}`))
     .map((library) => ({
       ...library,
       name: localizedLibraryTitle(library),
     }))
 })
 
+function openLibraryWhenProjectSelected(event) {
+  if (selectedProjectId.value) return
+  event?.preventDefault?.()
+  event?.stopPropagation?.()
+  notifyProjectRequired()
+}
+
+function libraryNavigationProps(library) {
+  const route = `/libraries/${library.key}`
+  return {
+    to: selectedProjectId.value ? route : undefined,
+    onClick: openLibraryWhenProjectSelected,
+    prependIcon: 'mdi-file-document-outline',
+    title: library.name,
+    value: route,
+  }
+}
+
+const fileMenus = computed(() => [
+  {
+    name: t('fileParser'),
+    icon: 'mdi-file-search-outline',
+    to: '/files/parser',
+    value: '/files/parser',
+  },
+  {
+    name: t('batchFileExport'),
+    icon: 'mdi-folder-zip-outline',
+    to: '/files/export',
+    value: '/files/export',
+  },
+])
+
 const activeMenu = computed(() => {
+  if (route.path.startsWith('/settings/developer')) return '/settings/developer'
   if (route.path.startsWith('/settings')) return '/settings'
   if (route.name === 'spool-check' || route.path.startsWith('/spool-check')) return '/spool-check'
-  if (route.name === 'file-parser' || route.path.startsWith('/parser')) return '/parser'
+  if (route.path.startsWith('/files/export')) return '/files/export'
+  if (route.path.startsWith('/files/parser') || route.path.startsWith('/parser')) return '/files/parser'
   if (route.name === 'prefab-factory' || route.path.startsWith('/factory')) return '/factory'
   if (route.name === 'prefab-home') return '/home'
   if (route.name === 'plan-viewer') return `/plans/${route.params.planKey}`
   if (route.name === 'prefab-module') return `/prefab/${route.params.moduleKey}`
-  if (route.name === 'weld-library') return `/weld-libraries/${route.params.libraryKey}`
+  if (route.name === 'weld-library') return `/libraries/${route.params.libraryKey}`
   return '/prefab/initialization'
 })
 
@@ -74,16 +111,6 @@ const directNavigationItems = computed(() => [
       prependIcon: 'mdi-view-dashboard-outline',
       title: t('prefabHome'),
       value: '/home',
-    },
-  },
-  navigationVisibility.value.parser && isNavigationRouteVisible('/parser') && {
-    title: t('fileParser'),
-    value: '/parser',
-    props: {
-      to: '/parser',
-      prependIcon: 'mdi-file-excel-outline',
-      title: t('fileParser'),
-      value: '/parser',
     },
   },
   navigationVisibility.value.spoolCheck && isNavigationRouteVisible('/spool-check') && {
@@ -109,6 +136,12 @@ const directNavigationItems = computed(() => [
 ].filter(Boolean))
 
 const railMenus = computed(() => [
+  navigationVisibility.value.parser && {
+    key: 'files',
+    title: t('files'),
+    icon: 'mdi-folder-multiple-outline',
+    items: fileMenus.value,
+  },
   navigationVisibility.value.prefab && {
     key: 'prefab',
     title: t('prefab'),
@@ -132,20 +165,40 @@ const railMenus = computed(() => [
     })),
   },
   navigationVisibility.value.weldLibraries && {
-    key: 'weld-libraries',
+    key: 'libraries',
     title: t('weldLibraries'),
     icon: 'mdi-table-large',
     items: visibleLibraries.value.map((library) => ({
       title: library.name,
       icon: 'mdi-file-document-outline',
-      to: `/weld-libraries/${library.key}`,
-      value: `/weld-libraries/${library.key}`,
+      to: selectedProjectId.value ? `/libraries/${library.key}` : undefined,
+      onClick: openLibraryWhenProjectSelected,
+      value: `/libraries/${library.key}`,
     })),
   },
 ].filter(Boolean))
 
 const navigationTreeItems = computed(() => [
   ...directNavigationItems.value,
+  navigationVisibility.value.parser && {
+    title: t('files'),
+    value: '/files',
+    props: {
+      prependIcon: 'mdi-folder-multiple-outline',
+      title: t('files'),
+      value: '/files',
+    },
+    children: fileMenus.value.map((item) => ({
+      title: item.name,
+      value: item.value,
+      props: {
+        to: item.to,
+        prependIcon: item.icon,
+        title: item.name,
+        value: item.value,
+      },
+    })),
+  },
   navigationVisibility.value.prefab && {
     title: t('prefab'),
     value: '/prefab',
@@ -186,21 +239,16 @@ const navigationTreeItems = computed(() => [
   },
   navigationVisibility.value.weldLibraries && {
     title: t('weldLibraries'),
-    value: '/weld-libraries',
+    value: '/libraries',
     props: {
       prependIcon: 'mdi-table-large',
       title: t('weldLibraries'),
-      value: '/weld-libraries',
+      value: '/libraries',
     },
     children: visibleLibraries.value.map((library) => ({
       title: library.name,
-      value: `/weld-libraries/${library.key}`,
-      props: {
-        to: `/weld-libraries/${library.key}`,
-        prependIcon: 'mdi-file-document-outline',
-        title: library.name,
-        value: `/weld-libraries/${library.key}`,
-      },
+      value: `/libraries/${library.key}`,
+      props: libraryNavigationProps(library),
     })),
   },
   {
@@ -211,6 +259,16 @@ const navigationTreeItems = computed(() => [
       prependIcon: 'mdi-cog-outline',
       title: t('settings'),
       value: '/settings',
+    },
+  },
+  developerMode.value && {
+    title: t('developerControls'),
+    value: '/settings/developer',
+    props: {
+      to: '/settings/developer',
+      prependIcon: 'mdi-console',
+      title: t('developerControls'),
+      value: '/settings/developer',
     },
   },
 ].filter(Boolean))
@@ -225,7 +283,7 @@ function callTreeHeaderToggle(handler, event) {
 }
 
 function isPrimaryTreeLeaf(value) {
-  return value === '/settings' || directNavigationItems.value.some((item) => item.value === value)
+  return ['/settings', '/settings/developer'].includes(value) || directNavigationItems.value.some((item) => item.value === value)
 }
 
 watch(sidebarCollapsed, (collapsed) => {
@@ -339,6 +397,7 @@ watch(sidebarCollapsed, (collapsed) => {
               :key="item.value"
               :value="item.value"
               :to="item.to"
+              @click="item.onClick"
               :prepend-icon="item.icon"
               :title="item.title"
             />
@@ -358,6 +417,19 @@ watch(sidebarCollapsed, (collapsed) => {
           />
         </template>
         <span>{{ t('settings') }}</span>
+      </v-tooltip>
+      <v-tooltip v-if="developerMode" location="end" open-delay="120">
+        <template #activator="{ props }">
+          <v-list-item
+            v-bind="props"
+            value="/settings/developer"
+            to="/settings/developer"
+            :active="activeMenu === '/settings/developer'"
+            :aria-label="t('developerControls')"
+            prepend-icon="mdi-console"
+          />
+        </template>
+        <span>{{ t('developerControls') }}</span>
       </v-tooltip>
     </v-list>
   </v-navigation-drawer>

@@ -1,7 +1,7 @@
-import json
 import os
 import sys
 from pathlib import Path
+import uuid
 
 import pandas as pd
 
@@ -11,7 +11,6 @@ import idf_pipe_viewer_parser as viewer
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT_DIR = BACKEND_DIR / "file" / "parser"
 OUTPUT_FILE_NAME = "IDF拓扑材料表.xlsx"
-MODEL_FILE_NAME = "IDF模型数据.json"
 
 MATERIAL_COLUMNS = [
     "单元号",
@@ -29,6 +28,7 @@ MATERIAL_COLUMNS = [
 ]
 
 WELD_COLUMNS = [
+    "库序号",
     "单元号",
     "管线号",
     "焊口号",
@@ -68,6 +68,8 @@ def parse_input_dir(input_dir: Path, project_name: str) -> dict:
 def write_excel(model: dict, output_path: Path) -> None:
     material_rows = viewer.build_material_table_rows(model)
     weld_rows = viewer.build_weld_table_rows(model)
+    for row in weld_rows:
+        row["库序号"] = f"IDF-{uuid.uuid4().hex.upper()}"
 
     material_df = pd.DataFrame(material_rows, columns=MATERIAL_COLUMNS)
     weld_df = pd.DataFrame(weld_rows, columns=WELD_COLUMNS)
@@ -86,6 +88,25 @@ def write_excel(model: dict, output_path: Path) -> None:
         summary_df.to_excel(writer, sheet_name="解析概况", index=False)
 
 
+def write_model_to_database(model: dict) -> None:
+    model_id = os.environ.get("PIPECLOUD_IDF_MODEL_ID")
+    part_index = os.environ.get("PIPECLOUD_IDF_MODEL_PART_INDEX")
+    if not model_id or not part_index:
+        raise RuntimeError("Missing IDF model database target")
+
+    backend_path = str(BACKEND_DIR)
+    if backend_path not in sys.path:
+        sys.path.insert(0, backend_path)
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "backend.settings")
+
+    import django
+
+    django.setup()
+    from pipecloud.services.idf_model_storage import store_idf_model_part
+
+    store_idf_model_part(int(model_id), int(part_index), model)
+
+
 def main() -> None:
     input_dir = Path(os.environ.get("PIPECLOUD_PARSER_INPUT_DIR") or DEFAULT_INPUT_DIR)
     output_dir = Path(os.environ.get("PIPECLOUD_PARSER_OUTPUT_DIR") or input_dir)
@@ -96,12 +117,13 @@ def main() -> None:
 
     output_path = output_dir / OUTPUT_FILE_NAME
     write_excel(model, output_path)
-
-    model_path = output_dir / MODEL_FILE_NAME
-    model_path.write_text(json.dumps(model, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_model_to_database(model)
 
     print(f"Wrote {output_path}")
-    print(f"Wrote {model_path}")
+    print(
+        "Stored IDF model part "
+        f"{os.environ.get('PIPECLOUD_IDF_MODEL_PART_INDEX')} in database"
+    )
 
 
 if __name__ == "__main__":

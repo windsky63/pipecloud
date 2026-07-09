@@ -2,16 +2,21 @@
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import DataVTable from '../../components/DataVTable.vue'
 import InfoTooltip from '../../components/InfoTooltip.vue'
+import ScheduleDashboardPanel from '../../components/ScheduleDashboardPanel.vue'
 import { localizedActionName, localizedModuleDescription } from '../../services/navigationLabels'
 import { t } from '../../services/pipecloudState'
 
 defineProps({
   activeModule: { type: Object, required: true },
   activeModuleTitle: { type: String, required: true },
+  dashboard: { type: Object, required: true },
+  dashboardLoading: { type: Boolean, default: false },
+  dashboardError: { type: String, default: '' },
   preScheduleLoading: { type: Boolean, default: false },
   cuttingLoading: { type: Boolean, default: false },
   preScheduleData: { type: Object, required: true },
   preScheduleOptions: { type: Object, required: true },
+  concentrationDimensionOptions: { type: Array, default: () => [] },
   preScheduleActiveSheet: { type: String, default: '' },
   preScheduleError: { type: String, default: '' },
   preScheduleTableColumns: { type: Array, default: () => [] },
@@ -51,6 +56,17 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+    <v-card class="module-panel" :loading="dashboardLoading">
+      <ScheduleDashboardPanel
+        mode="cutting"
+        :title="t('cuttingDashboardTitle')"
+        :description="t('cuttingDashboardDescription')"
+        :dashboard="dashboard"
+        :error="dashboardError"
+        :panel="false"
+      />
+    </v-card>
+
     <v-card class="module-panel cutting-pre-schedule-card" :loading="preScheduleLoading || cuttingLoading">
       <div class="section-head">
         <div>
@@ -63,6 +79,7 @@ onBeforeUnmount(() => {
             color="primary"
             variant="tonal"
             :loading="runningKey === cuttingPreScheduleAction.key"
+            :disabled="Boolean(runningKey)"
             @click="$emit('execute-action', cuttingPreScheduleAction.key)"
           >
             {{ localizedActionName(cuttingPreScheduleAction) }}
@@ -74,6 +91,7 @@ onBeforeUnmount(() => {
             color="primary"
             variant="tonal"
             :loading="runningKey === cuttingConfirmAction.key"
+            :disabled="Boolean(runningKey)"
             @click="$emit('execute-action', cuttingConfirmAction.key)"
           >
             {{ localizedActionName(cuttingConfirmAction) }}
@@ -90,6 +108,33 @@ onBeforeUnmount(() => {
           </v-expansion-panel-title>
           <v-expansion-panel-text>
             <div class="pre-schedule-config-grid">
+              <label class="future-schedule-field pre-schedule-control-field">
+                <span>{{ t('pipelineConcentrationDimension') }}</span>
+                <v-select
+                  v-model="preScheduleOptions.concentrationDimension"
+                  :items="concentrationDimensionOptions"
+                  density="compact"
+                  variant="outlined"
+                  hide-details
+                  :disabled="runningKey === cuttingPreScheduleAction?.key"
+                />
+              </label>
+              <label class="future-schedule-field pre-schedule-control-field">
+                <span>{{ t('pipelineConcentrationThreshold') }}</span>
+                <v-text-field
+                  v-model.number="preScheduleOptions.concentrationThresholdPercent"
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="1"
+                  suffix="%"
+                  density="compact"
+                  variant="outlined"
+                  hide-details
+                  :disabled="runningKey === cuttingPreScheduleAction?.key"
+                />
+                <small>{{ t('pipelineConcentrationHint') }}</small>
+              </label>
               <label class="future-schedule-field pre-schedule-switch-field">
                 <span>{{ t('onlyAutoWeld') }}</span>
                 <v-switch
@@ -101,6 +146,18 @@ onBeforeUnmount(() => {
                   :disabled="runningKey === cuttingPreScheduleAction?.key"
                 />
                 <small>{{ preScheduleOptions.onlyAutoWeld ? t('onlyAutoWeldHint') : t('allUnfinishedHint') }}</small>
+              </label>
+              <label class="future-schedule-field pre-schedule-switch-field">
+                <span>{{ t('ignoreAntiCorrosionStatus') }}</span>
+                <v-switch
+                  v-model="preScheduleOptions.ignoreAntiCorrosionStatus"
+                  color="primary"
+                  density="compact"
+                  hide-details
+                  inset
+                  :disabled="runningKey === cuttingPreScheduleAction?.key"
+                />
+                <small>{{ t('ignoreAntiCorrosionStatusHint') }}</small>
               </label>
             </div>
           </v-expansion-panel-text>
@@ -201,6 +258,7 @@ onBeforeUnmount(() => {
           color="primary"
           variant="tonal"
           :loading="runningKey === action.key"
+          :disabled="Boolean(runningKey)"
           @click="$emit('execute-action', action.key)"
         >
           {{ localizedActionName(action) }}
@@ -235,13 +293,18 @@ onBeforeUnmount(() => {
 
 .pre-schedule-config-grid {
   display: grid;
-  grid-template-columns: minmax(220px, 360px);
-  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: start;
+  gap: 14px;
 }
 
 .pre-schedule-switch-field {
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 64px;
   align-items: center;
+}
+
+.pre-schedule-control-field :deep(.v-field) {
+  min-height: 40px;
 }
 
 .future-schedule-field {
@@ -264,6 +327,18 @@ onBeforeUnmount(() => {
 
 .pre-schedule-switch-field > small {
   grid-column: 1 / -1;
+}
+
+@media (max-width: 1280px) {
+  .pre-schedule-config-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .pre-schedule-config-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .pre-schedule-result-section,

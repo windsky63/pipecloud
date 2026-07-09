@@ -9,6 +9,7 @@ export const runningKey = ref('')
 export const summary = ref({ modules: [], actions: [] })
 export const lastRun = ref(null)
 export const errorMessage = ref('')
+let summaryRequestId = 0
 
 const showRunLogStorageKey = 'pipecloud.showRunLog'
 const showWorkflowStorageKey = 'pipecloud.showWorkflow'
@@ -17,6 +18,7 @@ const navigationVisibilityStorageKey = 'pipecloud.navigationVisibility'
 const navigationRouteVisibilityStorageKey = 'pipecloud.navigationRouteVisibility'
 const homeComponentVisibilityStorageKey = 'pipecloud.homeComponentVisibility'
 const uiThemeStorageKey = 'pipecloud.uiTheme'
+const developerModeStorageKey = 'pipecloud.developerMode'
 
 export const navigationVisibilityDefaults = {
   home: true,
@@ -33,6 +35,7 @@ export const navigationVisibilityKeys = Object.keys(navigationVisibilityDefaults
 export const homeComponentVisibilityDefaults = {
   initializationDashboard: true,
   weldingDashboard: true,
+  arrivalDashboard: true,
   workflow: true,
   projectData: true,
   projectWeldInfo: true,
@@ -89,6 +92,13 @@ function getInitialSidebarCollapsed() {
 }
 
 export const sidebarCollapsed = ref(getInitialSidebarCollapsed())
+
+function getInitialDeveloperMode() {
+  if (typeof window === 'undefined') return false
+  return window.localStorage.getItem(developerModeStorageKey) === 'true'
+}
+
+export const developerMode = ref(getInitialDeveloperMode())
 
 function getInitialNavigationVisibility() {
   if (typeof window === 'undefined') return { ...navigationVisibilityDefaults }
@@ -187,6 +197,13 @@ export function setSidebarCollapsed(value) {
   }
 }
 
+export function setDeveloperMode(value) {
+  developerMode.value = Boolean(value)
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(developerModeStorageKey, developerMode.value ? 'true' : 'false')
+  }
+}
+
 export function setNavigationVisibility(key, value) {
   if (!navigationVisibilityKeys.includes(key)) return
   navigationVisibility.value = {
@@ -226,8 +243,8 @@ export function setLanguage(value) {
 export const actionOrder = [
   'prefab-weld-library',
   'arrival-library',
-  'prepare-anti-corrosion-libraries',
-  'anti-corrosion-schedule',
+  'update-weld-arrival-status',
+  'anti-corrosion-pre-schedule',
   'weld-pre-schedule',
   'confirm-cutting-pre-schedule',
   'auto-weld-schedule',
@@ -251,19 +268,27 @@ export function formatSize(size) {
   return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
-export async function loadSummary() {
+export async function loadSummary(options = {}) {
+  const requestOptions = options?.signal ? options : {}
+  const requestId = ++summaryRequestId
   loading.value = true
   errorMessage.value = ''
   try {
-    summary.value = await fetchSummary(selectedProjectParams())
+    const payload = await fetchSummary(selectedProjectParams(), requestOptions)
+    if (requestOptions.signal?.aborted || requestId !== summaryRequestId) return
+    summary.value = payload
   } catch (error) {
+    if (error?.name === 'AbortError' || requestId !== summaryRequestId) return
     errorMessage.value = t('backendStatusReadFailed', { message: error.message })
   } finally {
-    loading.value = false
+    if (requestId === summaryRequestId) {
+      loading.value = false
+    }
   }
 }
 
 export async function runAction(actionKey, options = {}) {
+  if (runningKey.value) return false
   runningKey.value = actionKey
   errorMessage.value = ''
   try {
@@ -275,6 +300,7 @@ export async function runAction(actionKey, options = {}) {
       throw new Error(detail)
     }
     summary.value.modules = payload.summary
+    return true
   } catch (error) {
     const payload = error.payload || {}
     const action = summary.value.actions.find((item) => item.key === actionKey)
@@ -291,6 +317,7 @@ export async function runAction(actionKey, options = {}) {
       summary.value.modules = payload.summary
     }
     errorMessage.value = t('actionRunFailed', { message: error.message })
+    return true
   } finally {
     runningKey.value = ''
   }

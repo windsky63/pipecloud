@@ -7,11 +7,14 @@ from django.db import transaction
 from openpyxl import load_workbook
 
 from pipecloud.models import (
+    AntiCorrosionCommissionRow,
     ArrivalMaterialRow,
     ArrivalOrderRow,
     DataSourceFile,
     FittingMaterialRow,
+    InitializationMaterialRow,
     InitializationWeldRow,
+    InitializationWeldExtraData,
     MaterialMatchDetailRow,
     PipeMaterialRow,
     WeldingPlanRow,
@@ -35,10 +38,38 @@ COLUMN_ALIASES = {
     '单元号(必填)': 'unit',
     '管线号(必填)': 'pipeline',
     '预制组件': 'segment_no',
+    '预制管段': 'segment_no',
+    '预制段': 'segment_no',
+    '焊口号': 'weld_no_final',
+    '焊接类型': 'joint_type',
+    '连接方式': 'joint_type',
+    '壁厚尺寸': 'wall_thickness',
     '英制': 'diameter',
     '英制尺寸': 'diameter',
-    '焊接方法': 'weld_method',
-    '焊接方式': 'welding_mode',
+    '公制外径': 'outer_diameter',
+    '焊接区': 'weld_area',
+    '材料编号1': 'material_mark_1',
+    '材料编号2': 'material_mark_2',
+    '数量_1': 'quantity_1',
+    '数量_2': 'quantity_2',
+    '材料唯一码_1': 'material_unique_1',
+    '材料唯一码_2': 'material_unique_2',
+    '材料唯一编码1': 'material_unique_1',
+    '材料唯一编码2': 'material_unique_2',
+    '材质名称': 'material',
+    '材质类型': 'material_type',
+    '油漆1': 'material_paint_1',
+    '油漆2': 'material_paint_2',
+    '材料描述1': 'description_1',
+    '材料描述2': 'description_2',
+    '到货状态': 'material_arrival_status',
+    '防腐状态': 'material_anti_corrosion_status',
+    '下料状态': 'material_cutting_status',
+    '材料焊接状态': 'completed_flag',
+    '焊接状态': 'completed_flag',
+    '是否完成': 'completed_flag',
+    '完成状态': 'completed_flag',
+    '完工状态': 'completed_flag',
     '材料代码（NCC文本）': 'material_code_ncc',
     '材料代码': 'material_code',
     '库存数量（米）': 'stock_qty',
@@ -62,6 +93,10 @@ def model_column_map(model):
         label = str(field.verbose_name)
         mapping[label] = field.name
     mapping.update({key: value for key, value in COLUMN_ALIASES.items() if value in model_field_names})
+    if 'weld_method' in model_field_names:
+        mapping['焊接方法'] = 'weld_method'
+    if 'welding_mode' in model_field_names:
+        mapping['焊接方式'] = 'welding_mode'
     return mapping
 
 
@@ -155,13 +190,22 @@ def read_workbook_rows(file_path):
 INITIALIZATION_REQUIRED_FIELDS = {
     'unit',
     'pipeline',
-    'segment_no',
-    'weld_no_start',
-    'weld_no_final',
     'diameter',
-    'wall_thickness',
-    'material',
     'joint_type',
+}
+INITIALIZATION_REQUIRED_FIELD_GROUPS = (
+    ('weld_no_start', 'weld_no_final'),
+)
+
+INITIALIZATION_WELD_SHEET = '焊口表'
+INITIALIZATION_MATERIAL_SHEET = '材料表'
+INITIALIZATION_MATERIAL_MODELS = {'*': InitializationMaterialRow}
+
+INITIALIZATION_COMPATIBILITY_COLUMNS = {
+    '焊口号': '最终焊口号',
+    '焊接类型': '接头类型',
+    '材料描述1': '描述1',
+    '材料描述2': '描述2',
 }
 
 
@@ -204,6 +248,114 @@ def normalize_rows_for_model(model, columns, rows):
     return normalized_columns, normalized_rows, aliases, missing_fields, source_mapping
 
 
+def initialization_rows_with_compatibility(rows):
+    compatible_rows = []
+    for row in rows:
+        compatible = dict(row)
+        for target, source in INITIALIZATION_COMPATIBILITY_COLUMNS.items():
+            if target not in compatible or compatible.get(target, '') == '':
+                compatible[target] = compatible.get(source, '')
+        compatible_rows.append(compatible)
+    return compatible_rows
+
+
+def normalize_initialization_payload(project, workbook_payload):
+    weld_sheet = INITIALIZATION_WELD_SHEET if INITIALIZATION_WELD_SHEET in workbook_payload else ''
+    if not weld_sheet:
+        weld_sheet = next(
+            (
+                name for name in workbook_payload
+                if name not in {INITIALIZATION_MATERIAL_SHEET, '解析概况'}
+            ),
+            next(iter(workbook_payload), 'Sheet1'),
+        )
+    source_payload = workbook_payload.get(weld_sheet) or {'columns': [], 'rows': []}
+    source_columns = [str(column or '').strip() for column in source_payload.get('columns') or []]
+    source_rows = source_payload.get('rows') or []
+    core_columns, core_rows, aliases, missing_fields, source_mapping = normalize_rows_for_model(
+        InitializationWeldRow,
+        source_columns,
+        source_rows,
+    )
+
+    missing_required, invalid_rows = validate_normalized_rows(
+        InitializationWeldRow,
+        core_rows,
+        source_mapping,
+        INITIALIZATION_REQUIRED_FIELDS,
+    )
+    mapped_source_columns = set(source_mapping.values())
+    extra_columns = [
+        column for column in source_columns
+        if column and column not in mapped_source_columns
+    ]
+
+    prefix = f'P{project.id}-W'
+    next_counter = 0
+    existing_sequences = InitializationWeldRow.objects.filter(
+        project=project,
+    ).values_list('library_seq', flat=True)
+    for value in existing_sequences:
+        text = str(value or '')
+        if not text.startswith(prefix):
+            continue
+        try:
+            next_counter = max(next_counter, int(text[len(prefix):]))
+        except ValueError:
+            continue
+    reserved = set()
+    normalized_rows = []
+    extra_rows = []
+    for source_row, core_row in zip(source_rows, core_rows):
+        requested = str(core_row.get('库序号', '') or '').strip()
+        sequence = requested if requested and requested not in reserved else ''
+        if not sequence:
+            while True:
+                next_counter += 1
+                sequence = f'{prefix}{next_counter:08d}'
+                if sequence not in reserved:
+                    break
+        reserved.add(sequence)
+        core_row['库序号'] = sequence
+        normalized_rows.append(core_row)
+        extra_rows.append({
+            column: clean_cell(source_row.get(column, ''))
+            for column in extra_columns
+            if clean_cell(source_row.get(column, '')) != ''
+        })
+
+    columns = [*core_columns, *extra_columns]
+    visible_rows = []
+    for core_row, extra_row in zip(normalized_rows, extra_rows):
+        visible_rows.append({**core_row, **extra_row})
+    validation = {
+        'standardized': True,
+        'canImport': not missing_required and not invalid_rows,
+        'sheets': [{
+            'sheet': weld_sheet,
+            'rowCount': len(normalized_rows),
+            'sourceColumnCount': len(source_columns),
+            'standardColumnCount': len(core_columns),
+            'extraColumnCount': len(extra_columns),
+            'aliasMappings': aliases,
+            'missingFields': missing_fields,
+            'missingRequiredFields': missing_required,
+            'invalidRows': invalid_rows,
+            'canImport': not missing_required and not invalid_rows,
+        }],
+    }
+    return {
+        'sheet': weld_sheet,
+        'columns': columns,
+        'fixedColumns': core_columns,
+        'extraColumns': extra_columns,
+        'coreRows': normalized_rows,
+        'extraRows': extra_rows,
+        'visibleRows': visible_rows,
+        'validation': validation,
+    }
+
+
 def validate_normalized_rows(model, rows, source_mapping, required_fields):
     field_labels = model_field_labels(model)
     required = [field_name for field_name in required_fields if field_name in field_labels]
@@ -212,6 +364,14 @@ def validate_normalized_rows(model, rows, source_mapping, required_fields):
         for field_name in required
         if field_name not in source_mapping
     ]
+    required_groups = INITIALIZATION_REQUIRED_FIELD_GROUPS if model is InitializationWeldRow else ()
+    for group in required_groups:
+        group_fields = [field_name for field_name in group if field_name in field_labels]
+        if group_fields and not any(field_name in source_mapping for field_name in group_fields):
+            missing_required.append({
+                'field': '|'.join(group_fields),
+                'column': ' / '.join(field_labels[field_name] for field_name in group_fields),
+            })
     invalid_rows = []
     for index, row in enumerate(rows, start=1):
         empty_columns = [
@@ -219,6 +379,13 @@ def validate_normalized_rows(model, rows, source_mapping, required_fields):
             for field_name in required
             if not str(row.get(field_labels[field_name], '') or '').strip()
         ]
+        for group in required_groups:
+            group_fields = [field_name for field_name in group if field_name in field_labels]
+            if group_fields and not any(
+                str(row.get(field_labels[field_name], '') or '').strip()
+                for field_name in group_fields
+            ):
+                empty_columns.append(' / '.join(field_labels[field_name] for field_name in group_fields))
         if empty_columns:
             invalid_rows.append({
                 'rowIndex': index,
@@ -267,8 +434,24 @@ def standardize_workbook_payload(workbook_payload, sheet_models, required_fields
     }
 
 
-def initialization_preview_payload(file_path, sheet_name=None, limit=20):
+def initialization_preview_payload(file_path, sheet_name=None, limit=20, project=None):
     workbook_payload = read_workbook_rows(file_path)
+    if project is not None:
+        normalized = normalize_initialization_payload(project, workbook_payload)
+        rows = normalized['visibleRows']
+        return {
+            'sheet': normalized['sheet'],
+            'sheets': [normalized['sheet']],
+            'total': len(rows),
+            'columns': normalized['columns'],
+            'rows': rows[:limit],
+            'fixedColumns': normalized['fixedColumns'],
+            'fixedRows': normalized['coreRows'][:limit],
+            'extraColumns': normalized['extraColumns'],
+            'extraRows': normalized['extraRows'][:limit],
+            'previewLimit': limit,
+            'normalization': normalized['validation'],
+        }
     normalized_payload, validation = standardize_workbook_payload(
         workbook_payload,
         INITIALIZATION_MODELS,
@@ -509,11 +692,23 @@ def queryset_rows(source, model, sheet_name):
     columns = sheet_columns.get(sheet_name) or [column for _, column in field_columns]
     label_to_field = {label: name for name, label in field_columns}
     rows = []
-    for item in model.objects.filter(source_file=source, sheet_name=sheet_name).order_by('row_index'):
-        rows.append({
+    queryset = model.objects.filter(source_file=source, sheet_name=sheet_name).order_by('row_index')
+    if model is InitializationWeldRow:
+        queryset = queryset.select_related('extra_data')
+    for item in queryset:
+        row = {
             column: getattr(item, label_to_field.get(column, ''), '')
             for column in columns
-        })
+        }
+        if model is InitializationWeldRow:
+            try:
+                custom_fields = item.extra_data.custom_fields or {}
+            except InitializationWeldExtraData.DoesNotExist:
+                custom_fields = {}
+            for column in columns:
+                if column in custom_fields:
+                    row[column] = custom_fields[column]
+        rows.append(row)
     return columns, rows
 
 
@@ -543,7 +738,101 @@ def latest_source(project, source_type, source_key=None, source_key_prefix=None,
         return queryset.order_by('-file_updated_at', '-id').first()
 
 
+def replace_initialization_source_rows(
+    project,
+    source_key,
+    display_name,
+    relative_path_value,
+    workbook_payload,
+):
+    ensure_project_tables(project)
+    with using_project_tables(project), transaction.atomic():
+        type(project).objects.select_for_update().get(pk=project.pk)
+        normalized = normalize_initialization_payload(project, workbook_payload)
+        validation = normalized['validation']
+        if not validation.get('canImport'):
+            raise ValueError('初始化数据标准化校验未通过，存在缺失的关键字段或必填值')
+
+        DataSourceFile.objects.filter(
+            project=project,
+            source_type='initialization',
+            source_key=source_key,
+        ).delete()
+        source = upsert_virtual_source_file(
+            project,
+            'initialization',
+            source_key,
+            display_name,
+            relative_path_value,
+            {
+                normalized['sheet']: {
+                    'columns': normalized['columns'],
+                    'rows': normalized['visibleRows'],
+                },
+            },
+        )
+        sync_rows_for_model(
+            project,
+            source,
+            InitializationWeldRow,
+            normalized['sheet'],
+            normalized['coreRows'],
+        )
+        weld_rows = list(
+            InitializationWeldRow.objects
+            .filter(project=project, source_file=source, sheet_name=normalized['sheet'])
+            .order_by('row_index')
+        )
+        extra_instances = [
+            InitializationWeldExtraData(
+                project=project,
+                weld=weld,
+                library_seq=weld.library_seq,
+                custom_fields=custom_fields,
+            )
+            for weld, custom_fields in zip(weld_rows, normalized['extraRows'])
+        ]
+        if extra_instances:
+            InitializationWeldExtraData.objects.bulk_create(extra_instances, batch_size=500)
+
+        material_payload = workbook_payload.get(INITIALIZATION_MATERIAL_SHEET)
+        DataSourceFile.objects.filter(
+            project=project,
+            source_type='idf-material',
+            source_key='materials',
+        ).delete()
+        if material_payload is not None:
+            material_source = upsert_virtual_source_file(
+                project,
+                'idf-material',
+                'materials',
+                display_name,
+                relative_path_value,
+                {INITIALIZATION_MATERIAL_SHEET: material_payload},
+            )
+            normalized_material = normalize_workbook_payload_for_models(
+                {INITIALIZATION_MATERIAL_SHEET: material_payload},
+                INITIALIZATION_MATERIAL_MODELS,
+            )[INITIALIZATION_MATERIAL_SHEET]
+            sync_rows_for_model(
+                project,
+                material_source,
+                InitializationMaterialRow,
+                INITIALIZATION_MATERIAL_SHEET,
+                normalized_material['rows'],
+            )
+        return source
+
+
 def replace_source_rows(project, source_type, source_key, display_name, relative_path_value, workbook_payload, sheet_models):
+    if source_type == 'initialization':
+        return replace_initialization_source_rows(
+            project,
+            source_key,
+            display_name,
+            relative_path_value,
+            workbook_payload,
+        )
     ensure_project_tables(project)
     with using_project_tables(project), transaction.atomic():
         DataSourceFile.objects.filter(
@@ -564,14 +853,6 @@ def replace_source_rows(project, source_type, source_key, display_name, relative
 
 def replace_source_with_workbook(project, source_type, source_key, display_name, relative_path_value, file_path, sheet_models):
     workbook_payload = read_workbook_rows(file_path)
-    if source_type == 'initialization':
-        workbook_payload, validation = standardize_workbook_payload(
-            workbook_payload,
-            sheet_models,
-            INITIALIZATION_REQUIRED_FIELDS,
-        )
-        if not validation.get('canImport'):
-            raise ValueError('初始化数据标准化校验未通过，存在缺失的关键字段或必填值')
     return replace_source_rows(
         project,
         source_type,
@@ -592,11 +873,14 @@ def source_payload(source, sheet_models, sheet_name=None):
 LIBRARY_MODELS = {
     'weld-library': {'*': WeldLibraryRow},
     'pipe-library': {'*': PipeMaterialRow},
+    'pending-pipe-library': {'*': PipeMaterialRow},
     'anti-pipe-library': {'*': PipeMaterialRow},
     'pending-anti-pipe-library': {'*': PipeMaterialRow},
     'fitting-library': {'*': FittingMaterialRow},
+    'pending-fitting-library': {'*': FittingMaterialRow},
     'anti-fitting-library': {'*': FittingMaterialRow},
     'pending-anti-fitting-library': {'*': FittingMaterialRow},
+    'anti-corrosion-commission-library': {'*': AntiCorrosionCommissionRow},
 }
 
 PRE_SCHEDULE_MODELS = {
@@ -612,5 +896,6 @@ ARRIVAL_MODELS = {
 INITIALIZATION_MODELS = {'*': InitializationWeldRow}
 
 PLAN_FILE_MODELS = {
+    '防腐委托库.xlsx': {'*': AntiCorrosionCommissionRow},
     '管段焊口表.xlsx': {'*': WeldingPlanRow},
 }

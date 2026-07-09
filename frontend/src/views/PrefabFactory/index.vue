@@ -2,15 +2,28 @@
 import * as THREE from 'three'
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { fetchTodayPipeMaterials } from '../../api/factory'
+import DataVTable from '../../components/DataVTable.vue'
 import { t } from '../../services/pipecloudState'
+import { createPipeComponentRenderer, normalizePipeComponentType } from '../../services/pipeComponentRenderer'
+import { selectedProjectId, selectedProjectParams } from '../../services/projectState'
 
 const sceneHost = ref(null)
 const treeList = ref(null)
 const loading = ref(true)
 const errorMessage = ref('')
+const materialLoading = ref(false)
+const materialError = ref('')
+const todayMaterialPayload = ref({
+  date: '',
+  total: 0,
+  materials: [],
+  weldingPlan: null,
+})
 const modelTree = ref([])
 const selectedNodeId = ref(null)
+const selectedWeldingSheet = ref('')
 const expandedNodeIds = ref(new Set())
 const treeSearchText = ref('')
 const loadProgress = ref({
@@ -20,6 +33,7 @@ const loadProgress = ref({
   computable: false,
 })
 const isolateSelection = ref(false)
+const showSelectionInfoCard = ref(true)
 const modelStats = ref({
   objects: 0,
   triangles: 0,
@@ -32,6 +46,9 @@ let controls = null
 let animationFrame = 0
 let resizeObserver = null
 let factoryModel = null
+let rawMaterialGroup = null
+let hiddenMaterialSurface = null
+const hiddenMaterialSurfaceVisibility = new Map()
 let selectionBox = null
 let defaultView = null
 let selectionAppearanceDirty = false
@@ -102,6 +119,20 @@ const isolateSelectionTooltip = computed(() => (
   isolateSelection.value ? t('showAllStructures') : t('hideNonSelectedStructures')
 ))
 
+function normalizedStructureName(value) {
+  return String(value || '').replace(/\s+/g, '').toLowerCase()
+}
+
+function isWorkshopOneEquipment(object) {
+  if (!normalizedStructureName(modelNodeName(object, 0)).includes('设备')) return false
+  let current = object?.parent || null
+  while (current) {
+    if (normalizedStructureName(modelNodeName(current, 0)).includes('一车间')) return true
+    current = current.parent
+  }
+  return false
+}
+
 const selectedNodeInfo = computed(() => {
   if (!selectedNodeId.value) return null
   const object = modelObjectsById.get(selectedNodeId.value)
@@ -111,6 +142,8 @@ const selectedNodeInfo = computed(() => {
   const size = box.getSize(new THREE.Vector3())
   const center = box.getCenter(new THREE.Vector3())
 
+  const workshopEquipment = isWorkshopOneEquipment(object)
+  const todayMaterialGroup = object.userData?.kind === 'today-pipe-material-group'
   return {
     id: object.id,
     name: modelNodeName(object, 0),
@@ -119,8 +152,118 @@ const selectedNodeInfo = computed(() => {
     childCount: object.children.length,
     sizeText: `${size.x.toFixed(2)} × ${size.y.toFixed(2)} × ${size.z.toFixed(2)}`,
     centerText: `${center.x.toFixed(2)}, ${center.y.toFixed(2)}, ${center.z.toFixed(2)}`,
+    materialInfo: object.userData?.pipeMaterial || null,
+    todayMaterialGroup,
+    materialSummary: todayMaterialGroup ? todayMaterialSummary.value : null,
+    workshopEquipment,
+    weldingPlan: workshopEquipment ? todayMaterialPayload.value.weldingPlan : null,
   }
 })
+
+const selectedInfoCardTitle = computed(() => {
+  if (selectedNodeInfo.value?.materialInfo) return '材料信息'
+  if (selectedNodeInfo.value?.todayMaterialGroup) return t('todayPipeMaterialModels')
+  if (selectedNodeInfo.value?.workshopEquipment) return t('todayWeldingPlan')
+  return '选中子结构信息'
+})
+
+const selectedInfoCardBadge = computed(() => {
+  if (selectedNodeInfo.value?.materialInfo) return selectedNodeInfo.value.materialInfo.uniqueCode
+  if (selectedNodeInfo.value?.todayMaterialGroup) {
+    return todayMaterialPayload.value.date || t('noData')
+  }
+  if (selectedNodeInfo.value?.workshopEquipment) {
+    return selectedNodeInfo.value.weldingPlan?.date || t('noTodayWeldingPlan')
+  }
+  return selectedNodeInfo.value?.type || '未选择'
+})
+
+const todayMaterialTableColumns = computed(() => [
+  { field: '__index', title: '#', width: 64, fixed: 'left' },
+  { field: 'uniqueCode', title: t('materialUniqueCode'), width: 190, fixed: 'left', sort: true },
+  { field: 'materialCode', title: t('materialCode'), width: 160, sort: true },
+  { field: 'materialMark', title: '材料标记', width: 140, sort: true },
+  { field: 'quantityText', title: t('materialQuantity'), width: 130, sort: true },
+  { field: 'diameter', title: '寸径', width: 110, sort: true },
+  { field: 'wallThickness', title: '壁厚', width: 110, sort: true },
+  { field: 'material', title: '材质', width: 130, sort: true },
+  { field: 'paint', title: '材料油漆', width: 150, sort: true },
+  { field: 'description', title: t('materialDescription'), width: 280, sort: true },
+])
+
+const todayMaterialTableRows = computed(() => (
+  (todayMaterialPayload.value.materials || []).map((material, index) => ({
+    __index: index + 1,
+    ...material,
+    quantityText: `${material.quantity || '-'} ${material.unitName || ''}`.trim(),
+  }))
+))
+
+const todayMaterialSummary = computed(() => {
+  const materials = todayMaterialPayload.value.materials || []
+  let pipeCount = 0
+  let fittingCount = 0
+  const materialCodes = new Set()
+  materials.forEach((material) => {
+    const type = normalizePipeComponentType({
+      materialMark: material.materialMark,
+      materialCode: material.materialCode,
+      description: material.description,
+    })
+    if (type === 'pipe') pipeCount += 1
+    else fittingCount += 1
+    if (material.materialCode) materialCodes.add(material.materialCode)
+  })
+  return {
+    date: todayMaterialPayload.value.date || '-',
+    total: materials.length,
+    pipeCount,
+    fittingCount,
+    materialCodeCount: materialCodes.size,
+  }
+})
+
+const weldingPlanSheets = computed(() => todayMaterialPayload.value.weldingPlan?.sheets || [])
+const selectedWeldingSheetData = computed(() => (
+  weldingPlanSheets.value.find((sheet) => sheet.name === selectedWeldingSheet.value)
+  || weldingPlanSheets.value[0]
+  || { name: '', total: 0, columns: [], rows: [] }
+))
+const weldingPlanTableColumns = computed(() => [
+  {
+    field: '__index',
+    title: '#',
+    width: 64,
+    fixed: 'left',
+    headerStyle: { textAlign: 'center', fontWeight: 700 },
+    style: { textAlign: 'center', color: '#64748b', fontWeight: 600 },
+  },
+  ...(selectedWeldingSheetData.value.columns || []).map((column) => ({
+    field: column,
+    title: column,
+    width: ['描述1', '描述2'].includes(column) ? 260 : 150,
+    minWidth: 120,
+    sort: true,
+    headerStyle: { fontWeight: 700 },
+  })),
+])
+const weldingPlanTableRows = computed(() => (
+  (selectedWeldingSheetData.value.rows || []).map((row, index) => ({
+    __index: index + 1,
+    ...row,
+  }))
+))
+
+watch(
+  () => todayMaterialPayload.value.weldingPlan,
+  (plan) => {
+    const names = (plan?.sheets || []).map((sheet) => sheet.name)
+    if (!names.includes(selectedWeldingSheet.value)) {
+      selectedWeldingSheet.value = plan?.selectedSheet || names[0] || ''
+    }
+  },
+  { immediate: true },
+)
 
 function setupScene() {
   scene = new THREE.Scene()
@@ -294,23 +437,56 @@ function drawSelectionInfoTexture(info) {
   ctx.fill()
   ctx.stroke()
 
+  const pipeMaterial = info.materialInfo
+  const todayMaterialGroup = info.todayMaterialGroup
+  const weldingPlan = info.workshopEquipment ? info.weldingPlan : null
+  const title = pipeMaterial?.uniqueCode || (todayMaterialGroup ? t('todayPipeMaterialModels') : info.name)
   ctx.fillStyle = '#0f172a'
   ctx.font = '700 26px Arial'
-  ctx.fillText(clampText(info.name, 22), 30, 52)
+  ctx.fillText(clampText(title, 22), 30, 52)
 
   ctx.fillStyle = '#64748b'
   ctx.font = '500 15px Arial'
-  ctx.fillText(info.type, 30, 78)
+  ctx.fillText(
+    pipeMaterial
+      ? t('todayPipeMaterialModels')
+      : (todayMaterialGroup
+          ? (info.materialSummary?.date || '-')
+          : (info.workshopEquipment ? (weldingPlan?.date || t('noTodayWeldingPlan')) : info.type)),
+    30,
+    78,
+  )
 
   ctx.fillStyle = '#f59e0b'
   ctx.fillRect(30, 95, 82, 4)
 
-  const rows = [
-    ['网格数', String(info.meshCount)],
-    ['子项数', String(info.childCount)],
-    ['尺寸', info.sizeText],
-    ['中心', info.centerText],
-  ]
+  const rows = pipeMaterial
+    ? [
+        [t('materialCode'), pipeMaterial.materialCode || '-'],
+        [t('materialQuantity'), `${pipeMaterial.quantity || '-'} ${pipeMaterial.unitName || ''}`.trim()],
+        ['寸径', pipeMaterial.diameter || '-'],
+        [t('materialDescription'), pipeMaterial.description || '-'],
+      ]
+    : todayMaterialGroup
+      ? [
+          ['材料项数', String(info.materialSummary?.total || 0)],
+          ['材料编码数', String(info.materialSummary?.materialCodeCount || 0)],
+          ['管材项数', String(info.materialSummary?.pipeCount || 0)],
+          ['管件项数', String(info.materialSummary?.fittingCount || 0)],
+        ]
+    : info.workshopEquipment
+      ? [
+          [t('weldingOrderCount'), String(weldingPlan?.orderCount || 0)],
+          [t('weldCount'), String(weldingPlan?.weldCount || 0)],
+          [t('planDiameterTotal'), String(weldingPlan?.diameterTotal || 0)],
+          [t('segmentCount'), String(weldingPlan?.segmentCount || 0)],
+        ]
+    : [
+        ['网格数', String(info.meshCount)],
+        ['子项数', String(info.childCount)],
+        ['尺寸', info.sizeText],
+        ['中心', info.centerText],
+      ]
   ctx.font = '500 17px Arial'
   rows.forEach(([label, value], index) => {
     const y = 132 + index * 34
@@ -322,7 +498,15 @@ function drawSelectionInfoTexture(info) {
 
   ctx.fillStyle = '#64748b'
   ctx.font = '500 13px Arial'
-  ctx.fillText('选中子结构信息', 30, 252)
+  ctx.fillText(
+    pipeMaterial
+      ? t('materialUniqueCode')
+      : (todayMaterialGroup
+          ? '今日计划材料汇总'
+          : (info.workshopEquipment ? t('workshopOneEquipment') : '选中子结构信息')),
+    30,
+    252,
+  )
 
   if (!selectionInfoTexture) {
     selectionInfoTexture = new THREE.CanvasTexture(selectionInfoCanvas)
@@ -416,7 +600,7 @@ function updateSelectionInfoCardPosition(object) {
 }
 
 function syncSelectionInfoCard(object) {
-  if (!object || !selectedNodeInfo.value) {
+  if (!showSelectionInfoCard.value || !object || !selectedNodeInfo.value) {
     if (selectionInfoSprite) selectionInfoSprite.visible = false
     if (selectionInfoLeaderLine) selectionInfoLeaderLine.visible = false
     return
@@ -478,6 +662,355 @@ function prepareModel(root) {
   buildModelTree(root)
 }
 
+function findFactoryObjectByName(name) {
+  let matched = null
+  factoryModel?.traverse((object) => {
+    if (!matched && String(object.name || '').trim() === name) matched = object
+  })
+  return matched
+}
+
+function findObjectByNameFrom(root, name) {
+  const normalizedName = String(name || '').trim().toLowerCase()
+  let matched = null
+  root?.traverse((object) => {
+    if (!matched && String(object.name || '').trim().toLowerCase() === normalizedName) matched = object
+  })
+  return matched
+}
+
+function parsePositiveNumber(value) {
+  const match = String(value || '').replace(',', '.').match(/\d+(?:\.\d+)?/)
+  const number = match ? Number(match[0]) : 0
+  return Number.isFinite(number) && number > 0 ? number : 0
+}
+
+function disposeObject(root) {
+  root?.traverse((child) => {
+    child.geometry?.dispose?.()
+    if (child.material) {
+      const materials = Array.isArray(child.material) ? child.material : [child.material]
+      materials.forEach((material) => material.dispose?.())
+    }
+  })
+}
+
+function clearRawMaterialModels() {
+  if (hiddenMaterialSurface) {
+    hiddenMaterialSurface.traverse((object) => {
+      if (hiddenMaterialSurfaceVisibility.has(object.id)) {
+        object.visible = hiddenMaterialSurfaceVisibility.get(object.id)
+      }
+      delete object.userData.hiddenForTodayPipeMaterials
+    })
+    hiddenMaterialSurfaceVisibility.clear()
+    hiddenMaterialSurface = null
+  }
+  if (!rawMaterialGroup) return
+  rawMaterialGroup.removeFromParent()
+  disposeObject(rawMaterialGroup)
+  rawMaterialGroup = null
+}
+
+function materialLengthMillimeters(material) {
+  const quantity = parsePositiveNumber(material.quantity)
+  if (!quantity) return 0
+  const unit = String(material.unitName || '').trim().toLowerCase()
+  if (['mm', '毫米'].includes(unit)) return quantity
+  if (['cm', '厘米'].includes(unit)) return quantity * 10
+  return quantity * 1000
+}
+
+function pipeOutsideDiameterMillimeters(value) {
+  const inches = parsePositiveNumber(value)
+  if (!inches) return 60.3
+  const standardOutsideDiameters = new Map([
+    [0.5, 21.3],
+    [0.75, 26.7],
+    [1, 33.4],
+    [1.25, 42.2],
+    [1.5, 48.3],
+    [2, 60.3],
+    [2.5, 73],
+    [3, 88.9],
+    [4, 114.3],
+    [5, 141.3],
+    [6, 168.3],
+    [8, 219.1],
+    [10, 273],
+    [12, 323.9],
+    [14, 355.6],
+    [16, 406.4],
+    [18, 457],
+    [20, 508],
+    [24, 610],
+  ])
+  return standardOutsideDiameters.get(inches) || inches * 25.4
+}
+
+function yardMaterialType(material) {
+  const type = normalizePipeComponentType({
+    materialMark: material.materialMark,
+    materialCode: material.materialCode,
+    description: material.description,
+  })
+  return type === 'component' ? 'fallback-elbow' : type
+}
+
+function compareYardMaterials(left, right) {
+  const typeOrder = {
+    pipe: 0,
+    elbow: 1,
+    branch: 2,
+    reducer: 3,
+    flange: 4,
+    valve: 5,
+    cap: 6,
+    gasket: 7,
+    'fallback-elbow': 99,
+  }
+  const leftType = yardMaterialType(left)
+  const rightType = yardMaterialType(right)
+  const typeDifference = (typeOrder[leftType] ?? 50) - (typeOrder[rightType] ?? 50)
+  if (typeDifference) return typeDifference
+
+  if (leftType === 'pipe') {
+    const lengthDifference = materialLengthMillimeters(left) - materialLengthMillimeters(right)
+    if (lengthDifference) return lengthDifference
+  }
+
+  const diameterDifference = parsePositiveNumber(left.diameter) - parsePositiveNumber(right.diameter)
+  if (diameterDifference) return diameterDifference
+  const codeDifference = String(left.materialCode || '').localeCompare(String(right.materialCode || ''), 'zh-CN')
+  if (codeDifference) return codeDifference
+  return String(left.uniqueCode || '').localeCompare(String(right.uniqueCode || ''), 'zh-CN')
+}
+
+function createYardMaterialObject(material, start, end, radius, crossSpan) {
+  const normalizedType = normalizePipeComponentType({
+    materialMark: material.materialMark,
+    materialCode: material.materialCode,
+    description: material.description,
+  })
+  const usesFallbackElbow = normalizedType === 'component'
+  const renderType = usesFallbackElbow ? 'elbow' : normalizedType
+  const pipeRenderer = createPipeComponentRenderer({
+    defaultRadius: radius,
+    getRadius: () => radius,
+    toWorld: (point) => new THREE.Vector3(point[0], point[1], point[2]),
+    typeColors: usesFallbackElbow ? { elbow: 0xef4444 } : undefined,
+  })
+  const component = {
+    id: material.uniqueCode,
+    type: renderType,
+    materialMark: material.materialMark,
+    materialCode: material.materialCode,
+    description: material.description,
+    spec: material.diameter,
+    start,
+    end,
+  }
+  if (renderType === 'elbow') {
+    const alongX = Math.abs(end[0] - start[0]) >= Math.abs(end[2] - start[2])
+    const halfCross = crossSpan / 2
+    const elbowStart = alongX
+      ? [start[0], start[1], start[2] - halfCross]
+      : [start[0] - halfCross, start[1], start[2]]
+    const corner = alongX
+      ? [end[0], end[1], end[2] - halfCross]
+      : [end[0] - halfCross, end[1], end[2]]
+    const elbowEnd = alongX
+      ? [end[0], end[1], end[2] + halfCross]
+      : [end[0] + halfCross, end[1], end[2]]
+    component.start = elbowStart
+    component.end = elbowEnd
+    component.segments = [
+      { start: elbowStart, end: corner },
+      { start: corner, end: elbowEnd },
+    ]
+  }
+  if (renderType === 'reducer') {
+    component.startSpec = material.diameter
+    component.endSpec = parsePositiveNumber(material.diameter) * 0.65
+  }
+  const renderedObject = pipeRenderer.createComponentObject(component)
+  if (!renderedObject) return null
+  let object = renderedObject
+  if (renderedObject.children.length === 1 && renderedObject.children[0].isMesh) {
+    renderedObject.updateMatrix()
+    object = renderedObject.children[0]
+    renderedObject.remove(object)
+    object.applyMatrix4(renderedObject.matrix)
+  }
+  object.name = material.uniqueCode
+  object.userData.kind = 'today-yard-material'
+  object.userData.pipeMaterial = material
+  object.userData.renderType = renderType
+  object.userData.usesFallbackElbow = usesFallbackElbow
+  object.traverse((child) => {
+    if (!child.isMesh) return
+    const sourceMaterials = Array.isArray(child.material) ? child.material : [child.material]
+    const clonedMaterials = sourceMaterials.map((sourceMaterial) => {
+      const cloned = sourceMaterial.clone()
+      if (usesFallbackElbow) cloned.color?.setHex(0xef4444)
+      cloned.roughness = 0.48
+      cloned.metalness = 0.72
+      return cloned
+    })
+    child.material = Array.isArray(child.material) ? clonedMaterials : clonedMaterials[0]
+    child.castShadow = true
+    child.receiveShadow = true
+    child.userData.pipeMaterial = material
+    child.userData.renderType = renderType
+    child.userData.usesFallbackElbow = usesFallbackElbow
+  })
+  return object
+}
+
+function renderTodayPipeMaterials() {
+  clearRawMaterialModels()
+  const materials = [...(todayMaterialPayload.value.materials || [])].sort(compareYardMaterials)
+  if (!factoryModel || !materials.length) {
+    if (factoryModel) {
+      countModelStats(factoryModel)
+      buildModelTree(factoryModel)
+    }
+    return
+  }
+
+  const yard = findFactoryObjectByName('碳钢管道原材料堆场')
+  if (!yard) {
+    materialError.value = t('carbonSteelYardMissing')
+    return
+  }
+
+  factoryModel.updateMatrixWorld(true)
+  const yardBox = new THREE.Box3().setFromObject(yard)
+  if (yardBox.isEmpty()) {
+    materialError.value = t('carbonSteelYardMissing')
+    return
+  }
+  const surfaceObject = findObjectByNameFrom(yard, 'text010') || findObjectByNameFrom(factoryModel, 'text010')
+  const surfaceBox = surfaceObject ? new THREE.Box3().setFromObject(surfaceObject) : null
+  const contactY = surfaceBox && !surfaceBox.isEmpty() ? surfaceBox.min.y : yardBox.max.y
+  if (surfaceObject) {
+    hiddenMaterialSurface = surfaceObject
+    surfaceObject.traverse((object) => {
+      hiddenMaterialSurfaceVisibility.set(object.id, object.visible)
+      object.userData.hiddenForTodayPipeMaterials = true
+      object.visible = false
+    })
+  }
+
+  const placementBox = yardBox.clone()
+  const placementSize = placementBox.getSize(new THREE.Vector3())
+  const pipeAlongX = placementSize.x >= placementSize.z
+  const factoryWorldScale = factoryModel.getWorldScale(new THREE.Vector3())
+  const millimeterScale = Math.max(factoryWorldScale.x, factoryWorldScale.y, factoryWorldScale.z)
+  const materialSizes = materials.map((material) => {
+    const type = normalizePipeComponentType({
+      materialMark: material.materialMark,
+      materialCode: material.materialCode,
+      description: material.description,
+    })
+    const radius = pipeOutsideDiameterMillimeters(material.diameter) * millimeterScale / 2
+    const fittingSpan = Math.max(radius * 6, 200 * millimeterScale)
+    return {
+      type,
+      radius,
+      length: type === 'pipe'
+        ? materialLengthMillimeters(material) * millimeterScale
+        : fittingSpan,
+      crossSpan: type === 'pipe' ? radius * 2 : fittingSpan,
+    }
+  })
+  const maxRadius = Math.max(...materialSizes.map((item) => item.radius), 0.001)
+  const maxHeight = Math.max(...materialSizes.map((item) => item.crossSpan), maxRadius * 2)
+  const gap = maxRadius * 2
+  const edgeMargin = Math.max(maxRadius * 2, Math.min(placementSize.x, placementSize.z) * 0.06)
+  const longMin = (pipeAlongX ? placementBox.min.x : placementBox.min.z) + edgeMargin
+  const longMax = (pipeAlongX ? placementBox.max.x : placementBox.max.z) - edgeMargin
+  const crossMin = (pipeAlongX ? placementBox.min.z : placementBox.min.x) + edgeMargin
+  const crossMax = (pipeAlongX ? placementBox.max.z : placementBox.max.x) - edgeMargin
+  let longCursor = longMin
+  let crossCursor = crossMin
+  let laneThickness = 0
+  let layer = 0
+
+  rawMaterialGroup = new THREE.Group()
+  rawMaterialGroup.name = t('todayPipeMaterialModels')
+  rawMaterialGroup.userData.kind = 'today-pipe-material-group'
+  scene.add(rawMaterialGroup)
+
+  materials.forEach((material, index) => {
+    const materialSize = materialSizes[index]
+    const radius = materialSize.radius
+    const availableLength = Math.max(longMax - longMin, maxRadius * 2)
+    const length = materialSize.length || availableLength * 0.7
+    const crossSpan = materialSize.crossSpan
+
+    if (longCursor > longMin && longCursor + length > longMax) {
+      longCursor = longMin
+      crossCursor += laneThickness + gap
+      laneThickness = 0
+    }
+    if (crossCursor + crossSpan > crossMax) {
+      layer += 1
+      longCursor = longMin
+      crossCursor = crossMin
+      laneThickness = 0
+    }
+
+    const longCenter = longCursor + length / 2
+    const crossCenter = crossCursor + crossSpan / 2
+    const y = contactY + radius + layer * maxHeight * 1.2
+    const start = pipeAlongX
+      ? [longCenter - length / 2, y, crossCenter]
+      : [crossCenter, y, longCenter - length / 2]
+    const end = pipeAlongX
+      ? [longCenter + length / 2, y, crossCenter]
+      : [crossCenter, y, longCenter + length / 2]
+    const object = createYardMaterialObject(
+      material,
+      start,
+      end,
+      radius,
+      crossSpan,
+    )
+    if (object) rawMaterialGroup.add(object)
+    longCursor += length + gap
+    laneThickness = Math.max(laneThickness, crossSpan)
+  })
+
+  rawMaterialGroup.updateMatrixWorld(true)
+  factoryModel.attach(rawMaterialGroup)
+  factoryModel.updateMatrixWorld(true)
+  materialError.value = ''
+  countModelStats(factoryModel)
+  buildModelTree(factoryModel)
+}
+
+async function loadTodayPipeMaterials() {
+  todayMaterialPayload.value = { date: '', total: 0, materials: [], weldingPlan: null }
+  materialError.value = ''
+  if (!selectedProjectId.value) {
+    materialError.value = t('selectProjectForFactoryMaterials')
+    renderTodayPipeMaterials()
+    return
+  }
+  materialLoading.value = true
+  try {
+    todayMaterialPayload.value = await fetchTodayPipeMaterials(selectedProjectParams())
+    renderTodayPipeMaterials()
+    if (selectedNodeId.value) refreshSelectionAppearanceNow()
+  } catch (error) {
+    materialError.value = t('factoryMaterialsLoadFailed', { message: error.message })
+    renderTodayPipeMaterials()
+  } finally {
+    materialLoading.value = false
+  }
+}
+
 function saveDefaultView() {
   defaultView = {
     position: camera.position.clone(),
@@ -509,6 +1042,10 @@ function updateMeshVisibility() {
 
   factoryModel.traverse((child) => {
     if (!child.isMesh) return
+    if (child.userData?.hiddenForTodayPipeMaterials) {
+      child.visible = false
+      return
+    }
     child.visible = !isolateSelection.value || !selectedMeshIds.size || selectedMeshIds.has(child.id)
   })
 }
@@ -782,6 +1319,7 @@ function loadFactoryModel() {
       factoryModel = model
       prepareModel(factoryModel)
       scene.add(factoryModel)
+      renderTodayPipeMaterials()
       loading.value = false
     },
     (event) => {
@@ -865,7 +1403,7 @@ function animate() {
   ) {
     refreshSelectionAppearanceNow()
   }
-  if (selectedNodeId.value) {
+  if (showSelectionInfoCard.value && selectedNodeId.value) {
     const object = modelObjectsById.get(selectedNodeId.value)
     if (object) updateSelectionInfoCardPosition(object)
   }
@@ -897,6 +1435,16 @@ function toggleIsolateSelection() {
   refreshSelectionAppearanceNow()
 }
 
+function toggleSelectionInfoCard() {
+  showSelectionInfoCard.value = !showSelectionInfoCard.value
+  if (!showSelectionInfoCard.value) {
+    if (selectionInfoSprite) selectionInfoSprite.visible = false
+    if (selectionInfoLeaderLine) selectionInfoLeaderLine.visible = false
+    return
+  }
+  if (selectedNodeId.value) refreshSelectionAppearanceNow()
+}
+
 function formatBytes(value) {
   const bytes = Number(value || 0)
   if (!bytes) return '0 B'
@@ -909,6 +1457,7 @@ onMounted(() => {
   setupScene()
   resizeRenderer()
   loadFactoryModel()
+  loadTodayPipeMaterials()
   resizeObserver = new ResizeObserver(resizeRenderer)
   resizeObserver.observe(sceneHost.value)
   window.addEventListener('resize', resizeRenderer)
@@ -929,14 +1478,9 @@ onBeforeUnmount(() => {
   controls?.removeEventListener('change', requestSelectionAppearanceRefresh)
   controls?.dispose()
   if (factoryModel) {
-    factoryModel.traverse((child) => {
-      if (child.geometry) child.geometry.dispose()
-      if (child.material) {
-        const materials = Array.isArray(child.material) ? child.material : [child.material]
-        materials.forEach((material) => material.dispose?.())
-      }
-    })
+    disposeObject(factoryModel)
   }
+  rawMaterialGroup = null
   selectionBox?.geometry?.dispose()
   selectionBox?.material?.dispose()
   selectionInfoLeaderLine?.geometry?.dispose()
@@ -995,6 +1539,19 @@ onBeforeUnmount(() => {
           <template #activator="{ props }">
             <v-btn
               v-bind="props"
+              :class="['factory-tool-button', { 'is-active': showSelectionInfoCard }]"
+              :icon="showSelectionInfoCard ? 'mdi-card-text-outline' : 'mdi-card-off-outline'"
+              :variant="showSelectionInfoCard ? 'flat' : 'tonal'"
+              @click="toggleSelectionInfoCard"
+            />
+          </template>
+          <span>{{ showSelectionInfoCard ? t('hideModelInfoCard') : t('showModelInfoCard') }}</span>
+        </v-tooltip>
+
+        <v-tooltip location="bottom" open-delay="120">
+          <template #activator="{ props }">
+            <v-btn
+              v-bind="props"
               :class="['factory-tool-button', { 'is-active': isolateSelection, 'is-disabled': !selectedNodeId }]"
               :aria-disabled="!selectedNodeId"
               :icon="isolateSelection ? 'mdi-eye-off' : 'mdi-eye-off-outline'"
@@ -1013,6 +1570,9 @@ onBeforeUnmount(() => {
           <div ref="sceneHost" class="factory-scene" />
           <div v-if="errorMessage" class="factory-scene-overlay is-error">
             {{ errorMessage }}
+          </div>
+          <div v-else-if="materialError" class="factory-material-notice">
+            {{ materialError }}
           </div>
         </div>
       </v-card>
@@ -1078,23 +1638,100 @@ onBeforeUnmount(() => {
 
   <v-card class="factory-info-card" rounded="lg" variant="flat">
     <v-card-item class="factory-card-item factory-info-head">
-      <template #title>选中子结构信息</template>
+      <template #title>{{ selectedInfoCardTitle }}</template>
       <template #append>
-        <span class="factory-info-count">{{ selectedNodeInfo ? selectedNodeInfo.type : '未选择' }}</span>
+        <span class="factory-info-count">
+          {{ selectedInfoCardBadge }}
+        </span>
       </template>
     </v-card-item>
 
     <div v-if="selectedNodeInfo" class="factory-info-body">
-      <div class="factory-info-summary">
-        <strong :title="selectedNodeInfo.name">{{ selectedNodeInfo.name }}</strong>
-        <span>网格数 {{ selectedNodeInfo.meshCount }}</span>
+      <div v-if="selectedNodeInfo.materialInfo" class="factory-material-details">
+        <div><span>{{ t('materialUniqueCode') }}</span><strong>{{ selectedNodeInfo.materialInfo.uniqueCode }}</strong></div>
+        <div><span>{{ t('materialCode') }}</span><strong>{{ selectedNodeInfo.materialInfo.materialCode || '-' }}</strong></div>
+        <div><span>{{ t('materialQuantity') }}</span><strong>{{ selectedNodeInfo.materialInfo.quantity || '-' }} {{ selectedNodeInfo.materialInfo.unitName }}</strong></div>
+        <div><span>寸径</span><strong>{{ selectedNodeInfo.materialInfo.diameter || '-' }}</strong></div>
+        <div><span>壁厚</span><strong>{{ selectedNodeInfo.materialInfo.wallThickness || '-' }}</strong></div>
+        <div><span>材质</span><strong>{{ selectedNodeInfo.materialInfo.material || '-' }}</strong></div>
+        <div><span>材料油漆</span><strong>{{ selectedNodeInfo.materialInfo.paint || '-' }}</strong></div>
+        <div><span>{{ t('materialDescription') }}</span><strong>{{ selectedNodeInfo.materialInfo.description || '-' }}</strong></div>
       </div>
-      <div class="factory-info-grid">
-        <div><span>类型</span><strong>{{ selectedNodeInfo.type }}</strong></div>
-        <div><span>子项</span><strong>{{ selectedNodeInfo.childCount }}</strong></div>
-        <div><span>尺寸</span><strong>{{ selectedNodeInfo.sizeText }}</strong></div>
-        <div><span>中心</span><strong>{{ selectedNodeInfo.centerText }}</strong></div>
-      </div>
+      <template v-else-if="selectedNodeInfo.todayMaterialGroup">
+        <div class="factory-info-summary">
+          <strong>{{ t('todayPipeMaterialModels') }}</strong>
+          <span>{{ todayMaterialSummary.date }}</span>
+        </div>
+        <div class="factory-info-grid factory-material-summary-grid">
+          <div><span>材料项数</span><strong>{{ todayMaterialSummary.total }}</strong></div>
+          <div><span>材料编码数</span><strong>{{ todayMaterialSummary.materialCodeCount }}</strong></div>
+          <div><span>管材项数</span><strong>{{ todayMaterialSummary.pipeCount }}</strong></div>
+          <div><span>管件项数</span><strong>{{ todayMaterialSummary.fittingCount }}</strong></div>
+        </div>
+        <div class="factory-material-table">
+          <DataVTable
+            :records="todayMaterialTableRows"
+            :columns="todayMaterialTableColumns"
+            :height="460"
+            :empty-text="t('noData')"
+          />
+        </div>
+      </template>
+      <template v-else-if="selectedNodeInfo.workshopEquipment">
+        <div class="factory-info-summary">
+          <strong>{{ t('workshopOneEquipment') }}</strong>
+          <span>{{ selectedNodeInfo.weldingPlan?.available ? selectedNodeInfo.weldingPlan.date : t('noTodayWeldingPlan') }}</span>
+        </div>
+        <div class="factory-info-grid">
+          <div><span>{{ t('weldingOrderCount') }}</span><strong>{{ selectedNodeInfo.weldingPlan?.orderCount || 0 }}</strong></div>
+          <div><span>{{ t('weldCount') }}</span><strong>{{ selectedNodeInfo.weldingPlan?.weldCount || 0 }}</strong></div>
+          <div><span>{{ t('planDiameterTotal') }}</span><strong>{{ selectedNodeInfo.weldingPlan?.diameterTotal || 0 }}</strong></div>
+          <div><span>{{ t('completedCount') }}</span><strong>{{ selectedNodeInfo.weldingPlan?.completedCount || 0 }}</strong></div>
+          <div><span>{{ t('segmentCount') }}</span><strong>{{ selectedNodeInfo.weldingPlan?.segmentCount || 0 }}</strong></div>
+          <div><span>{{ t('pipelineCount') }}</span><strong>{{ selectedNodeInfo.weldingPlan?.pipelineCount || 0 }}</strong></div>
+          <div class="factory-plan-orders">
+            <span>{{ t('weldingOrderNumbers') }}</span>
+            <strong>{{ selectedNodeInfo.weldingPlan?.orderNumbers?.join('、') || '-' }}</strong>
+          </div>
+        </div>
+        <div v-if="weldingPlanSheets.length" class="factory-welding-plan">
+          <v-tabs
+            v-model="selectedWeldingSheet"
+            class="factory-welding-tabs"
+            color="primary"
+            density="compact"
+            show-arrows
+          >
+            <v-tab
+              v-for="sheet in weldingPlanSheets"
+              :key="sheet.name"
+              :value="sheet.name"
+            >
+              {{ sheet.name }}（{{ sheet.total }}）
+            </v-tab>
+          </v-tabs>
+          <DataVTable
+            :key="selectedWeldingSheet"
+            :records="weldingPlanTableRows"
+            :columns="weldingPlanTableColumns"
+            :height="420"
+            :empty-text="t('noData')"
+          />
+        </div>
+        <div v-else class="factory-info-empty">{{ t('noTodayWeldingPlan') }}</div>
+      </template>
+      <template v-else>
+        <div class="factory-info-summary">
+          <strong :title="selectedNodeInfo.name">{{ selectedNodeInfo.name }}</strong>
+          <span>网格数 {{ selectedNodeInfo.meshCount }}</span>
+        </div>
+        <div class="factory-info-grid">
+          <div><span>类型</span><strong>{{ selectedNodeInfo.type }}</strong></div>
+          <div><span>子项</span><strong>{{ selectedNodeInfo.childCount }}</strong></div>
+          <div><span>尺寸</span><strong>{{ selectedNodeInfo.sizeText }}</strong></div>
+          <div><span>中心</span><strong>{{ selectedNodeInfo.centerText }}</strong></div>
+        </div>
+      </template>
     </div>
     <div v-else class="factory-info-empty">点击左侧结构树或三维模型中的子结构后，这里会展示对应信息。</div>
   </v-card>
@@ -1181,6 +1818,22 @@ onBeforeUnmount(() => {
   gap: 8px;
   align-items: center;
   flex: 0 0 auto;
+}
+
+.factory-material-notice {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  z-index: 2;
+  max-width: min(560px, calc(100% - 32px));
+  transform: translateX(-50%);
+  border: 1px solid rgba(217, 119, 6, .32);
+  border-radius: 6px;
+  background: rgba(255, 251, 235, .94);
+  padding: 8px 12px;
+  color: #92400e;
+  font-size: 12px;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, .1);
 }
 
 .factory-title-info {
@@ -1378,13 +2031,20 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.factory-info-grid {
+.factory-info-grid,
+.factory-material-details {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
 
-.factory-info-grid div {
+.factory-material-table {
+  margin-top: 14px;
+  min-width: 0;
+}
+
+.factory-info-grid div,
+.factory-material-details div {
   display: grid;
   gap: 4px;
   padding: 10px 12px;
@@ -1392,16 +2052,34 @@ onBeforeUnmount(() => {
   background: rgba(241, 245, 249, .92);
 }
 
-.factory-info-grid span {
+.factory-info-grid span,
+.factory-material-details span {
   color: #64748b;
   font-size: 12px;
 }
 
-.factory-info-grid strong {
+.factory-info-grid strong,
+.factory-material-details strong {
   color: #0f172a;
   font-size: 13px;
   font-weight: 700;
   word-break: break-word;
+}
+
+.factory-info-grid .factory-plan-orders {
+  grid-column: span 2;
+}
+
+.factory-welding-plan {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin-top: 4px;
+}
+
+.factory-welding-tabs {
+  min-width: 0;
+  border-bottom: 1px solid rgba(148, 163, 184, .28);
 }
 
 .factory-info-empty {
@@ -1489,16 +2167,19 @@ html[data-theme="dark"] .factory-info-head {
 html[data-theme="dark"] .factory-info-count,
 html[data-theme="dark"] .factory-info-empty,
 html[data-theme="dark"] .factory-info-summary span,
-html[data-theme="dark"] .factory-info-grid span {
+html[data-theme="dark"] .factory-info-grid span,
+html[data-theme="dark"] .factory-material-details span {
   color: #94a3b8;
 }
 
 html[data-theme="dark"] .factory-info-summary strong,
-html[data-theme="dark"] .factory-info-grid strong {
+html[data-theme="dark"] .factory-info-grid strong,
+html[data-theme="dark"] .factory-material-details strong {
   color: #f8fafc;
 }
 
-html[data-theme="dark"] .factory-info-grid div {
+html[data-theme="dark"] .factory-info-grid div,
+html[data-theme="dark"] .factory-material-details div {
   background: rgba(30, 41, 59, .92);
 }
 

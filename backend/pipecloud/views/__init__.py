@@ -1,4 +1,4 @@
-﻿from .projects import (
+from .projects import (
     export_projects,
     import_projects,
     project_detail,
@@ -24,6 +24,7 @@ from .plans import plan_file_rows, plan_rows, save_plan_file_rows
 from .file_parser import (
     confirm_initialization_file,
     download_parsed_file,
+    download_parsed_files,
     merge_parser_results,
     parser_job_status,
     parse_uploaded_files,

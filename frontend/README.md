@@ -10,6 +10,34 @@ npm run dev
 npm run build
 ```
 
+## 局域网开发访问
+
+Vite 开发服务器默认监听所有网络接口。复制项目到另一台电脑并安装依赖后：
+
+1. 在 `backend` 目录启动 Django：
+
+   ```bash
+   python manage.py runserver
+   ```
+
+2. 在 `frontend` 目录启动前端：
+
+   ```bash
+   npm run dev
+   ```
+
+3. 查看 Vite 输出中的 `Network` 地址，或在 Windows 中运行 `ipconfig` 获取该电脑的
+   IPv4 地址。局域网内的其他设备可访问：
+
+   ```text
+   http://<运行项目电脑的IPv4地址>:5173
+   ```
+
+前端 API 使用 `/api` 相对路径，并由 Vite 转发到同一台电脑上的
+`127.0.0.1:8000`，因此不需要向局域网单独开放 Django 的 8000 端口。
+如果 Windows 防火墙弹出提示，请允许 Node.js 在“专用网络”中通信；也要确保设备
+处于同一局域网，且路由器未启用客户端隔离。
+
 ## 关键目录
 
 - `src/router/`: 路由配置，页面入口统一指向 `src/views/<PageName>/index.vue`。

@@ -42,7 +42,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['refresh', 'toggle'])
+const emit = defineEmits(['refresh', 'toggle', 'hide'])
 const activeView = ref('data')
 
 const viewItems = computed(() => [
@@ -151,6 +151,14 @@ function clampPercent(value) {
           :aria-label="t('refreshDashboard')"
           :title="t('refreshDashboard')"
           @click="emit('refresh')"
+        />
+        <v-btn
+          v-if="collapsible"
+          icon="mdi-eye-off-outline"
+          variant="text"
+          :aria-label="t('hideDashboard')"
+          :title="t('hideDashboard')"
+          @click="emit('hide')"
         />
         <v-btn
           v-if="collapsible"

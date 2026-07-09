@@ -1,6 +1,7 @@
 from .common import *
-from pipecloud.services.db_storage import PLAN_FILE_MODELS, replace_source_rows, table_payload
-from pipecloud.services.prefab_database import derived_plan_file_payload
+from django.db import transaction
+from pipecloud.services.db_storage import replace_source_rows, table_payload
+from pipecloud.services.prefab_database import derived_plan_file_payload, _plan_file_models
 from pipecloud.services.project_tables import ensure_project_tables, using_project_tables
 
 
@@ -87,6 +88,79 @@ def move_plan_date(request, plan_key):
     }, json_dumps_params={'ensure_ascii': False})
 
 
+@csrf_exempt
+@require_POST
+def delete_plan(request, plan_key):
+    project, data_root, error = _request_project_context(request, required=True)
+    if error:
+        return _project_bad_request(error)
+
+    plan_sources = _plan_sources(data_root)
+    if plan_key not in plan_sources:
+        return HttpResponseBadRequest(json.dumps({'error': '未知计划类型'}, ensure_ascii=False), content_type='application/json')
+
+    try:
+        payload = json.loads(request.body.decode('utf-8') or '{}')
+    except Exception:
+        return HttpResponseBadRequest(json.dumps({'error': '请求数据无效'}, ensure_ascii=False), content_type='application/json')
+
+    record_id = payload.get('recordId') or payload.get('id')
+    if not record_id:
+        return HttpResponseBadRequest(json.dumps({'error': '缺少计划记录'}, ensure_ascii=False), content_type='application/json')
+
+    try:
+        ensure_project_tables(project)
+        with using_project_tables(project):
+            record = PlanRecord.objects.get(pk=record_id, project=project, plan_key=plan_key)
+    except PlanRecord.DoesNotExist:
+        return HttpResponseBadRequest(json.dumps({'error': '计划记录不存在'}, ensure_ascii=False), content_type='application/json')
+
+    plan_date = record.plan_date
+    plan_folder = record.plan_folder
+    deleted_rows = 0
+    deleted_sources = 0
+    deleted_records = 0
+    try:
+        with using_project_tables(project), transaction.atomic():
+            if plan_key == 'cutting':
+                deleted_rows, _ = WeldingPlanRow.objects.filter(project=project, cut_date=plan_date).delete()
+                deleted_sources, _ = DataSourceFile.objects.filter(
+                    project=project,
+                    source_type='plan',
+                    source_key__startswith=f'cutting:{plan_folder}:',
+                ).delete()
+                deleted_records, _ = PlanRecord.objects.filter(
+                    project=project,
+                    plan_key='cutting',
+                    pk=record.pk,
+                ).delete()
+            else:
+                deleted_sources, _ = DataSourceFile.objects.filter(
+                    project=project,
+                    source_type='plan',
+                    source_key__startswith=f'{plan_key}:{plan_folder}:',
+                ).delete()
+                deleted_records, _ = PlanRecord.objects.filter(
+                    project=project,
+                    plan_key=plan_key,
+                    pk=record.pk,
+                ).delete()
+    except Exception as error:
+        return HttpResponseBadRequest(
+            json.dumps({'error': f'删除计划失败：{error}'}, ensure_ascii=False),
+            content_type='application/json',
+        )
+
+    return JsonResponse({
+        'ok': True,
+        'planKey': plan_key,
+        'planDate': plan_date,
+        'deletedRows': deleted_rows,
+        'deletedSources': deleted_sources,
+        'deletedRecords': deleted_records,
+    }, json_dumps_params={'ensure_ascii': False})
+
+
 @require_GET
 def plan_file_rows(request, plan_key):
     project, data_root, error = _request_project_context(request, required=True)
@@ -103,7 +177,7 @@ def plan_file_rows(request, plan_key):
         return HttpResponseBadRequest(json.dumps({'error': '文件名无效'}, ensure_ascii=False), content_type='application/json')
     sheet_name = request.GET.get('sheet') or None
     try:
-        sheet_models = PLAN_FILE_MODELS.get(file_name)
+        sheet_models = _plan_file_models(file_name)
         if sheet_models is None:
             derived_payload = derived_plan_file_payload(project, plan_key, plan_folder, file_name, sheet_name)
             if derived_payload is None:
@@ -116,6 +190,13 @@ def plan_file_rows(request, plan_key):
                 source_type='plan',
                 source_key=f'{plan_key}:{plan_folder}:{file_name}',
             ).first()
+            if source is None and plan_key == 'anti-corrosion' and file_name == '防腐委托库.xlsx':
+                source = DataSourceFile.objects.filter(
+                    project=project,
+                    source_type='library',
+                    source_key='anti-corrosion-commission-library',
+                    display_name=file_name,
+                ).order_by('-file_updated_at', '-id').first()
         if source is None:
             raise ValueError(f'计划文件尚未同步到数据库：{plan_folder}/{file_name}')
         selected_sheet, sheets, total, columns, rows = table_payload(source, sheet_models, sheet_name)
@@ -157,7 +238,7 @@ def save_plan_file_rows(request, plan_key):
 
     try:
         file_name = plan_file['file_name']
-        sheet_models = PLAN_FILE_MODELS.get(file_name)
+        sheet_models = _plan_file_models(file_name)
         if sheet_models is None:
             raise ValueError(f'{file_name} 由管段焊口表自动生成，请修改管段焊口表')
         sheet_name = payload['sheet'] or 'Sheet1'

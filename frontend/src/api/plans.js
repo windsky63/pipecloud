@@ -16,6 +16,10 @@ export function movePlanDate(planKey, params, payload) {
   return postJson(`/plans/${planKey}/move/?${params}`, payload)
 }
 
+export function deletePlan(planKey, params, payload) {
+  return postJson(`/plans/${planKey}/delete/?${params}`, payload)
+}
+
 export function importPlanPatchRows(planKey, formData, params) {
   return postForm(`/plans/${planKey}/file/import/?${params}`, formData)
 }

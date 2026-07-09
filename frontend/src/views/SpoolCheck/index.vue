@@ -1,5 +1,5 @@
 ﻿<script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { fetchProjectSpools } from '../../api/projects'
 import DataVTable from '../../components/DataVTable.vue'
 import SpoolCheckHeader from './SpoolCheckHeader.vue'
@@ -17,6 +17,10 @@ const selectedSpoolNo = ref('')
 const selectedUnit = ref(allUnitsKey)
 const weldSource = ref('prefab')
 const spoolModelCache = ref(new Map())
+let spoolInfoController = null
+let spoolInfoTimer = null
+let spoolModelController = null
+let spoolModelTimer = null
 const weldSourceOptions = [
   { title: '预制焊口库', value: 'prefab' },
   { title: '初始化焊口库', value: 'initialization' },
@@ -99,20 +103,45 @@ const weldRows = computed(() => {
 })
 
 async function loadSpoolInfo(options = {}) {
+  if (spoolInfoTimer) {
+    window.clearTimeout(spoolInfoTimer)
+    spoolInfoTimer = null
+  }
+  spoolInfoController?.abort()
+  spoolInfoController = null
+  spoolModelController?.abort()
+  spoolModelController = null
+  if (spoolModelTimer) {
+    window.clearTimeout(spoolModelTimer)
+    spoolModelTimer = null
+  }
+  const controller = new AbortController()
+  spoolInfoController = controller
+  const projectId = selectedProjectId.value
+  const source = weldSource.value
   if (!selectedProjectId.value) {
     payload.value = null
     selectedSpoolNo.value = ''
     errorMessage.value = t('selectProjectOnHome')
+    spoolInfoController = null
+    loading.value = false
     return
   }
   loading.value = true
   errorMessage.value = ''
   try {
-    const data = await fetchProjectSpools(selectedProjectId.value, {
-      weldSource: weldSource.value,
+    const data = await fetchProjectSpools(projectId, {
+      weldSource: source,
       structureSpool: options.structureSpool,
       includeModel: false,
+    }, {
+      signal: controller.signal,
     })
+    if (
+      controller.signal.aborted
+      || projectId !== selectedProjectId.value
+      || source !== weldSource.value
+    ) return
     payload.value = data
     spoolModelCache.value = new Map()
     if (!options.preserveSelection) {
@@ -125,12 +154,35 @@ async function loadSpoolInfo(options = {}) {
       loadSpoolModel(selectedSpoolNo.value)
     }
   } catch (error) {
+    if (error?.name === 'AbortError') return
     payload.value = null
     selectedSpoolNo.value = ''
     errorMessage.value = t('spoolCheckReadFailed', { message: error.message })
   } finally {
-    loading.value = false
+    if (spoolInfoController === controller) {
+      spoolInfoController = null
+      loading.value = false
+    }
   }
+}
+
+function scheduleSpoolInfoLoad(options = {}) {
+  if (spoolInfoTimer) {
+    window.clearTimeout(spoolInfoTimer)
+  }
+  spoolInfoController?.abort()
+  spoolInfoController = null
+  spoolModelController?.abort()
+  spoolModelController = null
+  if (spoolModelTimer) {
+    window.clearTimeout(spoolModelTimer)
+    spoolModelTimer = null
+  }
+  loading.value = true
+  spoolInfoTimer = window.setTimeout(() => {
+    spoolInfoTimer = null
+    loadSpoolInfo(options)
+  }, 150)
 }
 
 function spoolCacheKey(spoolNo) {
@@ -152,34 +204,70 @@ function mergeSpoolDetail(spoolNo, detail, extraPayload = {}) {
 
 async function loadSpoolModel(spoolNo) {
   if (!selectedProjectId.value || !spoolNo) return
+  if (spoolModelTimer) {
+    window.clearTimeout(spoolModelTimer)
+    spoolModelTimer = null
+  }
+  spoolModelController?.abort()
+  const controller = new AbortController()
+  spoolModelController = controller
+  const projectId = selectedProjectId.value
+  const source = weldSource.value
   const cacheKey = spoolCacheKey(spoolNo)
   const cached = spoolModelCache.value.get(cacheKey)
   if (cached) {
     mergeSpoolDetail(spoolNo, cached.detail, cached.payload)
+    spoolModelController = null
+    structureLoading.value = false
     return
   }
   structureLoading.value = true
   try {
-    const data = await fetchProjectSpools(selectedProjectId.value, {
-      weldSource: weldSource.value,
+    const data = await fetchProjectSpools(projectId, {
+      weldSource: source,
       structureSpool: spoolNo,
       includeModel: true,
+    }, {
+      signal: controller.signal,
     })
+    if (
+      controller.signal.aborted
+      || projectId !== selectedProjectId.value
+      || source !== weldSource.value
+      || spoolNo !== selectedSpoolNo.value
+    ) return
     const detail = (data.spools || []).find((spool) => spool.spoolNo === spoolNo)
     if (detail) {
       spoolModelCache.value.set(cacheKey, { detail, payload: data })
       mergeSpoolDetail(spoolNo, detail, data)
     }
   } catch (error) {
+    if (error?.name === 'AbortError') return
     errorMessage.value = t('spoolCheckReadFailed', { message: error.message })
   } finally {
-    structureLoading.value = false
+    if (spoolModelController === controller) {
+      spoolModelController = null
+      structureLoading.value = false
+    }
   }
+}
+
+function scheduleSpoolModelLoad(spoolNo) {
+  if (spoolModelTimer) {
+    window.clearTimeout(spoolModelTimer)
+  }
+  spoolModelController?.abort()
+  spoolModelController = null
+  structureLoading.value = true
+  spoolModelTimer = window.setTimeout(() => {
+    spoolModelTimer = null
+    loadSpoolModel(spoolNo)
+  }, 120)
 }
 
 function selectSpool(spool) {
   selectedSpoolNo.value = spool.spoolNo
-  loadSpoolModel(spool.spoolNo)
+  scheduleSpoolModelLoad(spool.spoolNo)
 }
 
 function formatNumber(value) {
@@ -189,14 +277,21 @@ function formatNumber(value) {
 }
 
 onMounted(loadSpoolInfo)
-watch(selectedProjectId, loadSpoolInfo)
-watch(weldSource, loadSpoolInfo)
+watch(selectedProjectId, () => scheduleSpoolInfoLoad())
+watch(weldSource, () => scheduleSpoolInfoLoad())
 watch(selectedUnit, () => {
   const nextSpoolNo = filteredSpools.value[0]?.spoolNo || ''
   selectedSpoolNo.value = nextSpoolNo
   if (nextSpoolNo) {
-    loadSpoolModel(nextSpoolNo)
+    scheduleSpoolModelLoad(nextSpoolNo)
   }
+})
+
+onBeforeUnmount(() => {
+  if (spoolInfoTimer) window.clearTimeout(spoolInfoTimer)
+  if (spoolModelTimer) window.clearTimeout(spoolModelTimer)
+  spoolInfoController?.abort()
+  spoolModelController?.abort()
 })
 </script>
 

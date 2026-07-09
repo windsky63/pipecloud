@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import DataVTable from '../../components/DataVTable.vue'
 import InfoTooltip from '../../components/InfoTooltip.vue'
 import ScheduleCalendar from '../../components/ScheduleCalendar.vue'
@@ -45,49 +45,15 @@ const configPanels = ref(['config'])
 const weldStartDateMenu = ref(false)
 const manualWeldDatesMenu = ref(false)
 const holidayDatesMenu = ref(false)
-const pendingDatePanels = ref([])
-const selectedPendingPlanType = ref('')
 
-const futurePendingStagePlanGroups = computed(() => {
-  const planGroups = new Map()
-  ;(props.futurePendingStage?.files || []).forEach((file) => {
-    const planType = file.planType || '-'
-    const date = file.planDate || ''
-    if (!planGroups.has(planType)) {
-      planGroups.set(planType, {
-        planType,
-        dateGroups: new Map(),
-      })
-    }
-    const planGroup = planGroups.get(planType)
-    if (!planGroup.dateGroups.has(date)) {
-      planGroup.dateGroups.set(date, {
-        date,
-        title: formatPlanDate(date),
-        files: [],
-      })
-    }
-    planGroup.dateGroups.get(date).files.push(file)
+const futurePendingFiles = computed(() => {
+  return [...(props.futurePendingStage?.files || [])].sort((left, right) => {
+    const dateOrder = String(left.planDate || '').localeCompare(String(right.planDate || ''))
+    if (dateOrder) return dateOrder
+    const nameOrder = String(left.name || '').localeCompare(String(right.name || ''), 'zh-CN')
+    if (nameOrder) return nameOrder
+    return String(left.path || '').localeCompare(String(right.path || ''), 'zh-CN')
   })
-  return Array.from(planGroups.values())
-    .map((group) => ({
-      planType: group.planType,
-      dateGroups: Array.from(group.dateGroups.values()).sort(compareDateGroups),
-    }))
-    .sort((a, b) => a.planType.localeCompare(b.planType, 'zh-CN'))
-})
-
-const pendingPlanTypeOptions = computed(() => {
-  return futurePendingStagePlanGroups.value.map((group) => ({
-    title: group.planType,
-    value: group.planType,
-  }))
-})
-
-const selectedPendingPlanGroup = computed(() => {
-  return futurePendingStagePlanGroups.value.find((group) => group.planType === selectedPendingPlanType.value)
-    || futurePendingStagePlanGroups.value[0]
-    || null
 })
 
 function formatPlanDate(value) {
@@ -99,35 +65,10 @@ function formatPlanDate(value) {
   return text || '-'
 }
 
-function compareDateGroups(a, b) {
-  if (!a.date) return 1
-  if (!b.date) return -1
-  return a.date.localeCompare(b.date)
-}
-
 function updateWeldStartDate(value) {
   emit('update-weld-start-date', value)
   weldStartDateMenu.value = false
 }
-
-watch(() => props.futurePendingStage?.token, () => {
-  pendingDatePanels.value = []
-  selectedPendingPlanType.value = futurePendingStagePlanGroups.value[0]?.planType || ''
-})
-
-watch(futurePendingStagePlanGroups, (groups) => {
-  if (!groups.length) {
-    selectedPendingPlanType.value = ''
-    return
-  }
-  if (!groups.some((group) => group.planType === selectedPendingPlanType.value)) {
-    selectedPendingPlanType.value = groups[0].planType
-  }
-}, { immediate: true })
-
-watch(selectedPendingPlanType, () => {
-  pendingDatePanels.value = []
-})
 </script>
 
 <template>
@@ -340,55 +281,33 @@ watch(selectedPendingPlanType, () => {
       </div>
       <div class="pending-stage-browser">
         <div class="pending-stage-left">
-          <div class="pending-stage-type-select">
-            <span>{{ t('planType') }}</span>
-            <v-select
-              v-model="selectedPendingPlanType"
-              :items="pendingPlanTypeOptions"
-              :placeholder="t('planType')"
-              density="compact"
-              hide-details
-              :disabled="!pendingPlanTypeOptions.length"
-            />
-          </div>
           <div class="pending-stage-scroll">
-            <section v-if="selectedPendingPlanGroup" class="pending-stage-plan-group">
-              <v-expansion-panels
-                v-model="pendingDatePanels"
-                class="pending-stage-date-groups"
-                multiple
-                variant="accordion"
+            <div v-if="futurePendingFiles.length" class="pending-stage-files">
+              <button
+                v-for="file in futurePendingFiles"
+                :key="file.path"
+                :class="['pending-stage-file', { 'is-active': selectedFuturePendingFilePath === file.path }]"
+                type="button"
+                @click="$emit('preview-pending-file', file)"
               >
-                <v-expansion-panel
-                  v-for="group in selectedPendingPlanGroup.dateGroups"
-                  :key="`${selectedPendingPlanGroup.planType}:${group.date || 'undated'}`"
-                  :value="`${selectedPendingPlanGroup.planType}:${group.date || 'undated'}`"
-                >
-                  <v-expansion-panel-title>
-                    <span>{{ t('planDate') }}：{{ group.title }}</span>
-                    <small>{{ t('pendingStagedFiles', { count: group.files.length }) }}</small>
-                  </v-expansion-panel-title>
-                  <v-expansion-panel-text>
-                    <div class="pending-stage-files">
-                      <button
-                        v-for="file in group.files"
-                        :key="file.path"
-                        :class="['pending-stage-file', { 'is-active': selectedFuturePendingFilePath === file.path }]"
-                        type="button"
-                        @click="$emit('preview-pending-file', file)"
-                      >
-                        <v-icon icon="mdi-file-table-outline" size="18" />
-                        <div class="pending-stage-file-main">
-                          <strong>{{ file.name }}</strong>
-                          <span>{{ formatPlanDate(file.planDate) }} · {{ file.sizeText }} · {{ file.updatedText }}</span>
-                          <small>{{ file.path }}</small>
-                        </div>
-                      </button>
-                    </div>
-                  </v-expansion-panel-text>
-                </v-expansion-panel>
-              </v-expansion-panels>
-            </section>
+                <v-icon icon="mdi-file-table-outline" size="20" />
+                <div class="pending-stage-file-main">
+                  <strong>{{ file.displayName || file.name }}</strong>
+                  <span>{{ file.sizeText }} · {{ file.updatedText }}</span>
+                  <small>{{ file.path }}</small>
+                </div>
+                <span class="pending-stage-file-dates">
+                  <span>
+                    <small>{{ t('weldingDate') }}</small>
+                    <strong>{{ formatPlanDate(file.weldDate || file.planDate) }}</strong>
+                  </span>
+                  <span>
+                    <small>{{ t('cuttingDate') }}</small>
+                    <strong>{{ formatPlanDate(file.cutDate) }}</strong>
+                  </span>
+                </span>
+              </button>
+            </div>
             <div v-else class="pending-stage-empty">{{ t('noPendingStagedPlans') }}</div>
           </div>
         </div>
@@ -463,7 +382,7 @@ watch(selectedPendingPlanType, () => {
 
 .pending-stage-browser {
   display: grid;
-  grid-template-columns: minmax(280px, 34%) minmax(0, 1fr);
+  grid-template-columns: minmax(300px, 30%) minmax(0, 1fr);
   gap: 12px;
   align-items: stretch;
 }
@@ -474,32 +393,13 @@ watch(selectedPendingPlanType, () => {
 }
 
 .pending-stage-left {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 8px;
   height: 560px;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel);
-}
-
-.pending-stage-type-select {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-}
-
-.pending-stage-type-select > span {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
 }
 
 .pending-stage-scroll {
-  min-height: 0;
+  height: 100%;
   overflow-y: auto;
-  padding-right: 4px;
+  padding-right: 6px;
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
   scrollbar-width: thin;
 }
@@ -519,16 +419,6 @@ watch(selectedPendingPlanType, () => {
   background: var(--scrollbar-track);
 }
 
-.pending-stage-plan-group {
-  display: grid;
-  gap: 8px;
-}
-
-.pending-stage-plan-group + .pending-stage-plan-group {
-  margin-top: 10px;
-}
-
-.pending-stage-plan-group h3,
 .pending-stage-preview-head h3 {
   margin: 0;
   color: var(--strong);
@@ -538,56 +428,21 @@ watch(selectedPendingPlanType, () => {
 
 .pending-stage-files {
   display: grid;
-  gap: 5px;
-}
-
-.pending-stage-date-groups {
-  display: grid;
   gap: 8px;
-}
-
-.pending-stage-date-groups :deep(.v-expansion-panel) {
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--text);
-}
-
-.pending-stage-date-groups :deep(.v-expansion-panel-title) {
-  min-height: 40px;
-  padding: 0 12px;
-  color: var(--strong);
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.pending-stage-date-groups :deep(.v-expansion-panel-title__overlay) {
-  display: none;
-}
-
-.pending-stage-date-groups :deep(.v-expansion-panel-title small) {
-  margin-left: 10px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.pending-stage-date-groups :deep(.v-expansion-panel-text__wrapper) {
-  padding: 0 10px 10px;
 }
 
 .pending-stage-file {
   appearance: none;
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-columns: 20px minmax(0, 1fr) auto;
   grid-template-rows: auto auto;
   column-gap: 8px;
   row-gap: 5px;
   align-items: start;
   width: 100%;
   min-width: 0;
-  min-height: 64px;
-  padding: 10px;
+  min-height: 76px;
+  padding: 12px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--panel);
@@ -624,6 +479,39 @@ watch(selectedPendingPlanType, () => {
   grid-row: 1 / span 2;
   gap: 5px;
   min-width: 0;
+}
+
+.pending-stage-file-dates {
+  display: grid;
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  gap: 5px;
+  align-self: center;
+  min-width: 112px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.pending-stage-file-dates > span {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.pending-stage-file-dates small {
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pending-stage-file-dates strong {
+  color: var(--strong);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .pending-stage-file-main strong,

@@ -1,6 +1,7 @@
 import { createApp } from 'vue'
 import { createVuetify } from 'vuetify'
 import * as components from 'vuetify/components'
+import * as labsComponents from 'vuetify/labs/components'
 import * as directives from 'vuetify/directives'
 import 'vuetify/styles'
 import '@mdi/font/css/materialdesignicons.css'
@@ -14,7 +15,10 @@ const storedTheme = typeof window === 'undefined' ? 'pipecloud' : window.localSt
 const defaultTheme = ['pipecloud', 'pipecloudGray', 'pipecloudDark'].includes(storedTheme) ? storedTheme : 'pipecloud'
 
 const vuetify = createVuetify({
-  components,
+  components: {
+    ...components,
+    ...labsComponents,
+  },
   directives,
   defaults: {
     VBtn: { rounded: 'sm' },

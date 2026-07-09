@@ -53,6 +53,7 @@ const configPanels = ref(['config'])
         color="primary"
         variant="tonal"
         :loading="runningKey === action.key"
+        :disabled="Boolean(runningKey)"
         @click="$emit('execute-action', action.key)"
       >
         {{ localizedActionName(action) }}
@@ -76,7 +77,7 @@ const configPanels = ref(['config'])
       </div>
       <div class="pending-stage-files">
         <div v-for="file in weldingPendingStage.files" :key="file.path" class="pending-stage-file">
-          <strong>{{ file.name }}</strong>
+          <strong>{{ file.displayName || file.name }}</strong>
           <span>{{ file.planType }} / {{ file.planDate || '-' }}</span>
           <small>{{ file.sizeText }} · {{ file.updatedText }}</small>
           <small>{{ file.path }}</small>

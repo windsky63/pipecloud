@@ -16,5 +16,8 @@ defineProps({
 <template>
   <PageHeader :title="title" :description="description">
     <slot />
+    <template v-if="$slots.actions" #actions>
+      <slot name="actions" />
+    </template>
   </PageHeader>
 </template>

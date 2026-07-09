@@ -1,6 +1,9 @@
 import shutil
 from datetime import datetime
 from pathlib import Path
+import re
+
+import pandas as pd
 
 from project_config import BACKUP, COLUMN_ALIASES
 
@@ -49,6 +52,26 @@ def prepare_output_file(file_path):
     output_path = Path(file_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     return backup_file(output_path)
+
+
+def _parse_numeric_parts(value):
+    if pd.isna(value):
+        return []
+    return [float(item) for item in re.findall(r'\d+(?:\.\d+)?', str(value))]
+
+
+def prepare_area_input_columns(df, spec_col='规格', thickness_col='壁厚'):
+    """从规格和壁厚中提取防腐面积计算所需的外径、壁厚数值。"""
+    out = df.copy()
+    empty_parts = pd.Series([[]] * len(out), index=out.index)
+    spec_parts = out[spec_col].apply(_parse_numeric_parts) if spec_col in out.columns else empty_parts
+    thickness_parts = out[thickness_col].apply(_parse_numeric_parts) if thickness_col in out.columns else empty_parts
+
+    out['外径1'] = spec_parts.apply(lambda values: values[0] if values else 0.0)
+    out['外径2'] = spec_parts.apply(lambda values: values[1] if len(values) > 1 else 0.0)
+    out['壁厚1'] = thickness_parts.apply(lambda values: values[0] if values else 0.0)
+    out['壁厚2'] = thickness_parts.apply(lambda values: values[1] if len(values) > 1 else 0.0)
+    return out
 
 
 def calculate_unit_area(row):

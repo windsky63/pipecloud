@@ -1,5 +1,6 @@
 from .common import *
 from pipecloud.services.db_storage import INITIALIZATION_MODELS, latest_source, replace_source_with_workbook, table_payload
+from pipecloud.services.project_constraints import project_constraints_payload, update_project_constraints
 from pipecloud.services.project_tables import ensure_project_tables
 
 
@@ -43,6 +44,31 @@ def project_detail(request, project_id):
     if request.method == 'DELETE':
         project.delete()
         return JsonResponse({'deleted': project_id}, json_dumps_params={'ensure_ascii': False})
+
+    return HttpResponseBadRequest(json.dumps({'error': '请求方法无效'}, ensure_ascii=False), content_type='application/json')
+
+
+@csrf_exempt
+def project_constraints(request, project_id):
+    project, error = _project_or_error(project_id)
+    if error:
+        return HttpResponseBadRequest(json.dumps({'error': error}, ensure_ascii=False), content_type='application/json')
+
+    if request.method == 'GET':
+        return JsonResponse(project_constraints_payload(project), json_dumps_params={'ensure_ascii': False})
+
+    if request.method in {'PUT', 'PATCH'}:
+        try:
+            payload = json.loads(request.body or b'{}')
+            if not isinstance(payload, dict):
+                raise ValueError('项目约束请求格式无效')
+            result = update_project_constraints(project, payload.get('rules'))
+        except (json.JSONDecodeError, ValueError) as error:
+            return HttpResponseBadRequest(
+                json.dumps({'error': str(error)}, ensure_ascii=False),
+                content_type='application/json',
+            )
+        return JsonResponse(result, json_dumps_params={'ensure_ascii': False})
 
     return HttpResponseBadRequest(json.dumps({'error': '请求方法无效'}, ensure_ascii=False), content_type='application/json')
 

@@ -12,7 +12,7 @@ import {
   uiTheme,
 } from './services/pipecloudState'
 import { projectGateMessage, selectedProjectId } from './services/projectState'
-import { libraries, loadLibraries } from './services/weldLibraryState'
+import { loadLibraries } from './services/weldLibraryState'
 
 const vuetifyTheme = useTheme()
 const runLogCollapsedStorageKey = 'pipecloud.runLogCollapsed'
@@ -144,16 +144,16 @@ watch(language, (locale) => {
 }, { immediate: true })
 
 watch(selectedProjectId, async (projectId) => {
+  await loadLibraries()
   if (!projectId) return
   await loadSummary()
-  await loadLibraries()
 })
 
 onMounted(() => {
   if (!summary.value.modules.length) {
     loadSummary()
   }
-  if (selectedProjectId.value && !libraries.value.length) {
+  if (selectedProjectId.value) {
     loadLibraries()
   }
 })

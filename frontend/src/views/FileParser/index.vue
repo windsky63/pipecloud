@@ -1,8 +1,13 @@
 ﻿<script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute } from 'vue-router'
 import {
+  cancelParserJob,
+  confirmIdfModel,
   confirmInitializationFile,
+  downloadAllParserFiles,
+  downloadCurrentParserFile,
+  fetchLatestParserResult,
   fetchParserJobStatus,
   fetchParserPreview,
   fetchParserProjectList,
@@ -11,13 +16,18 @@ import {
   uploadInitializationFile,
 } from '../../api/fileParser'
 import FileParserHeader from './FileParserHeader.vue'
+import DataVTable from '../../components/DataVTable.vue'
 import FileUploadDropzone from '../../components/FileUploadDropzone.vue'
 import UnsavedChangesDialog from '../../components/UnsavedChangesDialog.vue'
 import { t } from '../../services/pipecloudState'
 import { selectedProjectId, selectedProjectParams, setSelectedProjectId } from '../../services/projectState'
 
+const route = useRoute()
 const parsing = ref(false)
+const restoringResult = ref(false)
+const cancelingJob = ref(false)
 const confirming = ref(false)
+const savingModel = ref(false)
 const loadingProject = ref(false)
 const selectedFiles = ref([])
 const parseError = ref('')
@@ -25,11 +35,13 @@ const results = ref([])
 const activeResultIndex = ref(0)
 const activePreviewSheet = ref('')
 const previewLoading = ref(false)
+const downloadingPreview = ref(false)
 const currentProject = ref(null)
-const mode = ref('parse')
+const mode = ref(route.query.tab === 'parse' ? 'parse' : 'upload')
 const unsavedChangesDialog = ref(null)
 const uploadDropzone = ref(null)
 const parserJob = ref(null)
+const uploadProgress = ref(null)
 let parserJobTimer = null
 
 const snackbar = ref({
@@ -49,6 +61,7 @@ function clearResult() {
   activeResultIndex.value = 0
   activePreviewSheet.value = ''
   parserJob.value = null
+  uploadProgress.value = null
 }
 
 async function confirmDiscardParserResult(text = t('parserUnsavedLeaveText')) {
@@ -71,12 +84,6 @@ function parserResultName(item, index) {
     : item.sourceName || item.filename || `${t('dataPreview')} ${index + 1}`
 }
 
-const selectedFileType = computed(() => {
-  const files = Array.from(selectedFiles.value || [])
-  const types = new Set(files.map((file) => fileExtension(file.name)).filter(Boolean))
-  return types.size === 1 ? Array.from(types)[0].toUpperCase() : ''
-})
-
 const acceptedFileTypes = computed(() => (mode.value === 'parse' ? '.idf,.pcf' : '.xlsx,.xlsm'))
 const modeTitle = computed(() => (mode.value === 'parse' ? t('parseIdfPcf') : t('uploadInitializationData')))
 const modeDescription = computed(() => (
@@ -84,10 +91,51 @@ const modeDescription = computed(() => (
     ? t('parseModeDescription')
     : t('uploadModeDescription')
 ))
+const uploadProgressText = computed(() => {
+  if (mode.value === 'upload') {
+    return uploadProgress.value?.phase === 'preparing'
+      ? t('initializationUploadPreparing')
+      : t('initializationUploadProgress')
+  }
+  return uploadProgress.value?.phase === 'preparing'
+    ? t('parserUploadPreparing')
+    : t('parserUploadProgress')
+})
 const result = computed(() => results.value[activeResultIndex.value] || null)
-const pendingResults = computed(() => results.value.filter((item) => item?.stagedPath && !item?.confirmed))
+const isParserJobActive = computed(() => (
+  parserJob.value?.status === 'queued' || parserJob.value?.status === 'running'
+))
+const parserActionsLocked = computed(() => parsing.value || isParserJobActive.value)
+const pendingResults = computed(() => results.value.filter((item) => (
+  item?.stagedPath
+  && !item?.confirmed
+  && (
+    item.source === 'upload'
+    || (item.fileType === 'idf' && !item.modelSaved && !parserJob.value?.modelSaved)
+  )
+)))
+const mergeableResults = computed(() => results.value.filter((item) => (
+  item?.stagedPath && !item?.confirmed && item.source !== 'merge' && item.fileType !== 'idf'
+)))
 const previewRows = computed(() => result.value?.preview?.rows || [])
 const previewColumns = computed(() => result.value?.preview?.columns || [])
+function tableColumns(columns) {
+  return columns.map((column) => ({
+    field: column,
+    title: column || '-',
+    width: Math.max(140, Math.min(String(column || '').length * 16 + 56, 280)),
+  }))
+}
+const previewTableColumns = computed(() => tableColumns(previewColumns.value))
+const fixedPreviewColumns = computed(() => result.value?.preview?.fixedColumns || [])
+const fixedPreviewRows = computed(() => result.value?.preview?.fixedRows || [])
+const fixedPreviewTableColumns = computed(() => tableColumns(fixedPreviewColumns.value))
+const extraPreviewColumns = computed(() => result.value?.preview?.extraColumns || [])
+const extraPreviewRows = computed(() => result.value?.preview?.extraRows || [])
+const extraPreviewTableColumns = computed(() => tableColumns(extraPreviewColumns.value))
+const hasSplitInitializationPreview = computed(() => (
+  result.value?.source === 'upload' && fixedPreviewColumns.value.length > 0
+))
 const previewSheets = computed(() => result.value?.preview?.sheets || [])
 const normalization = computed(() => result.value?.normalization || result.value?.preview?.normalization || null)
 const normalizationSheets = computed(() => normalization.value?.sheets || [])
@@ -112,6 +160,11 @@ const invalidRowsText = computed(() => {
 })
 const hasPreview = computed(() => previewColumns.value.length > 0)
 const hasUnconfirmedResult = computed(() => pendingResults.value.length > 0)
+const isIdfResult = computed(() => (
+  result.value?.fileType === 'idf' && Number(result.value?.modelPartIndex) > 0
+))
+const canImportSpreadsheet = computed(() => result.value?.source === 'upload')
+const downloadableResults = computed(() => results.value.filter((item) => item?.artifactId || item?.stagedPath))
 
 const projectStatusColor = computed(() => (currentProject.value ? 'primary' : 'warning'))
 const idfModelStatus = computed(() => currentProject.value?.parserModels?.idf || null)
@@ -142,7 +195,7 @@ const projectStatusItems = computed(() => {
       title: 'IDF模型文件',
       color: idf?.exists ? 'success' : (idf?.status && idf.status !== 'missing' ? 'info' : 'warning'),
       status: idf?.exists ? t('ready') : parserStatusText(idf?.status),
-      detail: idf?.modelFile?.name || idf?.message || '解析 IDF 后生成 IDF模型数据.json',
+      detail: idf?.modelFile?.name || idf?.message || '解析并预览 IDF 后，由用户确认是否保存',
       meta: idf ? `${idf.inputFileCount || 0} IDF / ${idf.resultCount || 0} 结果${idf.percent ? ` / ${idf.percent}%` : ''}` : '',
     },
   ]
@@ -188,6 +241,7 @@ async function changePreviewSheet(sheet) {
   parseError.value = ''
   try {
     const payload = await fetchParserPreview({
+      artifactId: result.value.artifactId,
       stagedPath: result.value.stagedPath,
       sheet,
       previewMode: result.value.source === 'upload' ? 'initialization' : 'raw',
@@ -224,7 +278,7 @@ async function pollParserJob(jobId) {
   try {
     const payload = await fetchParserJobStatus(jobId)
     parserJob.value = payload
-    if (payload.status === 'completed' || payload.status === 'failed') {
+    if (['completed', 'failed', 'canceled'].includes(payload.status)) {
       results.value = normalizeParserResults(payload)
       activeResultIndex.value = 0
       syncActivePreviewSheet()
@@ -234,6 +288,8 @@ async function pollParserJob(jobId) {
         notify('success', payload.reused ? t('parserJobReused') : t('parseCompletedConfirmImport'))
       } else if (payload.errors?.length) {
         parseError.value = t('parserJobFailed', { message: payload.message || payload.errors[0]?.error || '-' })
+      } else if (payload.status === 'canceled') {
+        notify('warning', t('parserJobCanceled'))
       }
       return
     }
@@ -263,6 +319,7 @@ async function loadCurrentProject() {
 }
 
 async function submitFiles() {
+  if (parserActionsLocked.value) return
   if (!(await confirmDiscardParserResult(t('parserUnsavedReparseText')))) return
   clearResult()
 
@@ -278,9 +335,20 @@ async function submitFiles() {
     parsing.value = true
 
     const payload = mode.value === 'parse'
-      ? await parseUploadedFiles(selectedProjectParams(), files)
-      : await uploadInitializationFile(selectedProjectParams(), files)
+      ? await parseUploadedFiles(selectedProjectParams(), files, (progress) => {
+        uploadProgress.value = progress
+      })
+      : await uploadInitializationFile(selectedProjectParams(), files, ({ loaded, total }) => {
+        const ratio = total > 0 ? Math.min(loaded / total, 1) : 0
+        uploadProgress.value = {
+          phase: ratio >= 1 ? 'preparing' : 'uploading',
+          percent: Math.round(ratio * 100),
+          uploadedFiles: ratio >= 1 ? files.length : Math.floor(files.length * ratio),
+          totalFiles: files.length,
+        }
+      })
 
+    uploadProgress.value = null
     if (payload?.jobId && payload?.status !== 'completed' && payload?.status !== 'failed') {
       parserJob.value = payload
       notify('success', t('parserJobSubmitted'))
@@ -302,12 +370,69 @@ async function submitFiles() {
       ? t('parseFailed', { message: error.message })
       : t('uploadFailed', { message: error.message })
   } finally {
+    uploadProgress.value = null
     parsing.value = false
   }
 }
 
+async function restoreLastParseResult() {
+  if (parserActionsLocked.value) return
+  if (!(await confirmDiscardParserResult(t('parserUnsavedReparseText')))) return
+
+  restoringResult.value = true
+  parseError.value = ''
+  try {
+    const payload = await fetchLatestParserResult(selectedProjectParams())
+    stopParserJobPolling()
+    selectedFiles.value = []
+    uploadProgress.value = null
+    parserJob.value = payload
+    results.value = normalizeParserResults(payload)
+    activeResultIndex.value = 0
+    syncActivePreviewSheet()
+    notify('success', t('parserLastResultRestored'))
+  } catch (error) {
+    if (error.status === 404) {
+      notify('warning', t('parserNoLastResult'))
+    } else {
+      parseError.value = t('parserRestoreFailed', { message: error.message })
+    }
+  } finally {
+    restoringResult.value = false
+  }
+}
+
+async function cancelCurrentParserJob() {
+  if (!isParserJobActive.value || !parserJob.value?.jobId || cancelingJob.value) return
+  const confirmed = await unsavedChangesDialog.value?.open({
+    title: t('parserCancelTitle'),
+    text: t('parserCancelConfirmText'),
+    confirmText: t('interruptParsing'),
+    color: 'error',
+  })
+  if (!confirmed) return
+
+  cancelingJob.value = true
+  parseError.value = ''
+  try {
+    const payload = await cancelParserJob(parserJob.value.jobId)
+    stopParserJobPolling()
+    parserJob.value = payload
+    parsing.value = false
+    notify('warning', t('parserJobCanceled'))
+  } catch (error) {
+    parseError.value = t('parserCancelFailed', { message: error.message })
+  } finally {
+    cancelingJob.value = false
+  }
+}
+
 async function confirmImport(importMode) {
-  if (!result.value?.stagedPath) {
+  if (!canImportSpreadsheet.value) {
+    notify('warning', '解析生成的表格仅供下载，不允许导入数据库。')
+    return
+  }
+  if (!result.value?.artifactId && !result.value?.stagedPath) {
     notify('warning', t('noConfirmableFile'))
     return
   }
@@ -331,6 +456,7 @@ async function confirmImport(importMode) {
   try {
     const targetIndex = activeResultIndex.value
     const payload = await confirmInitializationFile(selectedProjectParams(), {
+      artifactId: result.value.artifactId,
       stagedPath: result.value.stagedPath,
       filename: result.value.filename,
       importMode,
@@ -364,8 +490,38 @@ async function confirmImport(importMode) {
   }
 }
 
+async function saveIdfModel() {
+  if (!parserJob.value?.jobId || !isIdfResult.value) {
+    notify('warning', '没有可保存的 IDF 模型。')
+    return
+  }
+  const confirmed = await unsavedChangesDialog.value?.open({
+    title: '保存 IDF 模型',
+    text: '确认将当前已预览的 IDF 模型保存到项目数据库吗？',
+    confirmText: '确认保存',
+    color: 'primary',
+  })
+  if (!confirmed) return
+
+  savingModel.value = true
+  parseError.value = ''
+  try {
+    const payload = await confirmIdfModel(selectedProjectParams(), parserJob.value.jobId)
+    parserJob.value = { ...parserJob.value, modelSaved: true }
+    results.value = results.value.map((item) => (
+      item.fileType === 'idf' ? { ...item, modelSaved: true } : item
+    ))
+    await loadCurrentProject()
+    notify('success', payload.message)
+  } catch (error) {
+    parseError.value = `保存 IDF 模型失败：${error.message}`
+  } finally {
+    savingModel.value = false
+  }
+}
+
 async function mergeResults() {
-  const mergeSources = results.value.filter((item) => item?.stagedPath && !item?.confirmed && item.source !== 'merge')
+  const mergeSources = mergeableResults.value
   if (mergeSources.length < 2) {
     notify('warning', t('parserMergeNeedTwo'))
     return
@@ -375,17 +531,18 @@ async function mergeResults() {
   parseError.value = ''
   try {
     const payload = await mergeParserResults(selectedProjectParams(), {
+      sources: mergeSources.map((item) => ({
+        artifactId: item.artifactId,
+        stagedPath: item.stagedPath,
+      })),
       stagedPaths: mergeSources.map((item) => item.stagedPath),
     })
-    results.value = [
-      ...results.value,
-      {
-        ...payload,
-        id: payload.stagedPath || `${Date.now()}-merge`,
-        confirmed: false,
-      },
-    ]
-    activeResultIndex.value = results.value.length - 1
+    results.value = [{
+      ...payload,
+      id: payload.stagedPath || `${Date.now()}-merge`,
+      confirmed: false,
+    }]
+    activeResultIndex.value = 0
     syncActivePreviewSheet()
     notify('success', t('parserMergeCompleted'))
   } catch (error) {
@@ -395,18 +552,47 @@ async function mergeResults() {
   }
 }
 
-function downloadExcel() {
-  if (!result.value?.downloadUrl) {
-    notify('warning', t('noDownloadableExcel'))
-    return
-  }
-
+function saveDownloadedBlob(blob, filename) {
+  const objectUrl = URL.createObjectURL(blob)
   const link = document.createElement('a')
-  link.href = result.value.downloadUrl
-  link.download = result.value.filename || 'parsed.xlsx'
+  link.href = objectUrl
+  link.download = filename
   document.body.appendChild(link)
   link.click()
   document.body.removeChild(link)
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+}
+
+async function downloadCurrentPreview() {
+  if (!result.value?.artifactId && !result.value?.stagedPath) {
+    notify('warning', t('noDownloadableExcel'))
+    return
+  }
+  downloadingPreview.value = true
+  try {
+    const blob = await downloadCurrentParserFile(result.value)
+    saveDownloadedBlob(blob, result.value.filename || 'parsed.xlsx')
+  } catch (error) {
+    notify('error', t('downloadPreviewFailed', { message: error.message }))
+  } finally {
+    downloadingPreview.value = false
+  }
+}
+
+async function downloadAllPreviews() {
+  if (!downloadableResults.value.length) {
+    notify('warning', t('noDownloadableExcel'))
+    return
+  }
+  downloadingPreview.value = true
+  try {
+    const blob = await downloadAllParserFiles(downloadableResults.value)
+    saveDownloadedBlob(blob, t('allPreviewFilesArchive'))
+  } catch (error) {
+    notify('error', t('downloadPreviewFailed', { message: error.message }))
+  } finally {
+    downloadingPreview.value = false
+  }
 }
 
 function resetFilesNow() {
@@ -415,11 +601,13 @@ function resetFilesNow() {
 }
 
 async function resetFiles() {
+  if (parserActionsLocked.value) return
   if (!(await confirmDiscardParserResult(t('parserUnsavedClearText')))) return
   resetFilesNow()
 }
 
 async function changeMode(nextMode) {
+  if (parserActionsLocked.value) return
   if (nextMode === mode.value) return
   if (!(await confirmDiscardParserResult(t('parserUnsavedModeText')))) return
   mode.value = nextMode
@@ -427,6 +615,7 @@ async function changeMode(nextMode) {
 }
 
 async function setFiles(files) {
+  if (parserActionsLocked.value) return
   if (!(await confirmDiscardParserResult(t('parserUnsavedReplaceFileText')))) return
   selectedFiles.value = Array.from(files || [])
   clearResult()
@@ -455,7 +644,16 @@ onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', handleBeforeUnload)
 })
 
-watch(activeResultIndex, syncActivePreviewSheet)
+watch(activeResultIndex, () => {
+  syncActivePreviewSheet()
+})
+watch(() => route.query.tab, (tab) => {
+  const nextMode = tab === 'parse' ? 'parse' : 'upload'
+  if (nextMode !== mode.value && !hasUnconfirmedResult.value) {
+    mode.value = nextMode
+    resetFilesNow()
+  }
+})
 </script>
 
 <template>
@@ -503,7 +701,7 @@ watch(activeResultIndex, syncActivePreviewSheet)
       />
     </v-card>
 
-    <v-card class="module-panel parser-upload-panel" :loading="parsing">
+    <v-card class="module-panel parser-upload-panel" :loading="parsing && !isParserJobActive">
       <div class="section-head">
         <div>
           <h2>
@@ -511,9 +709,6 @@ watch(activeResultIndex, syncActivePreviewSheet)
             <InfoTooltip :text="modeDescription" location="bottom" />
           </h2>
         </div>
-        <v-chip color="primary" variant="flat">
-          {{ t('fileCount', { count: selectedFiles?.length || 0 }) }}{{ selectedFileType ? ` / ${selectedFileType}` : '' }}
-        </v-chip>
       </div>
 
       <v-btn-toggle
@@ -522,10 +717,11 @@ watch(activeResultIndex, syncActivePreviewSheet)
         density="compact"
         mandatory
         class="parser-mode-toggle"
+        :disabled="parserActionsLocked"
         @update:model-value="changeMode"
       >
-        <v-btn value="parse" prepend-icon="mdi-file-search-outline">{{ t('fileParse') }}</v-btn>
         <v-btn value="upload" prepend-icon="mdi-upload">{{ t('initializationUpload') }}</v-btn>
+        <v-btn value="parse" prepend-icon="mdi-file-search-outline">{{ t('fileParse') }}</v-btn>
       </v-btn-toggle>
 
       <FileUploadDropzone
@@ -533,13 +729,39 @@ watch(activeResultIndex, syncActivePreviewSheet)
         :files="selectedFiles"
         :accept="acceptedFileTypes"
         multiple
-        :disabled="parsing"
+        :disabled="parserActionsLocked"
         @files-selected="setFiles"
       />
 
       <v-alert
+        v-if="uploadProgress && !parserJob"
+        type="info"
+        variant="tonal"
+        density="compact"
+        class="parser-job-alert"
+      >
+        <div class="parser-job-head">
+          <strong>{{ uploadProgressText }}</strong>
+          <span>{{ uploadProgress.percent || 0 }}%</span>
+        </div>
+        <v-progress-linear
+          :model-value="uploadProgress.percent || 0"
+          height="8"
+          rounded
+          color="primary"
+          class="parser-job-progress"
+        />
+        <div class="parser-job-message">
+          {{ t('parserUploadFileCount', {
+            uploaded: uploadProgress.uploadedFiles || 0,
+            total: uploadProgress.totalFiles || 0,
+          }) }}
+        </div>
+      </v-alert>
+
+      <v-alert
         v-if="parserJob"
-        :type="parserJob.status === 'failed' ? 'error' : (parserJob.status === 'completed' ? 'success' : 'info')"
+        :type="parserJob.status === 'failed' ? 'error' : (parserJob.status === 'completed' ? 'success' : (parserJob.status === 'canceled' ? 'warning' : 'info'))"
         variant="tonal"
         density="compact"
         class="parser-job-alert"
@@ -565,7 +787,7 @@ watch(activeResultIndex, syncActivePreviewSheet)
           prepend-icon="mdi-folder-upload-outline"
           color="secondary"
           variant="tonal"
-          :disabled="parsing"
+          :disabled="parserActionsLocked"
           @click="selectFolder"
         >
           {{ t('selectFolder') }}
@@ -574,16 +796,28 @@ watch(activeResultIndex, syncActivePreviewSheet)
         <v-btn
           color="primary"
           prepend-icon="mdi-cog-play"
-          :loading="parsing"
-          :disabled="!selectedFiles?.length"
+          :loading="parsing && !isParserJobActive"
+          :disabled="parserActionsLocked || !selectedFiles?.length"
           @click="submitFiles"
         >
           {{ mode === 'parse' ? t('parseToExcel') : t('uploadAndPreview') }}
         </v-btn>
 
         <v-btn
+          v-if="mode === 'parse'"
+          prepend-icon="mdi-history"
+          color="primary"
+          variant="tonal"
+          :loading="restoringResult"
+          :disabled="parserActionsLocked"
+          @click="restoreLastParseResult"
+        >
+          {{ t('restoreLastParseResult') }}
+        </v-btn>
+
+        <v-btn
           prepend-icon="mdi-refresh"
-          :disabled="parsing"
+          :disabled="parserActionsLocked"
           @click="resetFiles"
         >
           {{ t('clear') }}
@@ -593,40 +827,76 @@ watch(activeResultIndex, syncActivePreviewSheet)
           prepend-icon="mdi-call-merge"
           color="secondary"
           variant="tonal"
-          :loading="parsing"
-          :disabled="results.length < 2 || pendingResults.length < 2"
+          :loading="parsing && !isParserJobActive"
+          :disabled="parserActionsLocked || mergeableResults.length < 2"
           @click="mergeResults"
         >
           {{ t('mergeResults') }}
         </v-btn>
 
         <v-btn
+          v-if="canImportSpreadsheet"
           color="success"
           prepend-icon="mdi-file-sync-outline"
           :loading="confirming"
-          :disabled="!result?.stagedPath || result?.confirmed || !canImportResult"
+          :disabled="parserActionsLocked || (!result?.artifactId && !result?.stagedPath) || result?.confirmed || !canImportResult"
           @click="confirmImport('replace')"
         >
           {{ t('replaceImport') }}
         </v-btn>
 
         <v-btn
+          v-if="canImportSpreadsheet"
           color="primary"
           variant="tonal"
           prepend-icon="mdi-table-row-plus-after"
           :loading="confirming"
-          :disabled="!result?.stagedPath || result?.confirmed || !canImportResult"
+          :disabled="parserActionsLocked || (!result?.artifactId && !result?.stagedPath) || result?.confirmed || !canImportResult"
           @click="confirmImport('append')"
         >
           {{ t('appendImport') }}
         </v-btn>
 
         <v-btn
-          prepend-icon="mdi-download"
-          :disabled="!result?.downloadUrl"
-          @click="downloadExcel"
+          v-if="isIdfResult"
+          color="primary"
+          prepend-icon="mdi-database-plus-outline"
+          :loading="savingModel"
+          :disabled="parserActionsLocked || parserJob?.modelSaved || result?.modelSaved || !parserJob?.modelAvailable"
+          @click="saveIdfModel"
         >
-          {{ t('downloadPreviewFile') }}
+          {{ parserJob?.modelSaved || result?.modelSaved ? '模型已保存' : '保存 IDF 模型' }}
+        </v-btn>
+
+        <v-btn
+          v-if="mode === 'parse'"
+          prepend-icon="mdi-download"
+          :loading="downloadingPreview"
+          :disabled="parserActionsLocked || (!result?.artifactId && !result?.stagedPath)"
+          @click="downloadCurrentPreview"
+        >
+          {{ t('downloadCurrentPreviewFile') }}
+        </v-btn>
+
+        <v-btn
+          v-if="mode === 'parse'"
+          prepend-icon="mdi-folder-download-outline"
+          variant="tonal"
+          :disabled="parserActionsLocked || downloadingPreview || !downloadableResults.length"
+          @click="downloadAllPreviews"
+        >
+          {{ t('downloadAllPreviewFiles') }}
+        </v-btn>
+
+        <v-btn
+          v-if="isParserJobActive"
+          prepend-icon="mdi-stop-circle-outline"
+          color="error"
+          variant="tonal"
+          :loading="cancelingJob"
+          @click="cancelCurrentParserJob"
+        >
+          {{ t('interruptParsing') }}
         </v-btn>
       </div>
 
@@ -643,9 +913,6 @@ watch(activeResultIndex, syncActivePreviewSheet)
               />
             </h2>
           </div>
-          <v-chip v-if="result" :color="result.confirmed ? 'success' : 'warning'" variant="tonal">
-            {{ result.confirmed ? t('confirmedImported') : t('waitingForConfirm') }}
-          </v-chip>
           <v-select
             v-if="previewSheets.length > 1"
             :model-value="activePreviewSheet"
@@ -705,26 +972,51 @@ watch(activeResultIndex, syncActivePreviewSheet)
           <div v-if="invalidRowsText">{{ t('normalizationInvalidRows') }}：{{ invalidRowsText }}</div>
         </v-alert>
 
-        <div v-if="hasPreview" class="parser-preview-table-wrap">
-          <table class="parser-preview-table">
-            <thead>
-              <tr>
-                <th v-for="column in previewColumns" :key="column">{{ column }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(row, index) in previewRows" :key="index">
-                <td v-for="column in previewColumns" :key="column">{{ row[column] }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <template v-if="hasSplitInitializationPreview">
+          <div class="parser-preview-subsection">
+            <div class="parser-preview-subsection-title">
+              <strong>固定字段</strong>
+              <span>{{ fixedPreviewColumns.length }} 列</span>
+            </div>
+            <DataVTable
+              :records="fixedPreviewRows"
+              :columns="fixedPreviewTableColumns"
+              :height="360"
+            />
+          </div>
+          <div class="parser-preview-subsection">
+            <div class="parser-preview-subsection-title">
+              <strong>额外字段</strong>
+              <span>{{ extraPreviewColumns.length }} 列</span>
+            </div>
+            <DataVTable
+              v-if="extraPreviewColumns.length"
+              :records="extraPreviewRows"
+              :columns="extraPreviewTableColumns"
+              :height="300"
+            />
+            <v-alert
+              v-else
+              type="info"
+              variant="tonal"
+              density="compact"
+              text="当前文件没有固定模型之外的额外字段。"
+            />
+          </div>
+        </template>
+        <DataVTable
+          v-else-if="hasPreview"
+          :records="previewRows"
+          :columns="previewTableColumns"
+          :height="360"
+        />
         <div v-else class="parser-preview-empty">
           <v-icon icon="mdi-table-eye-off" size="34" />
           <strong>{{ t('noPreviewData') }}</strong>
           <InfoTooltip :text="t('previewEmptyHint')" location="bottom" />
         </div>
       </div>
+
     </v-card>
   </v-sheet>
 
@@ -919,6 +1211,24 @@ watch(activeResultIndex, syncActivePreviewSheet)
   margin-top: 16px;
 }
 
+.parser-preview-subsection + .parser-preview-subsection {
+  margin-top: 18px;
+}
+
+.parser-preview-subsection-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.parser-preview-subsection-title strong {
+  color: var(--strong);
+  font-size: 14px;
+}
+
 .parser-sheet-select {
   width: min(280px, 100%);
   flex: 0 1 280px;
@@ -927,43 +1237,6 @@ watch(activeResultIndex, syncActivePreviewSheet)
 .parser-preview-alert {
   margin-top: 12px;
   margin-bottom: 12px;
-}
-
-.parser-preview-table-wrap {
-  max-height: 360px;
-  overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel);
-}
-
-.parser-preview-table {
-  width: 100%;
-  min-width: 780px;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-
-.parser-preview-table th,
-.parser-preview-table td {
-  max-width: 220px;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--line);
-  border-right: 1px solid var(--line);
-  color: var(--text);
-  text-align: left;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.parser-preview-table th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--panel-soft);
-  color: var(--strong);
-  font-weight: 800;
 }
 
 .parser-preview-empty {

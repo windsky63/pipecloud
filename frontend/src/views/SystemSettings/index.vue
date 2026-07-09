@@ -5,6 +5,7 @@ import InfoTooltip from '../../components/InfoTooltip.vue'
 import SystemSettingsHeader from './SystemSettingsHeader.vue'
 import {
   isNavigationRouteVisible,
+  developerMode,
   errorMessage,
   formatSize,
   formatTime,
@@ -17,6 +18,7 @@ import {
   navigationVisibility,
   navigationVisibilityKeys,
   setShowRunLog,
+  setDeveloperMode,
   setLanguage,
   setHomeComponentVisibility,
   setNavigationRouteVisibility,
@@ -84,7 +86,7 @@ const moduleFileStatusGroups = computed(() => {
 
 const navigationItems = computed(() => [
   { key: 'home', routeKey: '/home', title: t('prefabHome'), icon: 'mdi-view-dashboard-outline' },
-  { key: 'parser', routeKey: '/parser', title: t('fileParser'), icon: 'mdi-file-excel-outline' },
+  { key: 'parser', routeKey: '/files', title: t('files'), icon: 'mdi-folder-multiple-outline' },
   { key: 'spoolCheck', routeKey: '/spool-check', title: t('spoolCheck'), icon: 'mdi-source-branch-check' },
   { key: 'factory', routeKey: '/factory', title: t('prefabFactory'), icon: 'mdi-factory' },
   {
@@ -112,11 +114,11 @@ const navigationItems = computed(() => [
   },
   {
     key: 'weldLibraries',
-    routeKey: '/weld-libraries',
+    routeKey: '/libraries',
     title: t('weldLibraries'),
     icon: 'mdi-table-large',
     children: libraries.value.map((library) => ({
-      routeKey: `/weld-libraries/${library.key}`,
+      routeKey: `/libraries/${library.key}`,
       title: localizedLibraryTitle(library),
       icon: 'mdi-file-document-outline',
     })),
@@ -130,6 +132,7 @@ const lockedNavigationItems = computed(() => [
 const homeComponentItems = computed(() => [
   { key: 'initializationDashboard', title: t('initializationDashboardTitle'), icon: 'mdi-chart-donut' },
   { key: 'weldingDashboard', title: t('weldingDashboardTitle'), icon: 'mdi-chart-line' },
+  { key: 'arrivalDashboard', title: t('arrivalDashboardTitle'), icon: 'mdi-truck-check-outline' },
   { key: 'workflow', title: t('workflow'), icon: 'mdi-source-branch-sync' },
   { key: 'projectData', title: t('projectData'), icon: 'mdi-table-cog' },
   { key: 'projectWeldInfo', title: t('projectWeldInfo'), icon: 'mdi-table-search' },
@@ -260,6 +263,19 @@ onMounted(() => {
                 hide-details
                 :label="showRunLog ? t('show') : t('hide')"
                 @update:model-value="setShowRunLog"
+              />
+            </td>
+          </tr>
+          <tr>
+            <th>{{ t('developerMode') }}</th>
+            <td>
+              <v-switch
+                :model-value="developerMode"
+                color="primary"
+                density="compact"
+                hide-details
+                :label="developerMode ? t('enabled') : t('disabled')"
+                @update:model-value="setDeveloperMode"
               />
             </td>
           </tr>

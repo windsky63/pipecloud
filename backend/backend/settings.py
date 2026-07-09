@@ -74,11 +74,11 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
-MYSQL_DATABASE = os.getenv('MYSQL_DATABASE', 'pipecloud')
-MYSQL_USER = os.getenv('MYSQL_USER', 'root')
-MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD', '')
-MYSQL_HOST = os.getenv('MYSQL_HOST', '127.0.0.1')
-MYSQL_PORT = os.getenv('MYSQL_PORT', '3306')
+MYSQL_DATABASE = 'pipecloud'
+MYSQL_USER = 'root'
+MYSQL_PASSWORD = '123456'
+MYSQL_HOST = '127.0.0.1'
+MYSQL_PORT = '3306'
 
 DATABASES = {
     'default': {
@@ -125,6 +125,12 @@ TIME_ZONE = 'Asia/Shanghai'
 USE_I18N = True
 
 USE_TZ = True
+
+PLAN_ROLLOVER_HOUR = int(os.getenv('PIPECLOUD_PLAN_ROLLOVER_HOUR', '21'))
+PLAN_ROLLOVER_MINUTE = int(os.getenv('PIPECLOUD_PLAN_ROLLOVER_MINUTE', '0'))
+PLAN_ROLLOVER_MISFIRE_GRACE_SECONDS = int(
+    os.getenv('PIPECLOUD_PLAN_ROLLOVER_MISFIRE_GRACE_SECONDS', '3600')
+)
 
 
 # Static files (CSS, JavaScript, Images)

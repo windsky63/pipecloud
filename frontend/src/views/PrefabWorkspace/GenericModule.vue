@@ -30,6 +30,7 @@ defineEmits(['execute-action'])
         color="primary"
         variant="tonal"
         :loading="runningKey === action.key"
+        :disabled="Boolean(runningKey)"
         @click="$emit('execute-action', action.key)"
       >
         {{ localizedActionName(action) }}

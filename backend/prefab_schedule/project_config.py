@@ -50,7 +50,10 @@ INIT_DATA_COLUMNS = {
 
 GENERATED_COLUMNS = {
     'picked_flag': '已抽取',
-    'completed_flag': '是否完成',
+    'material_arrival_status': '材料到货状态',
+    'material_anti_corrosion_status': '材料防腐状态',
+    'material_cutting_status': '材料下料状态',
+    'completed_flag': '材料焊接状态',
     'library_seq': '库序号',
     'weld_method': '焊接方式',
     'weld_priority': '优先级',
@@ -80,7 +83,10 @@ COLUMN_ALIASES = {
     COLUMNS['material_unique_1']: ['材料唯一码1', '材料唯一码_1', '材料唯一编码1'],
     COLUMNS['material_unique_2']: ['材料唯一码2', '材料唯一码_2', '材料唯一编码2'],
     COLUMNS['picked_flag']: ['已抽取', '是否抽取', '抽取标记', '抽取标志'],
-    COLUMNS['completed_flag']: ['是否完成', '完成状态', '状态', '完工状态'],
+    COLUMNS['material_arrival_status']: ['材料到货状态', '到货状态'],
+    COLUMNS['material_anti_corrosion_status']: ['材料防腐状态', '防腐状态'],
+    COLUMNS['material_cutting_status']: ['材料下料状态', '下料状态'],
+    COLUMNS['completed_flag']: ['材料焊接状态', '是否完成', '完成状态', '状态', '完工状态', '焊接状态'],
     COLUMNS['weld_no_start']: ['初始焊口号', '起始焊口号', '焊口起始号', '开始焊口号'],
     COLUMNS['weld_no_final']: ['最终焊口号', '结束焊口号', '焊口结束号', '完成焊口号'],
     COLUMNS['material']: ['材质', '材质名称'],

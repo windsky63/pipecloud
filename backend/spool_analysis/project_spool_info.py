@@ -1,6 +1,4 @@
-import json
 import re
-from pathlib import Path
 
 import pandas as pd
 
@@ -8,7 +6,6 @@ PREFAB_WELD_LIBRARY_NAME = '预制焊口库.xlsx'
 INITIALIZATION_WELD_LIBRARY_NAME = '焊口初始化数据.xlsx'
 PIPE_LIBRARY_NAME = '管子材料库.xlsx'
 FITTING_LIBRARY_NAME = '管件法兰材料库.xlsx'
-_IDF_MODEL_PAYLOAD_CACHE = {}
 
 
 def clean_value(value):
@@ -41,12 +38,15 @@ def read_project_spool_info_from_database(project, project_root, weld_source_key
     selected_source = 'initialization' if requested_source == 'initialization' else 'prefab'
     if selected_source == 'initialization':
         weld_df, weld_source = _source_dataframe(project, 'initialization', 'welds', {'*': InitializationWeldRow})
+        if not weld_df.empty:
+            from pipecloud.services.db_storage import initialization_rows_with_compatibility
+            weld_df = pd.DataFrame(initialization_rows_with_compatibility(weld_df.to_dict(orient='records')))
     else:
         weld_df, weld_source = _source_dataframe(project, 'library', 'weld-library', {'*': WeldLibraryRow})
     init_source = _latest_data_source(project, 'initialization', 'welds')
     pipe_df, pipe_source = _library_dataframe(project, 'pipe-library', PipeMaterialRow)
     fitting_df, fitting_source = _library_dataframe(project, 'fitting-library', FittingMaterialRow)
-    idf_model_payload = _latest_idf_model_payload(project) if include_model else None
+    idf_model = _latest_idf_model(project) if include_model else None
     payload = _spool_info_payload(
         project,
         weld_df,
@@ -54,7 +54,7 @@ def read_project_spool_info_from_database(project, project_root, weld_source_key
         fitting_df,
         _database_file_payload(weld_source, init_source, pipe_source, fitting_source, selected_source),
         structure_spool=structure_spool,
-        idf_model_payload=idf_model_payload,
+        idf_model_payload=idf_model,
         include_model=include_model,
     )
     payload.update({
@@ -65,191 +65,16 @@ def read_project_spool_info_from_database(project, project_root, weld_source_key
         'projectPipeSegment': project.pipe_segment,
         'projectRoot': f'database://project/{project.id}',
     })
-    if idf_model_payload:
-        _model, model_path, job = idf_model_payload
-        payload['modelFile'] = {
-            'name': model_path.name,
-            'path': str(model_path),
-            'exists': True,
-            'jobId': job.job_id,
-            'updatedAt': job.updated_at.isoformat(timespec='seconds') if job.updated_at else '',
-        }
+    if idf_model:
+        from pipecloud.services.idf_model_storage import idf_database_file_payload
+        payload['modelFile'] = idf_database_file_payload(idf_model)
     return payload
 
 
-def _idf_model_spool_payload(project, structure_spool='__first__'):
-    model_payload = _latest_idf_model_payload(project)
-    if not model_payload:
-        return None
-    model, model_path, job = model_payload
-    pipelines = model.get('pipelines') or []
-    components = model.get('components') or []
-    components_by_pipeline = {}
-    for component in components:
-        pipeline_id = str(component.get('pipelineId') or '')
-        components_by_pipeline.setdefault(pipeline_id, []).append(component)
+def _latest_idf_model(project):
+    from pipecloud.services.idf_model_storage import latest_ready_idf_model
 
-    target_spool = str(structure_spool or '__first__')
-    if target_spool == '__first__' and pipelines:
-        target_spool = _pipeline_spool_no(pipelines[0])
-
-    spools = []
-    for pipeline in pipelines:
-        spool_no = _pipeline_spool_no(pipeline)
-        pipeline_id = str(pipeline.get('pipelineId') or '')
-        pipeline_components = components_by_pipeline.get(pipeline_id, [])
-        include_details = spool_no == target_spool
-        selected_components = _sanitize_idf_components(pipeline_components) if include_details else []
-        material_count = _idf_material_count(pipeline_components)
-        weld_count = int(pipeline.get('weldCount') or sum(1 for item in pipeline_components if item.get('type') == 'weld'))
-        spools.append({
-            'spoolNo': spool_no,
-            'unitNo': pipeline.get('unitName') or '未分单元',
-            'lineNo': pipeline.get('pipelineName') or pipeline_id or pipeline.get('fileName') or '未分管线',
-            'segmentNos': [pipeline.get('fileName') or pipeline_id],
-            'segmentCount': int(pipeline.get('segmentCount') or len([item for item in pipeline_components if item.get('type') == 'pipe'])),
-            'weldCount': weld_count,
-            'completedCount': 0,
-            'materialCount': material_count,
-            'issueCount': 0,
-            'inchDiameterTotal': 0,
-            'welds': _idf_weld_rows(pipeline_components) if include_details else [],
-            'materials': _idf_material_rows(pipeline_components) if include_details else [],
-            'components': selected_components,
-            'detailsLoaded': include_details,
-            'structureLoaded': include_details,
-            'issues': [],
-            'modelSource': 'idf',
-        })
-
-    return {
-        'source': 'idf-model',
-        'weldSource': 'idf',
-        'projectId': project.id,
-        'projectName': project.project_name,
-        'projectPipeSegment': project.pipe_segment,
-        'projectRoot': f'database://project/{project.id}',
-        'modelFile': {
-            'name': model_path.name,
-            'path': str(model_path),
-            'exists': True,
-            'jobId': job.job_id,
-            'updatedAt': job.updated_at.isoformat(timespec='seconds') if job.updated_at else '',
-        },
-        'files': {
-            'weldLibrary': {'name': 'IDF模型数据.json', 'path': str(model_path), 'exists': True, 'size': model_path.stat().st_size, 'updatedAt': model_path.stat().st_mtime},
-            'pipeLibrary': {'name': 'IDF材料表', 'path': '', 'exists': True, 'size': 0, 'updatedAt': None},
-            'fittingLibrary': {'name': 'IDF材料表', 'path': '', 'exists': True, 'size': 0, 'updatedAt': None},
-        },
-        'total': len(spools),
-        'unitCount': len({spool['unitNo'] for spool in spools}),
-        'spools': spools,
-    }
-
-
-def _latest_idf_model_payload(project):
-    from pipecloud.models import ParserJob
-
-    file_parser_root = Path(__file__).resolve().parents[1] / 'file' / 'parser'
-
-    job = (
-        ParserJob.objects
-        .filter(project=project, file_type='idf', status='completed')
-        .order_by('-updated_at', '-id')
-        .first()
-    )
-    if not job:
-        return None
-    candidate_paths = []
-    for result in job.results or []:
-        staged_path = result.get('stagedPath')
-        if staged_path:
-            candidate_paths.append((file_parser_root / staged_path).resolve().parent / 'IDF模型数据.json')
-    if job.batch_path:
-        candidate_paths.append((file_parser_root / job.batch_path / 'IDF模型数据.json').resolve())
-    cache_key = _idf_model_cache_key(job, candidate_paths)
-    if cache_key in _IDF_MODEL_PAYLOAD_CACHE:
-        return _IDF_MODEL_PAYLOAD_CACHE[cache_key]
-    models = []
-    model_paths = []
-    for path in candidate_paths:
-        if path.exists() and path.is_file():
-            with path.open('r', encoding='utf-8') as file_obj:
-                models.append(json.load(file_obj))
-                model_paths.append(path)
-    if not models:
-        return None
-    model = models[0] if len(models) == 1 else _merge_idf_model_payloads(models, project.project_name)
-    payload = (model, model_paths[0], job)
-    _IDF_MODEL_PAYLOAD_CACHE.clear()
-    _IDF_MODEL_PAYLOAD_CACHE[cache_key] = payload
-    return payload
-
-
-def _idf_model_cache_key(job, candidate_paths):
-    path_parts = []
-    for path in candidate_paths:
-        if path.exists() and path.is_file():
-            stat = path.stat()
-            path_parts.append((str(path), int(stat.st_size), int(stat.st_mtime)))
-    return (
-        job.id,
-        job.job_id,
-        job.updated_at.isoformat(timespec='seconds') if job.updated_at else '',
-        tuple(path_parts),
-    )
-
-
-def _merge_idf_model_payloads(models, project_name):
-    merged = {
-        'pipelineName': project_name,
-        'fileName': f'{project_name}.json',
-        'projectName': project_name,
-        'sourceType': 'idf-directory',
-        'pipelineCount': 0,
-        'pipelines': [],
-        'drawingOptionsByPipelineId': {},
-        'materials': [],
-        'components': [],
-        'units': 'IDF coordinate units, rendered after automatic scaling',
-        'nodes': [],
-        'segments': [],
-        'symbolComponents': [],
-        'drawingSplitMarkers': [],
-    }
-    seen_pipeline_ids = {}
-    for model_index, model in enumerate(models, start=1):
-        pipeline_id_map = {}
-        for pipeline in model.get('pipelines') or []:
-            original_id = str(pipeline.get('pipelineId') or pipeline.get('fileName') or f'pipeline-{len(merged["pipelines"]) + 1}')
-            duplicate_index = seen_pipeline_ids.get(original_id, 0) + 1
-            seen_pipeline_ids[original_id] = duplicate_index
-            next_id = original_id if duplicate_index == 1 else f'{original_id}#part{model_index}-{duplicate_index}'
-            pipeline_id_map[original_id] = next_id
-            merged['pipelines'].append({**pipeline, 'pipelineId': next_id})
-
-        def remap_item(item):
-            original_id = str(item.get('pipelineId') or '')
-            if original_id and original_id in pipeline_id_map:
-                return {**item, 'pipelineId': pipeline_id_map[original_id]}
-            return item
-
-        merged['materials'].extend(remap_item(item) for item in model.get('materials') or [])
-        merged['components'].extend(remap_item(item) for item in model.get('components') or [])
-        merged['segments'].extend(remap_item(item) for item in model.get('segments') or [])
-        merged['symbolComponents'].extend(remap_item(item) for item in model.get('symbolComponents') or [])
-        merged['drawingSplitMarkers'].extend(remap_item(item) for item in model.get('drawingSplitMarkers') or [])
-        for key, value in (model.get('drawingOptionsByPipelineId') or {}).items():
-            merged['drawingOptionsByPipelineId'][pipeline_id_map.get(str(key), str(key))] = value
-        merged['nodes'].extend(model.get('nodes') or [])
-    merged['pipelineCount'] = len(merged['pipelines'])
-    return merged
-
-
-def _pipeline_spool_no(pipeline):
-    unit_name = pipeline.get('unitName') or '未分单元'
-    line_name = pipeline.get('pipelineName') or pipeline.get('pipelineId') or pipeline.get('fileName') or '未分管线'
-    return f'{unit_name} / {line_name}'
+    return latest_ready_idf_model(project)
 
 
 def _sanitize_idf_components(components):
@@ -261,65 +86,6 @@ def _sanitize_idf_components(components):
         }
         for component in components
     ]
-
-
-def _idf_material_count(components):
-    keys = {
-        str(item.get('materialCode') or item.get('materialDescription') or item.get('materialIndex') or '').strip()
-        for item in components
-        if item.get('type') not in {'weld', 'equipment', 'olet-marker'}
-    }
-    return len({key for key in keys if key})
-
-
-def _idf_weld_rows(components):
-    rows = []
-    for item in components:
-        if item.get('type') != 'weld':
-            continue
-        rows.append({
-            'unitNo': item.get('unitName', ''),
-            'lineNo': item.get('pipelineName', ''),
-            'finalWeldNo': item.get('weldNo') or item.get('weldRawNo') or '',
-            'jointType': item.get('weldType', ''),
-            'inchDiameter': item.get('spec', ''),
-            'material': '',
-            'weldingMethod': item.get('weldType', ''),
-            'completed': False,
-        })
-    return rows
-
-
-def _idf_material_rows(components):
-    grouped = {}
-    for item in components:
-        if item.get('type') in {'weld', 'equipment', 'olet-marker'}:
-            continue
-        code = str(item.get('materialCode') or '').strip()
-        description = str(item.get('materialDescription') or '').strip()
-        key = code or description or str(item.get('materialIndex') or '')
-        if not key:
-            continue
-        entry = grouped.setdefault(key, {
-            'materialCode': code or key,
-            'description': description,
-            'category': item.get('type') or '',
-            'requiredQty': 0,
-            'stockQty': 0,
-            'shortageQty': 0,
-            'inStock': True,
-            'unit': '米' if item.get('type') == 'pipe' else '个',
-            'sources': set(),
-            'weldNos': set(),
-        })
-        entry['requiredQty'] += to_number(item.get('quantity', 0))
-    result = []
-    for entry in grouped.values():
-        entry['requiredQty'] = round(entry['requiredQty'], 3)
-        entry['sources'] = sorted(entry['sources'])
-        entry['weldNos'] = sorted(entry['weldNos'])
-        result.append(entry)
-    return sorted(result, key=lambda item: item['materialCode'])
 
 
 def _library_dataframe(project, source_key, model):
@@ -683,26 +449,28 @@ def _spool_idf_components(spool_df, idf_model_payload):
     if not idf_model_payload:
         return [], [{'level': 'warning', 'message': '未找到已完成的 IDF 解析模型，结构模型暂不可用'}], 0
 
-    model, _model_path, _job = idf_model_payload
-    all_components = model.get('components') or []
-    if not all_components:
+    from django.db.models import Q
+    from pipecloud.models import IdfComponent, IdfWeldLookup
+
+    if not idf_model_payload.component_count:
         return [], [{'level': 'warning', 'message': '最新 IDF 解析模型中没有可渲染元件'}], 0
 
     requested_lookup_keys = _spool_weld_lookup_keys(spool_df)
     if not requested_lookup_keys:
         return [], [{'level': 'warning', 'message': '当前管段没有可用于匹配 IDF 模型的焊口号'}], 0
 
-    component_by_id, weld_index = _idf_model_indexes(model)
-    matched_welds = []
-    seen_weld_ids = set()
-    for lookup_key in requested_lookup_keys:
-        for weld in weld_index.get(lookup_key, []):
-            weld_id = str(weld.get('id') or '')
-            if weld_id and weld_id in seen_weld_ids:
-                continue
-            if weld_id:
-                seen_weld_ids.add(weld_id)
-            matched_welds.append(weld)
+    lookup_query = Q()
+    for line_key, weld_key in requested_lookup_keys:
+        lookup_query |= Q(line_key=line_key, weld_key=weld_key)
+    lookup_rows = list(
+        IdfWeldLookup.objects
+        .select_related('component')
+        .filter(lookup_query, model=idf_model_payload)
+    )
+    matched_components = {}
+    for lookup in lookup_rows:
+        matched_components[lookup.component_id] = lookup.component
+    matched_welds = list(matched_components.values())
 
     if not matched_welds:
         return [], [{
@@ -710,23 +478,26 @@ def _spool_idf_components(spool_df, idf_model_payload):
             'message': f'IDF 模型中未匹配到当前管段的 {len(requested_lookup_keys)} 个焊口定位键',
         }], 0
 
-    selected_ids = set()
+    selected_refs = set()
     for weld in matched_welds:
-        if weld.get('id') not in (None, ''):
-            selected_ids.add(str(weld.get('id')))
-        for component_id in weld.get('connectedComponentIds') or []:
-            selected_ids.add(str(component_id))
+        selected_refs.add((weld.subtask_index, weld.component_id))
+        for component_id in weld.payload.get('connectedComponentIds') or []:
+            selected_refs.add((weld.subtask_index, str(component_id)[:255]))
 
-    selected_components = [
-        component_by_id[component_id]
-        for component_id in selected_ids
-        if component_id in component_by_id
-    ]
+    component_query = Q()
+    for subtask_index, component_id in selected_refs:
+        component_query |= Q(subtask_index=subtask_index, component_id=component_id)
+    selected_components = list(
+        IdfComponent.objects
+        .filter(component_query, model=idf_model_payload)
+        .values_list('payload', flat=True)
+    ) if selected_refs else []
 
     issues = []
-    matched_lookup_keys = set()
-    for weld in matched_welds:
-        matched_lookup_keys.update(_component_lookup_keys(weld) & requested_lookup_keys)
+    matched_lookup_keys = {
+        (lookup.line_key, lookup.weld_key)
+        for lookup in lookup_rows
+    } & requested_lookup_keys
     missed_count = max(len(requested_lookup_keys) - len(matched_lookup_keys), 0)
     if missed_count:
         issues.append({
@@ -742,43 +513,6 @@ def _spool_idf_components(spool_df, idf_model_payload):
     return _sanitize_idf_components(selected_components), issues, len(matched_welds)
 
 
-def _idf_model_indexes(model):
-    indexes = model.get('_pipecloudIndexes')
-    if indexes:
-        return indexes['componentById'], indexes['weldIndex']
-
-    components = model.get('components') or []
-    component_by_id = {
-        str(component.get('id')): component
-        for component in components
-        if component.get('id') not in (None, '')
-    }
-    weld_index = {}
-    for component in components:
-        if component.get('type') != 'weld':
-            continue
-        for lookup_key in _component_lookup_keys(component):
-            weld_index.setdefault(lookup_key, []).append(component)
-    indexes = {'componentById': component_by_id, 'weldIndex': weld_index}
-    model['_pipecloudIndexes'] = indexes
-    return component_by_id, weld_index
-
-
-def _component_lookup_keys(component):
-    line_values = _scope_value_variants(
-        component.get('pipelineName')
-        or component.get('lineNo')
-        or component.get('weldOwnerPipelineName')
-    )
-    weld_values = _component_weld_key_set(component)
-    return {
-        (line_value, weld_value)
-        for line_value in line_values
-        for weld_value in weld_values
-        if line_value and weld_value
-    }
-
-
 def _spool_weld_lookup_keys(spool_df):
     keys = set()
     for _, row in spool_df.iterrows():
@@ -791,13 +525,6 @@ def _spool_weld_lookup_keys(spool_df):
                 for weld_value in weld_values
                 if line_value and weld_value
             )
-    return keys
-
-
-def _component_weld_key_set(component):
-    keys = set()
-    for field in ('weldNo', 'weldRawNo', 'label'):
-        keys.update(_weld_no_variants(component.get(field, '')))
     return keys
 
 

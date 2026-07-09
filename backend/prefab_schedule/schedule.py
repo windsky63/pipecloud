@@ -11,16 +11,16 @@ import sys
 import pandas as pd
 
 ROOT_DIR = Path(__file__).resolve().parent
-AUTO_WELD_DIR = ROOT_DIR / '焊接管理及排产' / '自动焊排产'
+AUTO_WELD_DIR = ROOT_DIR / 'welding' / 'auto_weld_schedule'
 for path in (ROOT_DIR, AUTO_WELD_DIR):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
 from common_utils import normalize_columns, prepare_output_file
 from project_config import COLUMNS, SCHEDULE_DIR, VERBOSE
-from 下料管理及排产.cutting_config import CUTTING_DIR, MATCHED_STATUS, STATUS_COL
-from 焊接管理及排产.weld_config import FILES, get_weld_schedule_output_files
-from 焊接管理及排产.自动焊排产.auto_weld_schedule_config import EXTRACT
+from cutting.cutting_config import CUTTING_DIR, MATCHED_STATUS, STATUS_COL
+from welding.weld_config import FILES, get_weld_schedule_output_files
+from welding.weld_config import EXTRACT
 from extract_welds import (
     extract_welds_multiple_times,
     save_extractions_to_excel,

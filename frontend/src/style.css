@@ -537,8 +537,9 @@ html[data-theme="dark"] .v-overlay-container .v-list-item[aria-selected="true"] 
 
 .project-switcher-wrap {
   display: grid;
-  grid-template-columns: 1fr;
-  min-width: 430px;
+  grid-template-columns: minmax(260px, 1fr) minmax(280px, 1fr);
+  gap: 12px;
+  min-width: 680px;
   padding: 12px;
   border: 1px solid color-mix(in srgb, var(--primary) 48%, var(--line));
   border-radius: 8px;
@@ -546,6 +547,12 @@ html[data-theme="dark"] .v-overlay-container .v-list-item[aria-selected="true"] 
     linear-gradient(135deg, color-mix(in srgb, var(--primary) 14%, transparent), transparent 62%),
     var(--panel);
   box-shadow: 0 16px 34px rgba(15, 23, 42, .13);
+}
+
+.project-context-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
 }
 
 .project-switcher-label {
@@ -1104,6 +1111,34 @@ html[data-theme="gray"] .cutting-vtable-host {
   outline-offset: 1px;
 }
 
+.plan-chip-tooltip {
+  display: grid;
+  gap: 6px;
+  min-width: 220px;
+  padding: 4px 2px;
+}
+
+.plan-chip-tooltip > strong {
+  font-size: 13px;
+}
+
+.plan-chip-tooltip > div {
+  display: grid;
+  grid-template-columns: minmax(74px, auto) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.plan-chip-tooltip span {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.plan-chip-tooltip b {
+  overflow-wrap: anywhere;
+  text-align: right;
+  font-weight: 600;
+}
+
 .calendar-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(118px, 1fr));
@@ -1242,7 +1277,7 @@ html[data-theme="gray"] .cutting-vtable-host {
 
 .plan-workbench {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-columns: 340px minmax(0, 1fr);
   gap: 14px;
 }
 
@@ -1361,7 +1396,7 @@ html[data-theme="gray"] .cutting-vtable-host {
 
 .plan-tree-file {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) 28px;
+  grid-template-columns: 18px minmax(0, 1fr) 36px 36px;
   grid-template-rows: auto auto;
   column-gap: 8px;
   row-gap: 5px;
@@ -1375,11 +1410,15 @@ html[data-theme="gray"] .cutting-vtable-host {
   grid-row: 2;
 }
 
-.plan-date-edit-btn {
-  grid-column: 3;
+.plan-tree-actions {
+  grid-column: 3 / span 2;
   grid-row: 1 / span 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   align-self: center;
-  color: var(--muted);
+  justify-self: center;
+  gap: 2px;
 }
 
 .plan-folder-button span,
@@ -1419,7 +1458,7 @@ html[data-theme="gray"] .cutting-vtable-host {
 }
 
 .plan-folder-button .v-icon,
-.plan-tree-file .v-icon {
+.plan-tree-file > .v-icon {
   grid-column: 1;
   grid-row: 1 / span 2;
   align-self: start;
@@ -1594,72 +1633,13 @@ html[data-theme="gray"] .cutting-vtable-host {
 }
 
 .plan-edit-table-wrap {
-  --scrollbar-width: 10px;
-  --scrollbar-height: 10px;
   position: relative;
-  height: 560px;
-  overflow: auto;
+  height: 520px;
+  overflow: hidden;
   overscroll-behavior: contain;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--panel);
-  scrollbar-gutter: stable;
-}
-
-.plan-edit-table-wrap::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-
-.plan-edit-table {
-  width: max-content;
-  min-width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-  color: var(--text);
-  font-size: 13px;
-}
-
-.plan-edit-table th,
-.plan-edit-table td {
-  min-width: 150px;
-  max-width: 280px;
-  height: 38px;
-  border-right: 1px solid #e8eef6;
-  border-bottom: 1px solid #e8eef6;
-  background: var(--panel);
-}
-
-.plan-edit-table th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  padding: 0 10px;
-  background: var(--panel-soft);
-  color: #334155;
-  font-weight: 800;
-  text-align: left;
-}
-
-.plan-edit-table input {
-  width: 100%;
-  height: 37px;
-  padding: 0 10px;
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  outline: none;
-}
-
-.plan-edit-table input:not([readonly]):focus {
-  background: #eaf1ff;
-  box-shadow: inset 0 0 0 2px #93b4ff;
-}
-
-.plan-edit-table input[readonly] {
-  color: #64748b;
-  cursor: default;
 }
 
 .plan-edit-empty {
@@ -1677,22 +1657,6 @@ html[data-theme="gray"] .cutting-vtable-host {
 html[data-theme="dark"] .plan-edit-table-wrap,
 html[data-theme="dark"] .plan-edit-empty {
   background: #111827;
-}
-
-html[data-theme="dark"] .plan-edit-table th,
-html[data-theme="dark"] .plan-edit-table td {
-  border-color: #374151;
-  background: #111827;
-}
-
-html[data-theme="dark"] .plan-edit-table th {
-  background: #1f2937;
-  color: #e5e7eb;
-}
-
-html[data-theme="dark"] .plan-edit-table input:not([readonly]):focus {
-  background: rgba(96, 165, 250, .16);
-  box-shadow: inset 0 0 0 2px #60a5fa;
 }
 
 .daily-plan-layout {
@@ -1826,6 +1790,24 @@ html[data-theme="dark"] .plan-edit-table input:not([readonly]):focus {
   border-radius: 8px;
   background: #f8fafc;
   box-shadow: 0 14px 34px rgba(15, 23, 42, .08);
+}
+
+.project-vtable-host,
+.vtable-host,
+.data-vtable-host,
+.cutting-vtable-host,
+.plan-edit-vtable {
+  -webkit-user-drag: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.project-vtable-host *,
+.vtable-host *,
+.data-vtable-host *,
+.cutting-vtable-host *,
+.plan-edit-vtable * {
+  -webkit-user-drag: none;
 }
 
 .library-meta {
@@ -2066,4 +2048,23 @@ html[data-theme="dark"] .plan-edit-table input:not([readonly]):focus {
   .workflow-steps {
     grid-template-columns: repeat(3, minmax(180px, 1fr));
   }
+}
+
+@media (max-width: 720px) {
+  .project-switcher-wrap {
+    grid-template-columns: 1fr;
+  }
+}
+
+/*
+ * VTable's overflow tooltip ships with pointer/user-selection guards commented
+ * out. Keep the transient overlay from capturing scrollbar drags or starting
+ * the browser's selected-text drag/search gesture.
+ */
+.vtable__bubble-tooltip-element,
+.vtable__bubble-tooltip-element__content {
+  pointer-events: none !important;
+  -webkit-user-drag: none;
+  -webkit-user-select: none !important;
+  user-select: none !important;
 }

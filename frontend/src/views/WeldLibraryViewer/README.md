@@ -1,6 +1,6 @@
 # WeldLibraryViewer
 
-焊口库与相关库维护页面，对应路由 `/weld-libraries/:libraryKey`。
+焊口库与相关库维护页面，对应路由 `/libraries/:libraryKey`。
 
 ## 页面职责
 

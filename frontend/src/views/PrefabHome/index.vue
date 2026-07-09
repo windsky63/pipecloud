@@ -4,19 +4,23 @@ import { InputEditor } from '@visactor/vtable-editors'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRouter } from 'vue-router'
 import {
+  fetchArrivalDashboard,
   fetchInitializationStats,
   fetchWeldingDashboard,
 } from '../../api/workflow'
 import {
   createProject,
   deleteProjectById,
+  fetchProjectConstraints,
   fetchProjects,
   fetchProjectWelds,
   importProjectsFile,
   projectExportUrl,
   updateProject,
+  updateProjectConstraints,
 } from '../../api/projects'
 import PageHeader from '../../components/PageHeader.vue'
+import ArrivalDashboardPanel from '../../components/ArrivalDashboardPanel.vue'
 import InitializationDashboardPanel from '../../components/InitializationDashboardPanel.vue'
 import UnsavedChangesDialog from '../../components/UnsavedChangesDialog.vue'
 import WeldingDashboardPanel from '../../components/WeldingDashboardPanel.vue'
@@ -27,6 +31,7 @@ import {
   loading as workflowLoading,
   runAction,
   runningKey,
+  setHomeComponentVisibility,
   summary,
   t,
   workflowActions,
@@ -34,6 +39,7 @@ import {
 import { selectedProjectId, selectedProjectParams, setSelectedProjectId } from '../../services/projectState'
 import { getBasicVTableTheme, getVTablePalette, isDarkVTableTheme, vTableThemeKey } from '../../services/vtableTheme'
 import { localizedActionName } from '../../services/navigationLabels'
+import { attachVTableColumnSelectionCount, createVTableSelectionLayout } from '../../services/vtableSelectionCount'
 
 const projectRows = ref([])
 const projectColumns = ref([])
@@ -51,11 +57,13 @@ const loading = ref(false)
 const weldLoading = ref(false)
 const initializationDashboardLoading = ref(false)
 const weldingDashboardLoading = ref(false)
+const arrivalDashboardLoading = ref(false)
 const saving = ref(false)
 const errorMessage = ref('')
 const weldErrorMessage = ref('')
 const initializationDashboardError = ref('')
 const weldingDashboardError = ref('')
+const arrivalDashboardError = ref('')
 const searchText = ref('')
 const dirtyRowIds = ref(new Set())
 const projectImportInput = ref(null)
@@ -67,14 +75,23 @@ const weldPageSize = ref(100)
 const projectDialog = ref(false)
 const projectForm = ref({})
 const projectFormError = ref('')
+const projectConstraintLoading = ref(false)
+const projectConstraintSaving = ref(false)
+const processSequence = ref(null)
 const unsavedChangesDialog = ref(null)
 const initializationDashboardCollapsed = ref(false)
 const weldingDashboardCollapsed = ref(false)
+const arrivalDashboardCollapsed = ref(false)
 const initializationDashboard = ref(emptyInitializationDashboard())
 const weldingDashboard = ref(emptyWeldingDashboard())
+const arrivalDashboard = ref(emptyArrivalDashboard())
 let projectTableInstance = null
 let weldTableInstance = null
+let releaseProjectSelectionCount = null
+let releaseWeldSelectionCount = null
 let projectResizeObserver = null
+let homeProjectLoadController = null
+let homeProjectLoadTimer = null
 const weldPageSizeOptions = [50, 100, 200, 500]
 const router = useRouter()
 
@@ -92,6 +109,11 @@ const projectOptions = computed(() => projectRows.value.map((project) => ({
   title: project.project_name || t('projectWithId', { id: project.id }),
   value: project.id,
 })))
+const processSequenceOptions = computed(() => [
+  { title: t('projectConstraintUnset'), value: null },
+  { title: t('coatingBeforeWelding'), value: 'coating_before_welding' },
+  { title: t('weldingBeforeCoating'), value: 'welding_before_coating' },
+])
 const requiredProjectColumns = computed(() => projectColumns.value.filter((column) => column.field === 'project_name'))
 const optionalProjectColumns = computed(() => projectColumns.value.filter((column) => column.field !== 'project_name'))
 const weldTotalPages = computed(() => Math.max(Number(weldMeta.value.totalPages) || 0, weldMeta.value.total ? 1 : 0))
@@ -101,6 +123,7 @@ const selectedProjectInitializationHint = computed(() => (
 ))
 const showInitializationDashboard = computed(() => homeComponentVisibility.value.initializationDashboard)
 const showWeldingDashboard = computed(() => homeComponentVisibility.value.weldingDashboard)
+const showArrivalDashboard = computed(() => homeComponentVisibility.value.arrivalDashboard)
 const showHomeWorkflow = computed(() => homeComponentVisibility.value.workflow)
 const showProjectData = computed(() => homeComponentVisibility.value.projectData)
 const showProjectWeldInfo = computed(() => homeComponentVisibility.value.projectWeldInfo)
@@ -139,11 +162,23 @@ function emptyWeldingDashboard() {
   }
 }
 
+function emptyArrivalDashboard() {
+  return {
+    summaries: {
+      pipe: { expectedQty: 0, actualQty: 0, differenceQty: 0, arrivalRate: 0, materialCount: 0 },
+      other: { expectedQty: 0, actualQty: 0, differenceQty: 0, arrivalRate: 0, materialCount: 0 },
+    },
+    rows: [],
+  }
+}
+
 function releaseProjectTable() {
   if (projectTableInstance) {
     projectTableInstance.release()
     projectTableInstance = null
   }
+  releaseProjectSelectionCount?.()
+  releaseProjectSelectionCount = null
 }
 
 function releaseWeldTable() {
@@ -151,6 +186,8 @@ function releaseWeldTable() {
     weldTableInstance.release()
     weldTableInstance = null
   }
+  releaseWeldSelectionCount?.()
+  releaseWeldSelectionCount = null
 }
 
 function buildProjectRecords() {
@@ -357,7 +394,9 @@ async function renderProjectTable() {
   projectTableWidth.value = projectTableContainer.value.clientWidth || 0
 
   releaseProjectTable()
-  projectTableInstance = new VTable.ListTable(projectTableContainer.value, buildProjectOptions())
+  const selectionLayout = createVTableSelectionLayout(projectTableContainer.value)
+  projectTableInstance = new VTable.ListTable(selectionLayout.viewport, buildProjectOptions())
+  releaseProjectSelectionCount = attachVTableColumnSelectionCount(projectTableInstance, selectionLayout)
   projectTableInstance.on(VTable.ListTable.EVENT_TYPE.CHANGE_CELL_VALUE, (event) => {
     const recordIndex = Array.isArray(event.recordIndex) ? event.recordIndex[0] : event.recordIndex
     const row = displayedProjectRows.value[recordIndex]
@@ -401,7 +440,9 @@ async function renderWeldTable() {
     return
   }
   releaseWeldTable()
-  weldTableInstance = new VTable.ListTable(weldTableContainer.value, buildWeldOptions())
+  const selectionLayout = createVTableSelectionLayout(weldTableContainer.value)
+  weldTableInstance = new VTable.ListTable(selectionLayout.viewport, buildWeldOptions())
+  releaseWeldSelectionCount = attachVTableColumnSelectionCount(weldTableInstance, selectionLayout)
 }
 
 async function loadProjects() {
@@ -423,12 +464,14 @@ async function loadProjects() {
   }
 }
 
-async function loadProjectWelds(page = weldPage.value) {
-  if (!selectedProjectId.value) {
+async function loadProjectWelds(page = weldPage.value, options = {}) {
+  const projectId = selectedProjectId.value
+  if (!projectId) {
     weldRows.value = []
     weldColumns.value = []
     weldMeta.value = { dataPath: '', file: null, total: 0, page: 1, pageSize: weldPageSize.value, totalPages: 0 }
     releaseWeldTable()
+    weldLoading.value = false
     return
   }
 
@@ -439,7 +482,8 @@ async function loadProjectWelds(page = weldPage.value) {
       page: String(page || 1),
       page_size: String(weldPageSize.value),
     })
-    const payload = await fetchProjectWelds(selectedProjectId.value, params.toString())
+    const payload = await fetchProjectWelds(projectId, params.toString(), options)
+    if (options.signal?.aborted || projectId !== selectedProjectId.value) return
     weldRows.value = payload.rows || []
     weldColumns.value = payload.columns || []
     weldPage.value = Number(payload.page) || 1
@@ -454,49 +498,175 @@ async function loadProjectWelds(page = weldPage.value) {
     }
     await renderWeldTable()
   } catch (error) {
+    if (error?.name === 'AbortError' || projectId !== selectedProjectId.value) return
     weldRows.value = []
     weldColumns.value = []
     releaseWeldTable()
     weldErrorMessage.value = t('projectWeldReadFailed', { message: error.message })
   } finally {
-    weldLoading.value = false
+    if (!options.signal?.aborted && projectId === selectedProjectId.value) {
+      weldLoading.value = false
+    }
   }
 }
 
-async function loadInitializationDashboard() {
-  if (!selectedProjectId.value) {
+async function loadProjectConstraints(options = {}) {
+  const projectId = selectedProjectId.value
+  if (!projectId) {
+    processSequence.value = null
+    projectConstraintLoading.value = false
+    return
+  }
+
+  projectConstraintLoading.value = true
+  try {
+    const payload = await fetchProjectConstraints(projectId, options)
+    if (options.signal?.aborted || projectId !== selectedProjectId.value) return
+    const rule = payload.rules?.find((item) => item.key === 'coating_welding_sequence')
+    processSequence.value = rule?.enabled ? (rule.parameters?.sequence || null) : null
+  } catch (error) {
+    if (error?.name === 'AbortError' || projectId !== selectedProjectId.value) return
+    processSequence.value = null
+    errorMessage.value = t('projectConstraintReadFailed', { message: error.message })
+  } finally {
+    if (!options.signal?.aborted && projectId === selectedProjectId.value) {
+      projectConstraintLoading.value = false
+    }
+  }
+}
+
+async function saveProcessSequence(value) {
+  const projectId = selectedProjectId.value
+  if (!projectId || projectConstraintSaving.value) return
+  const previousValue = processSequence.value
+  processSequence.value = value || null
+  projectConstraintSaving.value = true
+  errorMessage.value = ''
+  try {
+    const payload = await updateProjectConstraints(projectId, [{
+      key: 'coating_welding_sequence',
+      enabled: Boolean(value),
+      parameters: value ? { sequence: value } : {},
+    }])
+    if (projectId !== selectedProjectId.value) return
+    const rule = payload.rules?.find((item) => item.key === 'coating_welding_sequence')
+    processSequence.value = rule?.enabled ? (rule.parameters?.sequence || null) : null
+  } catch (error) {
+    if (projectId !== selectedProjectId.value) return
+    processSequence.value = previousValue
+    errorMessage.value = t('projectConstraintSaveFailed', { message: error.message })
+  } finally {
+    projectConstraintSaving.value = false
+  }
+}
+
+async function loadInitializationDashboard(options = {}) {
+  const projectId = selectedProjectId.value
+  if (!projectId) {
     initializationDashboard.value = emptyInitializationDashboard()
+    initializationDashboardLoading.value = false
     return
   }
 
   initializationDashboardLoading.value = true
   initializationDashboardError.value = ''
   try {
-    initializationDashboard.value = await fetchInitializationStats(selectedProjectParams())
+    const payload = await fetchInitializationStats(selectedProjectParams(), options)
+    if (options.signal?.aborted || projectId !== selectedProjectId.value) return
+    initializationDashboard.value = payload
   } catch (error) {
+    if (error?.name === 'AbortError' || projectId !== selectedProjectId.value) return
     initializationDashboard.value = emptyInitializationDashboard()
     initializationDashboardError.value = t('initializationStatsReadFailed', { message: error.message })
   } finally {
-    initializationDashboardLoading.value = false
+    if (!options.signal?.aborted && projectId === selectedProjectId.value) {
+      initializationDashboardLoading.value = false
+    }
   }
 }
 
-async function loadWeldingDashboard() {
-  if (!selectedProjectId.value) {
+async function loadWeldingDashboard(options = {}) {
+  const projectId = selectedProjectId.value
+  if (!projectId) {
     weldingDashboard.value = emptyWeldingDashboard()
+    weldingDashboardLoading.value = false
     return
   }
 
   weldingDashboardLoading.value = true
   weldingDashboardError.value = ''
   try {
-    weldingDashboard.value = await fetchWeldingDashboard(selectedProjectParams())
+    const payload = await fetchWeldingDashboard(selectedProjectParams(), options)
+    if (options.signal?.aborted || projectId !== selectedProjectId.value) return
+    weldingDashboard.value = payload
   } catch (error) {
+    if (error?.name === 'AbortError' || projectId !== selectedProjectId.value) return
     weldingDashboard.value = emptyWeldingDashboard()
     weldingDashboardError.value = t('weldingDashboardReadFailed', { message: error.message })
   } finally {
-    weldingDashboardLoading.value = false
+    if (!options.signal?.aborted && projectId === selectedProjectId.value) {
+      weldingDashboardLoading.value = false
+    }
   }
+}
+
+async function loadArrivalDashboard(options = {}) {
+  const projectId = selectedProjectId.value
+  if (!projectId) {
+    arrivalDashboard.value = emptyArrivalDashboard()
+    arrivalDashboardLoading.value = false
+    return
+  }
+
+  arrivalDashboardLoading.value = true
+  arrivalDashboardError.value = ''
+  try {
+    const payload = await fetchArrivalDashboard(selectedProjectParams(), options)
+    if (options.signal?.aborted || projectId !== selectedProjectId.value) return
+    arrivalDashboard.value = payload
+  } catch (error) {
+    if (error?.name === 'AbortError' || projectId !== selectedProjectId.value) return
+    arrivalDashboard.value = emptyArrivalDashboard()
+    arrivalDashboardError.value = t('arrivalDashboardReadFailed', { message: error.message })
+  } finally {
+    if (!options.signal?.aborted && projectId === selectedProjectId.value) {
+      arrivalDashboardLoading.value = false
+    }
+  }
+}
+
+function cancelHomeProjectLoad() {
+  if (homeProjectLoadTimer) {
+    window.clearTimeout(homeProjectLoadTimer)
+    homeProjectLoadTimer = null
+  }
+  homeProjectLoadController?.abort()
+  homeProjectLoadController = null
+}
+
+async function loadHomeProjectData(page = 1) {
+  cancelHomeProjectLoad()
+  const controller = new AbortController()
+  homeProjectLoadController = controller
+  const options = { signal: controller.signal }
+  await Promise.all([
+    loadProjectConstraints(options),
+    loadInitializationDashboard(options),
+    loadArrivalDashboard(options),
+    loadWeldingDashboard(options),
+    loadProjectWelds(page, options),
+  ])
+  if (homeProjectLoadController === controller) {
+    homeProjectLoadController = null
+  }
+}
+
+function scheduleHomeProjectDataLoad() {
+  cancelHomeProjectLoad()
+  homeProjectLoadTimer = window.setTimeout(() => {
+    homeProjectLoadTimer = null
+    loadHomeProjectData()
+  }, 150)
 }
 
 async function changeWeldPage(page) {
@@ -594,7 +764,7 @@ function triggerProjectImport() {
 }
 
 function openFileParser() {
-  router.push({ name: 'parser' })
+  router.push({ name: 'file-parser', query: { tab: 'upload' } })
 }
 
 async function importProjects(event) {
@@ -630,11 +800,10 @@ function handleBeforeUnload(event) {
 }
 
 async function executeWorkflowAction(actionKey) {
-  await runAction(actionKey)
+  const started = await runAction(actionKey)
+  if (!started) return
   await loadProjects()
-  await loadInitializationDashboard()
-  await loadProjectWelds(weldPage.value)
-  await loadWeldingDashboard()
+  await loadHomeProjectData(weldPage.value)
 }
 
 onMounted(async () => {
@@ -643,10 +812,8 @@ onMounted(async () => {
     await loadSummary()
   }
   await loadProjects()
-  await loadInitializationDashboard()
-  await loadWeldingDashboard()
   setupProjectResizeObserver()
-  await loadProjectWelds(1)
+  await loadHomeProjectData()
 })
 
 onBeforeRouteLeave(async () => confirmLeaveWithUnsyncedChanges())
@@ -655,9 +822,7 @@ onBeforeRouteUpdate(async () => confirmLeaveWithUnsyncedChanges())
 watch(searchText, renderProjectTable)
 watch(selectedProjectId, async () => {
   weldPage.value = 1
-  await loadInitializationDashboard()
-  await loadWeldingDashboard()
-  await loadProjectWelds(1)
+  scheduleHomeProjectDataLoad()
 })
 watch(vTableThemeKey, async () => {
   if (projectTableInstance) {
@@ -684,6 +849,7 @@ watch([showProjectData, showProjectWeldInfo], async () => {
 })
 
 onBeforeUnmount(() => {
+  cancelHomeProjectLoad()
   window.removeEventListener('beforeunload', handleBeforeUnload)
   releaseProjectTable()
   releaseWeldTable()
@@ -700,25 +866,50 @@ onBeforeUnmount(() => {
     :description="t('prefabHomeDescription')"
   >
     <template #actions>
-      <label class="project-switcher-wrap">
-        <div class="project-switcher-label">
-          <v-icon icon="mdi-swap-horizontal-bold" size="18" />
-          <span>{{ t('currentProject') }}</span>
-        </div>
+      <div class="project-switcher-wrap">
+        <label class="project-context-field">
+          <div class="project-switcher-label">
+            <v-icon icon="mdi-swap-horizontal-bold" size="18" />
+            <span>{{ t('currentProject') }}</span>
+          </div>
 
-        <div class="project-switcher-control">
-          <v-select
-            :model-value="selectedProjectId"
-            :items="projectOptions"
-            density="compact"
-            hide-details
-            class="project-switcher"
-            prepend-inner-icon="mdi-briefcase-outline"
-            :placeholder="t('selectProjectPlaceholder')"
-            @update:model-value="setSelectedProjectId"
-          />
-        </div>
-      </label>
+          <div class="project-switcher-control">
+            <v-select
+              :model-value="selectedProjectId"
+              :items="projectOptions"
+              density="compact"
+              hide-details
+              class="project-switcher"
+              prepend-inner-icon="mdi-briefcase-outline"
+              :placeholder="t('selectProjectPlaceholder')"
+              @update:model-value="setSelectedProjectId"
+            />
+          </div>
+        </label>
+
+        <label class="project-context-field">
+          <div class="project-switcher-label">
+            <v-icon icon="mdi-tune-variant" size="18" />
+            <span>{{ t('projectConstraints') }}</span>
+            <InfoTooltip :text="t('projectConstraintsTip')" location="bottom" />
+          </div>
+
+          <div class="project-switcher-control">
+            <v-select
+              :model-value="processSequence"
+              :items="processSequenceOptions"
+              :disabled="!selectedProjectId"
+              :loading="projectConstraintLoading || projectConstraintSaving"
+              density="compact"
+              hide-details
+              class="project-switcher"
+              prepend-inner-icon="mdi-order-bool-ascending-variant"
+              :placeholder="t('projectConstraintUnset')"
+              @update:model-value="saveProcessSequence"
+            />
+          </div>
+        </label>
+      </div>
     </template>
   </PageHeader>
 
@@ -736,6 +927,7 @@ onBeforeUnmount(() => {
     show-refresh
     collapsible
     @refresh="loadInitializationDashboard"
+    @hide="setHomeComponentVisibility('initializationDashboard', false)"
     @toggle="initializationDashboardCollapsed = !initializationDashboardCollapsed"
   />
 
@@ -750,7 +942,23 @@ onBeforeUnmount(() => {
     show-refresh
     collapsible
     @refresh="loadWeldingDashboard"
+    @hide="setHomeComponentVisibility('weldingDashboard', false)"
     @toggle="weldingDashboardCollapsed = !weldingDashboardCollapsed"
+  />
+
+  <ArrivalDashboardPanel
+    v-if="showArrivalDashboard"
+    :title="t('arrivalDashboardTitle')"
+    :description="t('arrivalDashboardDescription')"
+    :dashboard="arrivalDashboard"
+    :loading="arrivalDashboardLoading"
+    :error="arrivalDashboardError"
+    :collapsed="arrivalDashboardCollapsed"
+    show-refresh
+    collapsible
+    @refresh="loadArrivalDashboard"
+    @hide="setHomeComponentVisibility('arrivalDashboard', false)"
+    @toggle="arrivalDashboardCollapsed = !arrivalDashboardCollapsed"
   />
 
   <v-card v-if="showHomeWorkflow" class="workflow" variant="flat">
@@ -765,7 +973,7 @@ onBeforeUnmount(() => {
         v-for="(action, index) in workflowActions"
         :key="action.key"
         :loading="runningKey === action.key"
-        :disabled="workflowLoading || !selectedProject"
+        :disabled="workflowLoading || Boolean(runningKey) || !selectedProject"
         prepend-icon="mdi-check-circle-outline"
         @click="executeWorkflowAction(action.key)"
       >
