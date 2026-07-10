@@ -665,60 +665,6 @@ class WeldPreScheduleRow(models.Model):
         verbose_name_plural = '焊口预排产匹配结果'
 
 
-class AntiCorrosionCommissionRow(models.Model):
-    project = models.ForeignKey(Project, verbose_name='项目', on_delete=models.CASCADE)
-    source_file = models.ForeignKey(DataSourceFile, verbose_name='来源文件', on_delete=models.CASCADE)
-    sheet_name = models.CharField('工作表', max_length=120, blank=True)
-    row_index = models.IntegerField('行号', default=0)
-    created_at = models.DateTimeField('创建时间', auto_now_add=True)
-    updated_at = models.DateTimeField('更新时间', auto_now=True)
-    commission_no = models.CharField('防腐委托单号', max_length=120, blank=True)
-    commission_date = models.CharField('委托日期', max_length=80, blank=True)
-    commission_limit_area = models.CharField('委托单防腐面积', max_length=80, blank=True)
-    pre_schedule_seq = models.CharField('预排产序号', max_length=120, blank=True)
-    anti_corrosion_area = models.CharField('防腐面积', max_length=80, blank=True)
-    library_seq = models.CharField('库序号', max_length=80, blank=True)
-    unit = models.CharField('单元号', max_length=120, blank=True)
-    unit_name = models.CharField('单元名称', max_length=255, blank=True)
-    pipeline = models.CharField('管线号', max_length=255, blank=True)
-    segment_no = models.CharField('管段号', max_length=120, blank=True)
-    joint_type = models.CharField('接头类型', max_length=120, blank=True)
-    wall_thickness = models.CharField('壁厚', max_length=80, blank=True)
-    wall_thickness_no = models.CharField('壁厚号', max_length=80, blank=True)
-    diameter = models.CharField('寸径', max_length=80, blank=True)
-    outer_diameter = models.CharField('外径', max_length=80, blank=True)
-    weld_area = models.CharField('焊接区域', max_length=120, blank=True)
-    material = models.CharField('材质', max_length=120, blank=True)
-    material_code_name = models.CharField('材质代号', max_length=120, blank=True)
-    weld_no_start = models.CharField('初始焊口号', max_length=120, blank=True)
-    weld_no_final = models.CharField('最终焊口号', max_length=120, blank=True)
-    material_mark_1 = models.CharField('材料代号1', max_length=120, blank=True)
-    material_mark_2 = models.CharField('材料代号2', max_length=120, blank=True)
-    material_unique_1 = models.TextField('材料唯一码1', blank=True)
-    material_unique_2 = models.TextField('材料唯一码2', blank=True)
-    material_code_1 = models.CharField('材料代码1', max_length=120, blank=True)
-    material_code_2 = models.CharField('材料代码2', max_length=120, blank=True)
-    material_paint_1 = models.CharField('材料油漆1', max_length=120, blank=True)
-    material_paint_2 = models.CharField('材料油漆2', max_length=120, blank=True)
-    quantity_1 = models.CharField('数量1', max_length=80, blank=True)
-    quantity_2 = models.CharField('数量2', max_length=80, blank=True)
-    description_1 = models.TextField('描述1', blank=True)
-    description_2 = models.TextField('描述2', blank=True)
-    welding_mode = models.CharField('焊接方式', max_length=120, blank=True)
-    material_arrival_status = models.BooleanField('材料到货状态', default=False)
-    material_anti_corrosion_status = models.BooleanField('材料防腐状态', default=False)
-    material_cutting_status = models.BooleanField('材料下料状态', default=False)
-    completed_flag = models.BooleanField('材料焊接状态', default=False)
-    priority = models.CharField('优先级', max_length=80, blank=True)
-    pre_schedule_status = models.CharField('预排产状态', max_length=120, blank=True)
-    pre_schedule_reason = models.TextField('不可预排产原因', blank=True)
-
-    class Meta:
-        ordering = ['project', 'row_index']
-        verbose_name = '防腐委托库'
-        verbose_name_plural = '防腐委托库'
-
-
 class MaterialMatchDetailRow(models.Model):
     project = models.ForeignKey(Project, verbose_name='项目', on_delete=models.CASCADE)
     source_file = models.ForeignKey(DataSourceFile, verbose_name='来源文件', on_delete=models.CASCADE)
@@ -934,3 +880,50 @@ class WeldingPlanRow(models.Model):
         ordering = ['project', 'source_file', 'sheet_name', 'row_index']
         verbose_name = '管段焊口表'
         verbose_name_plural = '管段焊口表'
+
+
+class MasterScheduleRow(models.Model):
+    STAGE_CHOICES = [
+        ('anti-corrosion', '防腐'),
+        ('cutting', '下料'),
+        ('welding', '焊接'),
+    ]
+
+    project = models.ForeignKey(Project, verbose_name='项目', on_delete=models.CASCADE)
+    library_seq = models.CharField('库序号', max_length=120)
+    production_start_stage = models.CharField('生产开始阶段', max_length=32, choices=STAGE_CHOICES, blank=True)
+    production_start_date = models.CharField('生产开始日期', max_length=8, blank=True)
+    priority = models.CharField('优先级', max_length=80, blank=True)
+    material_arrival_status = models.CharField('材料到货状态', max_length=80, blank=True)
+    material_anti_corrosion_status = models.CharField('材料防腐状态', max_length=80, blank=True)
+    material_cutting_status = models.CharField('材料下料状态', max_length=80, blank=True)
+    anti_corrosion_order_no = models.CharField('防腐委托单号', max_length=120, blank=True)
+    anti_corrosion_date = models.CharField('防腐日期', max_length=8, blank=True)
+    cut_order_no = models.CharField('下料排产单号', max_length=120, blank=True)
+    cut_date = models.CharField('下料日期', max_length=8, blank=True)
+    weld_order_no = models.CharField('焊接排产单号', max_length=120, blank=True)
+    weld_date = models.CharField('焊接日期', max_length=8, blank=True)
+    source_sheet = models.CharField('来源工作表', max_length=120, blank=True)
+    unit = models.CharField('单元号', max_length=120, blank=True)
+    pipeline = models.CharField('管线号', max_length=255, blank=True)
+    segment_no = models.CharField('管段号', max_length=120, blank=True)
+    weld_no_start = models.CharField('初始焊口号', max_length=120, blank=True)
+    weld_no_final = models.CharField('最终焊口号', max_length=120, blank=True)
+    diameter = models.CharField('寸径', max_length=80, blank=True)
+    wall_thickness = models.CharField('壁厚', max_length=80, blank=True)
+    material = models.CharField('材质', max_length=120, blank=True)
+    completed_flag = models.CharField('材料焊接状态', max_length=80, blank=True)
+    stage_payload = models.JSONField('阶段计划数据', default=dict, blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        ordering = ['project', 'library_seq']
+        verbose_name = '排产计划库'
+        verbose_name_plural = '排产计划库'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['project', 'library_seq'],
+                name='pipecloud_master_schedule_unique_library_seq',
+            ),
+        ]

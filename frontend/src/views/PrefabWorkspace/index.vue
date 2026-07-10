@@ -12,12 +12,14 @@ import {
   fetchCuttingDashboard,
   fetchCuttingPreSchedule,
   fetchCuttingVisualization,
+  fetchMaterialLockingRows,
   fetchInitializationStats,
   commitStagedPlan,
   fetchStagedPlanFileRows,
   generateFutureSchedule,
   fetchTodayArrival,
   fetchWeldingDashboard,
+  fetchWeldingPreSchedule,
   uploadArrivalFileRequest,
 } from '../../api/workflow'
 import ArrivalModule from './ArrivalModule.vue'
@@ -89,6 +91,17 @@ const weldingScheduleMessage = ref('')
 const weldingScheduleError = ref('')
 const weldingPendingStage = ref(null)
 const weldingStageSaving = ref(false)
+const weldingPreScheduleLoading = ref(false)
+const weldingPreScheduleError = ref('')
+const weldingPreScheduleActiveSheet = ref('')
+const weldingPreScheduleData = ref({
+  path: '',
+  sheet: '',
+  sheets: [],
+  total: 0,
+  columns: [],
+  rows: [],
+})
 const futureScheduleLoading = ref(false)
 const futureScheduleError = ref('')
 const futureScheduleMessage = ref('')
@@ -306,11 +319,12 @@ const activeModuleTitle = computed(() => {
   return localizedModuleTitle(activeModule.value)
 })
 
+const showMaterialLocking = computed(() => activeModule.value?.key === 'materialLocking')
 const showCuttingVisualization = computed(() => activeModule.value?.key === 'cutting')
 const showInitializationStats = computed(() => activeModule.value?.key === 'initialization')
 const showWeldingDashboard = computed(() => activeModule.value?.key === 'welding')
 const showFutureSchedule = computed(() => activeModule.value?.key === 'schedule')
-const showCuttingChart = computed(() => showCuttingVisualization.value)
+const showCuttingChart = computed(() => showMaterialLocking.value)
 const showArrivalTabs = computed(() => activeModule.value?.key === 'arrival')
 const showAntiCorrosionPreSchedule = computed(() => activeModule.value?.key === 'antiCorrosion')
 const antiCorrosionPreScheduleAction = computed(() => {
@@ -320,13 +334,13 @@ const antiCorrosionOverviewActions = computed(() => {
   return activeModule.value?.actions?.filter((action) => action.key !== 'anti-corrosion-pre-schedule') || []
 })
 const cuttingOverviewActions = computed(() => {
-  return activeModule.value?.actions?.filter((action) => !['weld-pre-schedule', 'confirm-cutting-pre-schedule'].includes(action.key)) || []
+  return activeModule.value?.actions?.filter((action) => action.key !== 'weld-pre-schedule') || []
 })
 const cuttingPreScheduleAction = computed(() => {
   return activeModule.value?.actions?.find((action) => action.key === 'weld-pre-schedule') || null
 })
-const cuttingConfirmAction = computed(() => {
-  return activeModule.value?.actions?.find((action) => action.key === 'confirm-cutting-pre-schedule') || null
+const materialLockingAction = computed(() => {
+  return activeModule.value?.actions?.find((action) => action.key === 'material-locking') || null
 })
 const futureScheduleAction = computed(() => {
   return activeModule.value?.actions?.find((action) => action.key === 'future-schedule') || null
@@ -1246,13 +1260,15 @@ async function uploadArrivalFile(files) {
 }
 
 async function loadPreScheduleRows(sheet = preScheduleActiveSheet.value, options = {}) {
-  if (!showCuttingVisualization.value) return
+  if (!showCuttingVisualization.value && !showMaterialLocking.value) return
   preScheduleLoading.value = true
   preScheduleError.value = ''
   try {
     const params = selectedProjectParams()
     if (sheet) params.set('sheet', sheet)
-    const payload = await fetchCuttingPreSchedule(params, options)
+    const payload = showMaterialLocking.value
+      ? await fetchMaterialLockingRows(params, options)
+      : await fetchCuttingPreSchedule(params, options)
     if (options.signal?.aborted) return
     preScheduleData.value = payload
     preScheduleActiveSheet.value = payload.sheet || ''
@@ -1310,6 +1326,41 @@ async function loadAntiCorrosionPreScheduleRows(
 async function changeAntiCorrosionPreScheduleSheet(sheet) {
   antiCorrosionPreScheduleActiveSheet.value = sheet
   await loadAntiCorrosionPreScheduleRows(sheet)
+}
+
+async function loadWeldingPreScheduleRows(
+  sheet = weldingPreScheduleActiveSheet.value,
+  options = {},
+) {
+  if (!showWeldingDashboard.value) return
+  weldingPreScheduleLoading.value = true
+  weldingPreScheduleError.value = ''
+  try {
+    const params = selectedProjectParams()
+    if (sheet) params.set('sheet', sheet)
+    const payload = await fetchWeldingPreSchedule(params, options)
+    if (options.signal?.aborted) return
+    weldingPreScheduleData.value = payload
+    weldingPreScheduleActiveSheet.value = payload.sheet || ''
+  } catch (error) {
+    if (error?.name === 'AbortError') return
+    weldingPreScheduleData.value = {
+      path: '',
+      sheet: '',
+      sheets: [],
+      total: 0,
+      columns: [],
+      rows: [],
+    }
+    weldingPreScheduleError.value = t('weldingPreScheduleReadFailed', { message: error.message })
+  } finally {
+    if (!options.signal?.aborted) weldingPreScheduleLoading.value = false
+  }
+}
+
+async function changeWeldingPreScheduleSheet(sheet) {
+  weldingPreScheduleActiveSheet.value = sheet
+  await loadWeldingPreScheduleRows(sheet)
 }
 
 function resetAntiCorrosionPendingPreview() {
@@ -1381,7 +1432,7 @@ async function saveAntiCorrosionPendingStage() {
 }
 
 async function loadCuttingVisualization(options = {}) {
-  if (!showCuttingVisualization.value) return
+  if (!showMaterialLocking.value) return
   cuttingLoading.value = true
   cuttingError.value = ''
   try {
@@ -1415,11 +1466,12 @@ async function loadActiveModuleData(options = {}) {
   await loadArrivalFiles(options)
   await loadArrivalDashboard(options)
   await loadWeldingDashboard(options)
+  await loadWeldingPreScheduleRows(weldingPreScheduleActiveSheet.value, options)
   await loadAntiCorrosionDashboard(options)
   await loadAntiCorrosionPreScheduleRows(antiCorrosionPreScheduleActiveSheet.value, options)
+  await loadCuttingVisualization(options)
   await loadCuttingDashboard(options)
   await loadPreScheduleRows(preScheduleActiveSheet.value, options)
-  await loadCuttingVisualization(options)
 }
 
 function cancelWorkspaceLoad() {
@@ -1431,6 +1483,7 @@ function cancelWorkspaceLoad() {
   workspaceLoadController = null
   initializationLoading.value = false
   weldingDashboardLoading.value = false
+  weldingPreScheduleLoading.value = false
   arrivalDashboardLoading.value = false
   antiCorrosionDashboardLoading.value = false
   cuttingDashboardLoading.value = false
@@ -1517,15 +1570,20 @@ async function executeAction(actionKey) {
     await loadSummary()
     await loadInitializationStats()
   }
-  if (showCuttingVisualization.value && ['weld-pre-schedule', 'confirm-cutting-pre-schedule'].includes(actionKey)) {
+  if (showCuttingVisualization.value && actionKey === 'weld-pre-schedule') {
     await loadSummary()
     await loadCuttingDashboard()
     await loadPreScheduleRows()
+  }
+  if (showMaterialLocking.value && actionKey === 'material-locking') {
+    await loadSummary()
+    await loadPreScheduleRows()
     await loadCuttingVisualization()
   }
-  if (showWeldingDashboard.value && actionKey === 'auto-weld-schedule') {
+  if (showWeldingDashboard.value && ['welding-pre-schedule', 'auto-weld-schedule'].includes(actionKey)) {
     await loadSummary()
     await loadWeldingDashboard()
+    await loadWeldingPreScheduleRows()
   }
   if (showAntiCorrosionPreSchedule.value && ['anti-corrosion-pre-schedule', 'anti-corrosion-schedule'].includes(actionKey)) {
     await loadSummary()
@@ -1574,7 +1632,7 @@ function resolveMaterialLibraryConfirmation(confirmed) {
 
 function actionOptionsPayload(actionKey) {
   if (actionKey === 'weld-pre-schedule') {
-    return { ...preScheduleOptions.value }
+    return {}
   }
   if (actionKey === 'anti-corrosion-pre-schedule') {
     return { ...antiCorrosionPreScheduleOptions.value }
@@ -1808,13 +1866,16 @@ watch(
 )
 watch(() => route.params.moduleKey, () => {
   ensureModuleRoute()
-  if (!showCuttingVisualization.value) {
+  if (!showMaterialLocking.value) {
     releaseCuttingVTable()
   }
   scheduleWorkspaceLoad()
 })
 const antiCorrosionPreScheduleTableColumns = computed(() => {
   return buildDynamicColumns(antiCorrosionPreScheduleData.value.columns)
+})
+const weldingPreScheduleTableColumns = computed(() => {
+  return buildDynamicColumns(weldingPreScheduleData.value.columns)
 })
 const antiCorrosionCommissionPreviewColumns = computed(() => {
   return buildDynamicColumns(antiCorrosionPendingPreview.value.columns)
@@ -1899,6 +1960,39 @@ onBeforeUnmount(() => {
     @change-arrival-sheet="changeArrivalSheet"
   />
 
+  <CuttingModule
+    v-else-if="activeModule && showMaterialLocking"
+    :active-module="activeModule"
+    :active-module-title="activeModuleTitle"
+    :show-dashboard="false"
+    :show-visualization="true"
+    pre-schedule-title-key="materialMatchingLocking"
+    pre-schedule-path-fallback-key="materialLockingResultDefaultPath"
+    result-title-key="materialMatchingLockingResult"
+    result-tip-key="materialMatchingLockingResultTip"
+    :dashboard="cuttingDashboard"
+    :dashboard-loading="cuttingDashboardLoading"
+    :dashboard-error="cuttingDashboardError"
+    :pre-schedule-loading="preScheduleLoading"
+    :pre-schedule-data="preScheduleData"
+    :pre-schedule-active-sheet="preScheduleActiveSheet"
+    :pre-schedule-error="preScheduleError"
+    :pre-schedule-table-columns="preScheduleTableColumns"
+    :cutting-loading="cuttingLoading"
+    :cutting-data="cuttingData"
+    :cutting-error="cuttingError"
+    :cutting-tooltip="cuttingTooltip"
+    :cutting-pre-schedule-action="materialLockingAction"
+    :cutting-overview-actions="[]"
+    :running-key="runningKey"
+    :format-length="formatLength"
+    @execute-action="executeAction"
+    @refresh-match-result="loadPreScheduleRows"
+    @refresh-visualization="loadCuttingVisualization"
+    @change-pre-schedule-sheet="changePreScheduleSheet"
+    @table-container-ready="setCuttingTableContainer"
+  />
+
   <AntiCorrosionModule
     v-else-if="activeModule && showAntiCorrosionPreSchedule"
     :active-module="activeModule"
@@ -1949,18 +2043,15 @@ onBeforeUnmount(() => {
     :dashboard-loading="cuttingDashboardLoading"
     :dashboard-error="cuttingDashboardError"
     :pre-schedule-loading="preScheduleLoading"
-    :cutting-loading="cuttingLoading"
     :pre-schedule-data="preScheduleData"
-    :pre-schedule-options="preScheduleOptions"
-    :concentration-dimension-options="pipelineConcentrationDimensionOptions"
     :pre-schedule-active-sheet="preScheduleActiveSheet"
     :pre-schedule-error="preScheduleError"
     :pre-schedule-table-columns="preScheduleTableColumns"
+    :cutting-loading="cuttingLoading"
     :cutting-data="cuttingData"
     :cutting-error="cuttingError"
     :cutting-tooltip="cuttingTooltip"
     :cutting-pre-schedule-action="cuttingPreScheduleAction"
-    :cutting-confirm-action="cuttingConfirmAction"
     :cutting-overview-actions="cuttingOverviewActions"
     :running-key="runningKey"
     :format-length="formatLength"
@@ -2017,11 +2108,17 @@ onBeforeUnmount(() => {
     :welding-stage-saving="weldingStageSaving"
     :welding-schedule-config="weldingScheduleConfig"
     :welding-schedule-defaults="weldingScheduleDefaults"
+    :welding-pre-schedule-loading="weldingPreScheduleLoading"
+    :welding-pre-schedule-error="weldingPreScheduleError"
+    :welding-pre-schedule-data="weldingPreScheduleData"
+    :welding-pre-schedule-active-sheet="weldingPreScheduleActiveSheet"
+    :welding-pre-schedule-table-columns="weldingPreScheduleTableColumns"
     :running-key="runningKey"
     @execute-action="executeAction"
     @refresh-dashboard="loadWeldingDashboard"
     @update-welding-date="updateWeldingDate"
     @save-pending-stage="saveWeldingPendingStage"
+    @change-welding-pre-schedule-sheet="changeWeldingPreScheduleSheet"
   />
 
   <GenericModule

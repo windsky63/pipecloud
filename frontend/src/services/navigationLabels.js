@@ -3,6 +3,7 @@ import { t } from './pipecloudState'
 const moduleTitleKeys = {
   initialization: 'initializationData',
   arrival: 'arrivalManagement',
+  materialLocking: 'materialLockingManagement',
   antiCorrosion: 'antiCorrosionManagementScheduling',
   cutting: 'cuttingManagementScheduling',
   welding: 'weldingManagementScheduling',
@@ -12,6 +13,7 @@ const moduleTitleKeys = {
 const moduleDescriptionKeys = {
   initialization: 'initializationModuleDescription',
   arrival: 'arrivalModuleDescription',
+  materialLocking: 'materialLockingModuleDescription',
   antiCorrosion: 'antiCorrosionModuleDescription',
   cutting: 'cuttingModuleDescription',
   welding: 'weldingModuleDescription',
@@ -22,8 +24,10 @@ const actionNameKeys = {
   'prefab-weld-library': 'actionPrefabWeldLibrary',
   'arrival-library': 'actionArrivalLibrary',
   'update-weld-arrival-status': 'actionUpdateWeldArrivalStatus',
+  'material-locking': 'actionMaterialLocking',
   'anti-corrosion-pre-schedule': 'actionAntiCorrosionPreSchedule',
   'anti-corrosion-schedule': 'actionAntiCorrosionSchedule',
+  'welding-pre-schedule': 'actionWeldingPreSchedule',
   'auto-weld-schedule': 'actionAutoWeldSchedule',
   'weld-pre-schedule': 'actionWeldPreSchedule',
   'confirm-cutting-pre-schedule': 'actionConfirmCuttingPreSchedule',
@@ -36,7 +40,6 @@ const libraryTitleKeys = {
   'fitting-library': 'fittingLibrary',
   'anti-pipe-library': 'antiCorrosionPipeLibrary',
   'anti-fitting-library': 'antiCorrosionFittingLibrary',
-  'anti-corrosion-commission-library': 'antiCorrosionCommissionLibrary',
   'master-schedule-library': 'masterScheduleLibrary',
 }
 

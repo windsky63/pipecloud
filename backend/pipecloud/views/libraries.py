@@ -1,9 +1,9 @@
 from .common import *
+from pipecloud.models import MasterScheduleRow
 from pipecloud.services.db_storage import LIBRARY_MODELS, PLAN_FILE_MODELS, latest_source, model_field_labels, replace_source_rows, table_payload
 from pipecloud.services.prefab_database import (
     CUTTING_DERIVED_FILE_NAMES,
     MASTER_DERIVED_FILE_NAME,
-    WELDING_PRIMARY_PLAN_FILE_NAME,
     WELDING_DERIVED_FILE_NAMES,
     derived_plan_file_payload,
 )
@@ -12,13 +12,49 @@ from pipecloud.services.prefab_database import (
 PLAN_LIBRARY_SPECS = {
     'master-schedule-library': {
         'name': '排产计划库',
-        'plan_key': 'welding',
-        'file_name': WELDING_PRIMARY_PLAN_FILE_NAME,
+        'plan_key': 'all',
+        'file_name': '排产计划库.xlsx',
     },
 }
 
 BUSINESS_PRIMARY_FIELD_NAMES = {'library_seq'}
 BUSINESS_PRIMARY_COLUMN = '库序号'
+LIBRARY_HIDDEN_COLUMNS = {}
+MASTER_STAGE_LABELS = {
+    'anti-corrosion': '防腐',
+    'cutting': '下料',
+    'welding': '焊接',
+}
+MASTER_LIBRARY_EXCLUDED_FIELDS = {'stage_payload'}
+MASTER_COMMON_STAGE_COLUMNS = {
+    '库序号',
+    '来源工作表',
+    '单元号',
+    '管线号',
+    '管段号',
+    '初始焊口号',
+    '最终焊口号',
+    '寸径',
+    '壁厚',
+    '材质',
+    '优先级',
+    '材料到货状态',
+    '到货状态',
+    '材料防腐状态',
+    '防腐状态',
+    '材料下料状态',
+    '下料状态',
+    '材料焊接状态',
+    '是否完成',
+    '完成状态',
+    '焊接状态',
+}
+ANTI_CORROSION_STAGE_COLUMNS = {'防腐面积', '材料油漆', '材料油漆1', '材料油漆2'}
+
+
+def _visible_library_columns(library_key, columns):
+    hidden = LIBRARY_HIDDEN_COLUMNS.get(library_key, set())
+    return [column for column in columns if column not in hidden]
 
 
 def _model_columns_for_field_names(model, field_names):
@@ -37,6 +73,45 @@ def _model_primary_key_columns(model):
 
 def _model_library_columns(model):
     return list(model_field_labels(model).values()) if model is not None else []
+
+
+def _visible_stage_payload_columns(stage_key, stage_payload):
+    if stage_key == 'anti-corrosion':
+        allowed = ANTI_CORROSION_STAGE_COLUMNS
+    else:
+        allowed = None
+    for column_name, value in stage_payload.items():
+        if column_name in MASTER_COMMON_STAGE_COLUMNS:
+            continue
+        if allowed is not None and column_name not in allowed:
+            continue
+        yield column_name, value
+
+
+def _master_schedule_library_dataframe(project):
+    labels = model_field_labels(MasterScheduleRow)
+    base_field_names = [
+        field_name
+        for field_name in labels.keys()
+        if field_name not in MASTER_LIBRARY_EXCLUDED_FIELDS
+    ]
+    rows = []
+    stage_columns = []
+    for record in MasterScheduleRow.objects.filter(project=project).order_by('library_seq'):
+        values = {labels[field_name]: getattr(record, field_name, '') for field_name in base_field_names}
+        payload = record.stage_payload or {}
+        for stage_key, stage_label in MASTER_STAGE_LABELS.items():
+            stage_payload = payload.get(stage_key) or {}
+            if not isinstance(stage_payload, dict):
+                continue
+            for column_name, value in _visible_stage_payload_columns(stage_key, stage_payload):
+                column = f'{stage_label}/{column_name}'
+                values[column] = value
+                if column not in stage_columns:
+                    stage_columns.append(column)
+        rows.append(values)
+    columns = [labels[field_name] for field_name in base_field_names] + stage_columns
+    return pd.DataFrame(rows, columns=columns), stage_columns
 
 
 def _preserve_primary_key_values(rows, current_rows, primary_key_columns):
@@ -72,6 +147,8 @@ def _library_catalog():
 
 
 def _plan_library_sources(project, library):
+    if library.get('plan_key') == 'all':
+        return DataSourceFile.objects.none()
     return DataSourceFile.objects.filter(
         project=project,
         source_type='plan',
@@ -81,6 +158,10 @@ def _plan_library_sources(project, library):
 
 
 def _plan_library_dataframe(project, library, sheet_models):
+    if library.get('plan_key') == 'all':
+        dataframe, _ = _master_schedule_library_dataframe(project)
+        return dataframe, 'database://library/master-schedule-library/排产计划库.xlsx'
+
     source_qs = _plan_library_sources(project, library)
     file_name = library['file_name']
     if not source_qs.exists() and file_name not in CUTTING_DERIVED_FILE_NAMES | WELDING_DERIVED_FILE_NAMES | {MASTER_DERIVED_FILE_NAME}:
@@ -139,7 +220,7 @@ def _ordered_library_columns(columns, primary_key_columns):
 def _empty_library_rows_payload(library_key, library, path=''):
     sheet_models = LIBRARY_MODELS.get(library_key, {})
     model = sheet_models.get('*')
-    columns = _model_library_columns(model)
+    columns = _visible_library_columns(library_key, _model_library_columns(model))
     primary_key_columns = _model_primary_key_columns(model) if model is not None else []
     return {
         'key': library_key,
@@ -149,12 +230,28 @@ def _empty_library_rows_payload(library_key, library, path=''):
         'columns': columns,
         'primaryKeyColumns': primary_key_columns,
         'readonlyColumns': primary_key_columns,
+        'stageColumns': [],
         'rows': [],
     }
 
 
 def _plan_library_info(project, library_key, library):
     source_qs = _plan_library_sources(project, library)
+    if library.get('plan_key') == 'all':
+        total = MasterScheduleRow.objects.filter(project=project).count()
+        latest = MasterScheduleRow.objects.filter(project=project).order_by('-updated_at', '-id').first()
+        return {
+            'key': library_key,
+            'name': library['name'],
+            'path': f'database://library/{library_key}/{library["file_name"]}',
+            'exists': total > 0,
+            'size': 0,
+            'updatedAt': latest.updated_at.timestamp() if latest else None,
+            'rowCount': total,
+            'fileName': library['file_name'],
+            'planKey': library['plan_key'],
+            'planFolder': '',
+        }
     derived_file_names = CUTTING_DERIVED_FILE_NAMES | WELDING_DERIVED_FILE_NAMES | {MASTER_DERIVED_FILE_NAME}
     if not source_qs.exists() and library['file_name'] not in derived_file_names:
         return {
@@ -233,7 +330,7 @@ def library_rows(request, library_key):
         return HttpResponseBadRequest(json.dumps({'error': '未知库文件'}, ensure_ascii=False), content_type='application/json')
 
     try:
-        if library_key in LIBRARY_MODELS:
+        if library_key in LIBRARY_MODELS and library_key not in PLAN_LIBRARY_SPECS:
             sheet_models = LIBRARY_MODELS[library_key]
             source = latest_source(project, 'library', library_key)
             if source is None:
@@ -242,10 +339,15 @@ def library_rows(request, library_key):
                     json_dumps_params={'ensure_ascii': False},
                 )
         else:
-            sheet_models = PLAN_FILE_MODELS.get(library['file_name'])
+            sheet_models = {'*': MasterScheduleRow} if library_key == 'master-schedule-library' else PLAN_FILE_MODELS.get(library['file_name'])
             if sheet_models is None:
                 sheet_models = {}
-            dataframe, source_path = _plan_library_dataframe(project, library, sheet_models)
+            stage_columns = []
+            if library_key == 'master-schedule-library':
+                dataframe, stage_columns = _master_schedule_library_dataframe(project)
+                source_path = 'database://library/master-schedule-library/排产计划库.xlsx'
+            else:
+                dataframe, source_path = _plan_library_dataframe(project, library, sheet_models)
             if dataframe is None:
                 raise ValueError(f'数据库中没有{library["name"]}')
             model = sheet_models.get('*')
@@ -256,6 +358,7 @@ def library_rows(request, library_key):
                 [column for column in dataframe.columns if not str(column).startswith('_')],
                 primary_key_columns,
             )
+            columns = _visible_library_columns(library_key, columns)
             rows = dataframe[columns].to_dict(orient='records')
             return JsonResponse({
                 'key': library_key,
@@ -265,13 +368,14 @@ def library_rows(request, library_key):
                 'columns': columns,
                 'primaryKeyColumns': primary_key_columns,
                 'readonlyColumns': primary_key_columns,
+                'stageColumns': stage_columns,
                 'rows': rows,
             }, json_dumps_params={'ensure_ascii': False})
         selected_sheet, _, total, columns, rows = table_payload(source, sheet_models, None)
         model = sheet_models.get(selected_sheet) or sheet_models.get('*')
         if model is not None:
             primary_key_columns = _model_primary_key_columns(model)
-            columns = _model_library_columns(model)
+            columns = _visible_library_columns(library_key, _model_library_columns(model))
             rows = [
                 {column: row.get(column, '') for column in columns}
                 for row in rows
@@ -289,6 +393,7 @@ def library_rows(request, library_key):
         'columns': columns,
         'primaryKeyColumns': primary_key_columns,
         'readonlyColumns': primary_key_columns,
+        'stageColumns': [],
         'rows': rows,
     }, json_dumps_params={'ensure_ascii': False})
 
@@ -310,7 +415,7 @@ def save_library_rows(request, library_key):
     try:
         sheet_name = 'Sheet1'
         synced_count = 0
-        if library_key in LIBRARY_MODELS:
+        if library_key in LIBRARY_MODELS and library_key not in PLAN_LIBRARY_SPECS:
             sheet_models = LIBRARY_MODELS[library_key]
             existing_source = latest_source(project, 'library', library_key)
             existing_rows = []
@@ -321,13 +426,18 @@ def save_library_rows(request, library_key):
                 if model is not None:
                     primary_key_columns = _model_primary_key_columns(model)
             rows = _preserve_primary_key_values(payload['rows'], existing_rows, primary_key_columns)
+            columns = _visible_library_columns(library_key, payload['columns'])
+            rows = [
+                {column: row.get(column, '') for column in columns}
+                for row in rows
+            ]
             source = replace_source_rows(
                 project,
                 'library',
                 library_key,
                 f'{library["name"]}.xlsx',
                 f'database://library/{library_key}/{library["name"]}.xlsx',
-                {sheet_name: {'columns': payload['columns'], 'rows': rows}},
+                {sheet_name: {'columns': columns, 'rows': rows}},
                 sheet_models,
             )
             _, _, total, _, _ = table_payload(source, sheet_models, sheet_name)
@@ -349,7 +459,7 @@ def save_library_rows(request, library_key):
 
 
 def _database_library_info(project, library_key, library):
-    if library_key in LIBRARY_MODELS:
+    if library_key in LIBRARY_MODELS and library_key not in PLAN_LIBRARY_SPECS:
         source = latest_source(project, 'library', library_key)
         if source is None:
             return {

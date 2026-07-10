@@ -73,11 +73,13 @@ const projectTableWidth = ref(0)
 const weldPage = ref(1)
 const weldPageSize = ref(100)
 const projectDialog = ref(false)
+const projectSettingsDialog = ref(false)
 const projectForm = ref({})
 const projectFormError = ref('')
 const projectConstraintLoading = ref(false)
 const projectConstraintSaving = ref(false)
 const processSequence = ref(null)
+const projectFormProcessSequence = ref(null)
 const unsavedChangesDialog = ref(null)
 const initializationDashboardCollapsed = ref(false)
 const weldingDashboardCollapsed = ref(false)
@@ -110,9 +112,8 @@ const projectOptions = computed(() => projectRows.value.map((project) => ({
   value: project.id,
 })))
 const processSequenceOptions = computed(() => [
-  { title: t('projectConstraintUnset'), value: null },
-  { title: t('coatingBeforeWelding'), value: 'coating_before_welding' },
-  { title: t('weldingBeforeCoating'), value: 'welding_before_coating' },
+  { title: t('coatingBeforeWelding'), value: 'coating_before_welding', icon: 'mdi-format-vertical-align-top' },
+  { title: t('weldingBeforeCoating'), value: 'welding_before_coating', icon: 'mdi-format-vertical-align-bottom' },
 ])
 const requiredProjectColumns = computed(() => projectColumns.value.filter((column) => column.field === 'project_name'))
 const optionalProjectColumns = computed(() => projectColumns.value.filter((column) => column.field !== 'project_name'))
@@ -523,10 +524,10 @@ async function loadProjectConstraints(options = {}) {
     const payload = await fetchProjectConstraints(projectId, options)
     if (options.signal?.aborted || projectId !== selectedProjectId.value) return
     const rule = payload.rules?.find((item) => item.key === 'coating_welding_sequence')
-    processSequence.value = rule?.enabled ? (rule.parameters?.sequence || null) : null
+    processSequence.value = rule?.parameters?.sequence || 'coating_before_welding'
   } catch (error) {
     if (error?.name === 'AbortError' || projectId !== selectedProjectId.value) return
-    processSequence.value = null
+    processSequence.value = 'coating_before_welding'
     errorMessage.value = t('projectConstraintReadFailed', { message: error.message })
   } finally {
     if (!options.signal?.aborted && projectId === selectedProjectId.value) {
@@ -537,20 +538,20 @@ async function loadProjectConstraints(options = {}) {
 
 async function saveProcessSequence(value) {
   const projectId = selectedProjectId.value
-  if (!projectId || projectConstraintSaving.value) return
+  if (!projectId || projectConstraintSaving.value || !value) return
   const previousValue = processSequence.value
-  processSequence.value = value || null
+  processSequence.value = value
   projectConstraintSaving.value = true
   errorMessage.value = ''
   try {
     const payload = await updateProjectConstraints(projectId, [{
       key: 'coating_welding_sequence',
-      enabled: Boolean(value),
-      parameters: value ? { sequence: value } : {},
+      enabled: true,
+      parameters: { sequence: value },
     }])
     if (projectId !== selectedProjectId.value) return
     const rule = payload.rules?.find((item) => item.key === 'coating_welding_sequence')
-    processSequence.value = rule?.enabled ? (rule.parameters?.sequence || null) : null
+    processSequence.value = rule?.parameters?.sequence || 'coating_before_welding'
   } catch (error) {
     if (projectId !== selectedProjectId.value) return
     processSequence.value = previousValue
@@ -558,6 +559,24 @@ async function saveProcessSequence(value) {
   } finally {
     projectConstraintSaving.value = false
   }
+}
+
+function isProcessSequenceSelected(value) {
+  return processSequence.value === value
+}
+
+function toggleProcessSequence(value) {
+  if (projectConstraintLoading.value || projectConstraintSaving.value || !selectedProjectId.value) return
+  if (processSequence.value === value) return
+  saveProcessSequence(value)
+}
+
+function isProjectFormProcessSequenceSelected(value) {
+  return projectFormProcessSequence.value === value
+}
+
+function toggleProjectFormProcessSequence(value) {
+  projectFormProcessSequence.value = value
 }
 
 async function loadInitializationDashboard(options = {}) {
@@ -685,6 +704,7 @@ function openProjectDialog() {
     form[column.field] = ''
     return form
   }, {})
+  projectFormProcessSequence.value = 'coating_before_welding'
   projectFormError.value = ''
   projectDialog.value = true
 }
@@ -707,8 +727,16 @@ async function addProject() {
   projectFormError.value = ''
   try {
     const payload = await createProject(projectForm.value)
+    if (projectFormProcessSequence.value) {
+      await updateProjectConstraints(payload.id, [{
+        key: 'coating_welding_sequence',
+        enabled: true,
+        parameters: { sequence: projectFormProcessSequence.value },
+      }])
+    }
     projectRows.value = [payload, ...projectRows.value]
     setSelectedProjectId(payload.id)
+    processSequence.value = projectFormProcessSequence.value
     projectDialog.value = false
     await renderProjectTable()
   } catch (error) {
@@ -866,50 +894,15 @@ onBeforeUnmount(() => {
     :description="t('prefabHomeDescription')"
   >
     <template #actions>
-      <div class="project-switcher-wrap">
-        <label class="project-context-field">
-          <div class="project-switcher-label">
-            <v-icon icon="mdi-swap-horizontal-bold" size="18" />
-            <span>{{ t('currentProject') }}</span>
-          </div>
-
-          <div class="project-switcher-control">
-            <v-select
-              :model-value="selectedProjectId"
-              :items="projectOptions"
-              density="compact"
-              hide-details
-              class="project-switcher"
-              prepend-inner-icon="mdi-briefcase-outline"
-              :placeholder="t('selectProjectPlaceholder')"
-              @update:model-value="setSelectedProjectId"
-            />
-          </div>
-        </label>
-
-        <label class="project-context-field">
-          <div class="project-switcher-label">
-            <v-icon icon="mdi-tune-variant" size="18" />
-            <span>{{ t('projectConstraints') }}</span>
-            <InfoTooltip :text="t('projectConstraintsTip')" location="bottom" />
-          </div>
-
-          <div class="project-switcher-control">
-            <v-select
-              :model-value="processSequence"
-              :items="processSequenceOptions"
-              :disabled="!selectedProjectId"
-              :loading="projectConstraintLoading || projectConstraintSaving"
-              density="compact"
-              hide-details
-              class="project-switcher"
-              prepend-inner-icon="mdi-order-bool-ascending-variant"
-              :placeholder="t('projectConstraintUnset')"
-              @update:model-value="saveProcessSequence"
-            />
-          </div>
-        </label>
-      </div>
+      <v-btn
+        class="project-settings-button"
+        color="primary"
+        variant="tonal"
+        prepend-icon="mdi-tune-variant"
+        @click="projectSettingsDialog = true"
+      >
+        {{ selectedProject?.project_name || t('selectProjectPlaceholder') }}
+      </v-btn>
     </template>
   </PageHeader>
 
@@ -1021,7 +1014,7 @@ onBeforeUnmount(() => {
       class="module-panel project-panel weld-panel"
       :class="{
         'is-loading': weldLoading,
-        'is-empty': !weldColumns.length && !weldLoading && !weldErrorMessage,
+        'is-empty': !weldColumns.length && !weldErrorMessage,
       }"
       variant="flat"
     >
@@ -1098,7 +1091,7 @@ onBeforeUnmount(() => {
             :key="column.field"
             class="project-form-field is-required"
           >
-            <span>{{ column.title }} *</span>
+            <span>{{ column.title }} <strong class="required-mark">*</strong></span>
             <v-text-field
               v-model="projectForm[column.field]"
               :type="projectInputType(column.field)"
@@ -1122,11 +1115,90 @@ onBeforeUnmount(() => {
             />
           </label>
         </div>
+        <div class="project-create-constraints">
+          <div class="project-create-subhead">
+            <strong>{{ t('projectConstraints') }}</strong>
+            <span>{{ t('projectConstraintsTip') }}</span>
+          </div>
+          <div class="project-constraint-options">
+            <button
+              v-for="option in processSequenceOptions"
+              :key="option.value"
+              type="button"
+              class="project-constraint-option"
+              :class="{ 'is-selected': isProjectFormProcessSequenceSelected(option.value) }"
+              @click="toggleProjectFormProcessSequence(option.value)"
+            >
+              <v-icon :icon="isProjectFormProcessSequenceSelected(option.value) ? 'mdi-checkbox-marked' : 'mdi-checkbox-blank-outline'" size="18" />
+              <span>{{ option.title }}</span>
+            </button>
+          </div>
+        </div>
       </v-card-text>
       <v-card-actions class="project-create-actions">
         <v-spacer />
         <v-btn variant="text" @click="projectDialog = false">{{ t('cancel') }}</v-btn>
         <v-btn color="primary" variant="tonal" :loading="saving" @click="addProject">{{ t('confirmAdd') }}</v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
+
+  <v-dialog v-model="projectSettingsDialog" max-width="680">
+    <v-card class="project-settings-dialog" variant="flat">
+      <v-card-title class="project-settings-head">
+        <div>
+          <strong>{{ t('currentProject') }}</strong>
+          <span>{{ t('projectConstraintsTip') }}</span>
+        </div>
+      </v-card-title>
+      <v-card-text class="project-settings-body">
+        <label class="project-form-field">
+          <span>{{ t('currentProject') }}</span>
+          <v-select
+            :model-value="selectedProjectId"
+            :items="projectOptions"
+            density="compact"
+            hide-details
+            prepend-inner-icon="mdi-briefcase-outline"
+            :placeholder="t('selectProjectPlaceholder')"
+            @update:model-value="setSelectedProjectId"
+          />
+        </label>
+
+        <div class="project-create-constraints">
+          <div class="project-create-subhead">
+            <strong>{{ t('projectConstraints') }}</strong>
+            <span>{{ t('projectConstraintsTip') }}</span>
+          </div>
+          <div
+            class="project-constraint-options"
+            :class="{ 'is-disabled': !selectedProjectId || projectConstraintLoading || projectConstraintSaving }"
+          >
+            <button
+              v-for="option in processSequenceOptions"
+              :key="option.value"
+              type="button"
+              class="project-constraint-option"
+              :class="{ 'is-selected': isProcessSequenceSelected(option.value) }"
+              :disabled="!selectedProjectId || projectConstraintLoading || projectConstraintSaving"
+              @click="toggleProcessSequence(option.value)"
+            >
+              <v-icon :icon="isProcessSequenceSelected(option.value) ? 'mdi-checkbox-marked' : 'mdi-checkbox-blank-outline'" size="18" />
+              <span>{{ option.title }}</span>
+            </button>
+            <v-progress-circular
+              v-if="projectConstraintLoading || projectConstraintSaving"
+              indeterminate
+              size="18"
+              width="2"
+              color="primary"
+            />
+          </div>
+        </div>
+      </v-card-text>
+      <v-card-actions class="project-create-actions">
+        <v-spacer />
+        <v-btn color="primary" variant="tonal" @click="projectSettingsDialog = false">{{ t('confirm') }}</v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>

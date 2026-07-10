@@ -26,6 +26,7 @@ const tableRows = ref([])
 const columns = ref([])
 const primaryKeyColumns = ref([])
 const readonlyColumns = ref([])
+const stageColumns = ref([])
 const visibleColumnKeys = ref([])
 const total = ref(0)
 const dirty = ref(false)
@@ -136,9 +137,13 @@ function buildVTableColumns() {
       filter: true,
       sort: true,
       editor: textEditor && !isReadonlyColumn(column) ? textEditor : undefined,
-      headerStyle: { fontWeight: 700 },
       style: {
         bgColor: rowCellBackground,
+      },
+      headerStyle: {
+        fontWeight: 700,
+        bgColor: isStageColumn(column) ? '#ecfdf5' : undefined,
+        color: isStageColumn(column) ? '#047857' : undefined,
       },
     })),
   ]
@@ -175,12 +180,28 @@ function isReadonlyColumn(column) {
   return readonlyColumns.value.includes(column) || isPrimaryKeyColumn(column)
 }
 
+function isStageColumn(column) {
+  return stageColumns.value.includes(column)
+}
+
 function columnSelectItems() {
   return columns.value.map((column) => ({
     title: column,
     value: column,
     primaryKey: isPrimaryKeyColumn(column),
+    stageColumn: isStageColumn(column),
   }))
+}
+
+function columnChipColor(item) {
+  if (item.raw.primaryKey) return 'warning'
+  if (item.raw.stageColumn) return 'success'
+  return 'secondary'
+}
+
+function columnChipVariant(item) {
+  if (item.raw.primaryKey) return 'flat'
+  return 'tonal'
 }
 
 function rowCellBackground(args = {}) {
@@ -597,6 +618,7 @@ async function loadRows() {
     columns.value = payload.columns || []
     primaryKeyColumns.value = payload.primaryKeyColumns || []
     readonlyColumns.value = payload.readonlyColumns || []
+    stageColumns.value = payload.stageColumns || []
     visibleColumnKeys.value = columns.value.slice()
     total.value = payload.total || 0
     batchColumn.value = editableColumns.value[0] || ''
@@ -610,6 +632,7 @@ async function loadRows() {
     columns.value = []
     primaryKeyColumns.value = []
     readonlyColumns.value = []
+    stageColumns.value = []
     visibleColumnKeys.value = []
     releaseVTable()
     tableError.value = t('libraryFileReadFailed', { message: error.message })
@@ -810,8 +833,8 @@ onBeforeUnmount(() => {
         <template #chip="{ props, item }">
           <v-chip
             v-bind="props"
-            :color="item.raw.primaryKey ? 'warning' : 'secondary'"
-            :variant="item.raw.primaryKey ? 'flat' : 'tonal'"
+            :color="columnChipColor(item)"
+            :variant="columnChipVariant(item)"
           >
             {{ item.title }}
           </v-chip>

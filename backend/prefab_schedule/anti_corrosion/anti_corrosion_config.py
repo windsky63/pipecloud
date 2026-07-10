@@ -18,6 +18,5 @@ ANTI_CORROSION_FILES = {
     'pipe_library': LIBRARY_DIR / '防腐管子材料库.xlsx',
     'fitting_library': LIBRARY_DIR / '防腐管件法兰材料库.xlsx',
     'pre_schedule_output': INTERMEDIATE_DIR / '防腐预排产匹配结果.xlsx',
-    'commission_library_output': LIBRARY_DIR / '防腐委托库.xlsx',
     'commission_summary_output': ANTI_CORROSION_DIR / '防腐委托总表.xlsx',
 }

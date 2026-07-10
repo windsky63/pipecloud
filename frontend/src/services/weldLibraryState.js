@@ -11,7 +11,6 @@ export const defaultLibraries = [
   { key: 'fitting-library', name: '管件法兰材料库', exists: false, rowCount: 0 },
   { key: 'anti-pipe-library', name: '防腐管子材料库', exists: false, rowCount: 0 },
   { key: 'anti-fitting-library', name: '防腐管件法兰材料库', exists: false, rowCount: 0 },
-  { key: 'anti-corrosion-commission-library', name: '防腐委托库', exists: false, rowCount: 0 },
   { key: 'master-schedule-library', name: '排产计划库', exists: false, rowCount: 0 },
 ]
 export const libraries = ref(defaultLibraries.map((library) => ({ ...library })))

@@ -13,7 +13,12 @@ from cutting import weld_pre_schedule_matcher as cutting_matcher  # noqa: E402
 from anti_corrosion.pre_schedule_matcher import (  # noqa: E402
     match_anti_corrosion_pre_schedule_dataframes,
 )
-from anti_corrosion.main import build_anti_corrosion_commission_from_pre_schedule  # noqa: E402
+from anti_corrosion.main import (  # noqa: E402
+    build_anti_corrosion_commission_file_sheets,
+    build_anti_corrosion_commission_from_pre_schedule,
+    build_anti_corrosion_material_detail,
+    build_anti_corrosion_material_summary,
+)
 
 
 def weld_row(seq, segment, quantity, paint='PA1', material_code='P001'):
@@ -108,6 +113,24 @@ class CuttingPreScheduleInventoryRoutingTests(SimpleTestCase):
             cutting_matcher.ORDINARY_POOL,
         )
 
+    def test_routes_any_paint_requirement_to_anti_corrosion_inventory(self):
+        pipe_demands, _ = cutting_matcher._build_weld_material_demands(
+            pd.Series(weld_row(1, 'S1', 2, paint='FBE'))
+        )
+        self.assertEqual(
+            pipe_demands[0][cutting_matcher.INVENTORY_POOL_KEY],
+            cutting_matcher.ANTI_CORROSION_POOL,
+        )
+
+    def test_routes_empty_paint_requirement_to_ordinary_inventory(self):
+        pipe_demands, _ = cutting_matcher._build_weld_material_demands(
+            pd.Series(weld_row(1, 'S1', 2, paint=''))
+        )
+        self.assertEqual(
+            pipe_demands[0][cutting_matcher.INVENTORY_POOL_KEY],
+            cutting_matcher.ORDINARY_POOL,
+        )
+
     def test_allocates_regular_and_pa_material_from_separate_pools(self):
         group_df = pd.DataFrame([
             weld_row(1, 'S1', 2, paint='/'),
@@ -180,10 +203,10 @@ class AntiCorrosionPreScheduleTests(SimpleTestCase):
         self.assertEqual(result['result_df'].iloc[0][columns['library_seq']], 'P1-W00000042')
         self.assertEqual(result['result_df'].iloc[0]['防腐面积'], 4)
 
-    def test_matches_whole_segment_and_rolls_back_failed_segment(self):
+    def test_arrived_whole_segment_does_not_rematch_material_stock(self):
         weld_df = pd.DataFrame([
-            weld_row(1, 'S-FAIL', 4),
-            weld_row(2, 'S-FAIL', 7),
+            weld_row(1, 'S-OK-1', 4),
+            weld_row(2, 'S-OK-1', 7),
             weld_row(3, 'S-OK', 10),
         ])
 
@@ -194,15 +217,16 @@ class AntiCorrosionPreScheduleTests(SimpleTestCase):
         )
 
         self.assertEqual(result['candidate_segment_count'], 2)
-        self.assertEqual(result['pre_schedule_segment_count'], 1)
-        self.assertEqual(result['rejected_segment_count'], 1)
+        self.assertEqual(result['pre_schedule_segment_count'], 2)
+        self.assertEqual(result['rejected_segment_count'], 0)
+        self.assertTrue(result['detail_df'].empty)
         status_by_segment = (
             result['result_df']
             .groupby('管段号')['预排产状态']
             .first()
             .to_dict()
         )
-        self.assertEqual(status_by_segment['S-FAIL'], cutting_matcher.SHORTAGE_STATUS)
+        self.assertEqual(status_by_segment['S-OK-1'], cutting_matcher.MATCHED_STATUS)
         self.assertEqual(status_by_segment['S-OK'], cutting_matcher.MATCHED_STATUS)
 
     def test_ignores_segment_without_anti_corrosion_material(self):
@@ -255,7 +279,7 @@ class AntiCorrosionPreScheduleTests(SimpleTestCase):
 
         self.assertEqual(result['库序号'].tolist(), ['W1'])
         self.assertEqual(result['防腐委托单号'].tolist(), ['FFWT-20260707-001'])
-        self.assertEqual(result['委托单防腐面积'].tolist(), [10.0])
+        self.assertNotIn('委托单防腐面积', result.columns)
 
     def test_daily_commission_includes_first_row_when_area_exceeds_limit(self):
         source = pd.DataFrame([
@@ -292,3 +316,61 @@ class AntiCorrosionPreScheduleTests(SimpleTestCase):
             result['防腐委托单号'].tolist(),
             ['FFWT-20260707-001', 'FFWT-20260707-002', 'FFWT-20260707-002'],
         )
+
+    def test_commission_file_sheets_include_only_commission_preview_table(self):
+        commission_df = pd.DataFrame([
+            {'防腐委托单号': 'FFWT-20260707-001', '委托日期': '20260707', '预排产序号': 1, '库序号': 'W1', '防腐面积': 4},
+        ])
+
+        sheets = build_anti_corrosion_commission_file_sheets(commission_df)
+
+        self.assertEqual(list(sheets.keys()), ['防腐委托单'])
+        self.assertNotIn('委托单防腐面积', sheets['防腐委托单'].columns)
+
+    def test_builds_commission_material_summary_and_detail_for_plan_page(self):
+        commission_df = pd.DataFrame([
+            {'防腐委托单号': 'FFWT-20260707-001', '委托日期': '20260707', '预排产序号': 1, '库序号': 'W1', '防腐面积': 4},
+            {'防腐委托单号': 'FFWT-20260707-001', '委托日期': '20260707', '预排产序号': 2, '库序号': 'W2', '防腐面积': 6},
+        ])
+        detail_df = pd.DataFrame([
+            {
+                '预排产序号': 1,
+                '库序号': 'W1',
+                '材料类型': '防腐管子',
+                '材料代码': 'P001',
+                '材料唯一码': 'PIPE-A',
+                '需求数量': 2,
+                '匹配数量': 2,
+                '匹配库存标识': 'PIPE-001',
+                '匹配结果': cutting_matcher.MATCHED_STATUS,
+            },
+            {
+                '预排产序号': 2,
+                '库序号': 'W2',
+                '材料类型': '防腐管子',
+                '材料代码': 'P001',
+                '材料唯一码': 'PIPE-B',
+                '需求数量': 3,
+                '匹配数量': 3,
+                '匹配库存标识': 'PIPE-002',
+                '匹配结果': cutting_matcher.MATCHED_STATUS,
+            },
+            {
+                '预排产序号': 2,
+                '库序号': 'W2',
+                '材料类型': '防腐管件法兰',
+                '材料代码': 'F001',
+                '材料唯一码': 'FIT-A',
+                '需求数量': 2,
+                '匹配数量': 2,
+                '匹配库存标识': 'F001',
+                '匹配结果': cutting_matcher.MATCHED_STATUS,
+            },
+        ])
+
+        summary = build_anti_corrosion_material_summary(commission_df, detail_df)
+        detail = build_anti_corrosion_material_detail(commission_df, detail_df)
+
+        self.assertEqual(summary.loc[summary['材料代码'] == 'P001', '匹配数量'].iloc[0], 5)
+        self.assertEqual(detail.loc[detail['材料代码'] == 'P001', '管子序号'].tolist(), ['PIPE-001', 'PIPE-002'])
+        self.assertEqual(detail.loc[detail['材料代码'] == 'F001', '完成个数'].iloc[0], 0)

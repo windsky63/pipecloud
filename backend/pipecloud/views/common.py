@@ -25,11 +25,11 @@ from spool_analysis.project_spool_info import (
 )
 
 from ..models import (
-    AntiCorrosionCommissionRow,
     ArrivalOrderRow,
     DataSourceFile,
     FittingMaterialRow,
     InitializationWeldRow,
+    MasterScheduleRow,
     PipeMaterialRow,
     PlanRecord,
     Project,
@@ -38,6 +38,7 @@ from ..models import (
     WeldPreScheduleRow,
 )
 from pipecloud.services.project_tables import ensure_project_tables, using_project_tables
+from pipecloud.services.project_constraints import project_process_sequence
 from pipecloud.services.db_storage import PRE_SCHEDULE_MODELS, replace_source_rows, table_payload
 
 
@@ -154,7 +155,7 @@ MODULES = [
         'key': 'arrival',
         'name': '到货管理',
         'description': '汇总入库单，维护管子材料库和管件法兰材料库。',
-        'actions': ['arrival-library', 'update-weld-arrival-status'],
+        'actions': ['arrival-library'],
         'files': [
             '入库单',
             '库管理/管子材料库.xlsx',
@@ -162,36 +163,43 @@ MODULES = [
         ],
     },
     {
+        'key': 'materialLocking',
+        'name': '材料匹配与锁定',
+        'description': '按项目约束匹配并锁定焊口材料，更新材料到货状态并展示管子切割占用。',
+        'actions': ['material-locking'],
+        'files': [
+            '库管理/管子材料库.xlsx',
+            '库管理/管件法兰材料库.xlsx',
+            '中间结果/材料匹配锁定结果.xlsx',
+        ],
+    },
+    {
         'key': 'antiCorrosion',
         'name': '防腐管理及排产',
-        'description': '将已到货待防腐材料与待预制管段匹配，生成防腐预排产结果。',
+        'description': '根据材料锁定结果生成需防腐焊口的防腐预排产和防腐委托。',
         'actions': ['anti-corrosion-pre-schedule', 'anti-corrosion-schedule'],
         'files': [
             '库管理/防腐管子材料库.xlsx',
             '库管理/防腐管件法兰材料库.xlsx',
             '中间结果/防腐预排产匹配结果.xlsx',
-            '库管理/防腐委托库.xlsx',
         ],
     },
     {
         'key': 'cutting',
         'name': '下料管理及排产',
-        'description': '进行焊口预排产材料匹配，按最小管材消耗生成待确认防腐材料库。',
-        'actions': ['weld-pre-schedule', 'confirm-cutting-pre-schedule'],
+        'description': '提取材料已到货、已防腐且尚未下料的焊口，生成下料预排产结果。',
+        'actions': ['weld-pre-schedule'],
         'files': [
             '中间结果/焊口预排产匹配结果.xlsx',
-            '中间结果/待确认管子材料库.xlsx',
-            '中间结果/待确认管件法兰材料库.xlsx',
-            '中间结果/待确认防腐管子材料库.xlsx',
-            '中间结果/待确认防腐管件法兰材料库.xlsx',
         ],
     },
     {
         'key': 'welding',
         'name': '焊接管理及排产',
-        'description': '在初始化预制和下料预排产确认完成后，生成焊接排产单和领料单。',
-        'actions': ['auto-weld-schedule'],
+        'description': '在初始化预制和下料预排产确认完成后，生成焊接预排产和焊接排产单。',
+        'actions': ['welding-pre-schedule', 'auto-weld-schedule'],
         'files': [
+            '中间结果/焊接预排产结果.xlsx',
             '焊接排产单',
         ],
     },
@@ -210,6 +218,15 @@ MODULES = [
 ]
 
 
+def _modules_for_project(project):
+    modules = [dict(module) for module in MODULES]
+    if project is not None and project_process_sequence(project) == 'welding_before_coating':
+        order = {module['key']: index for index, module in enumerate(modules)}
+        order['antiCorrosion'] = order.get('welding', order.get('antiCorrosion', 0)) + 0.5
+        modules.sort(key=lambda module: order.get(module['key'], 999))
+    return modules
+
+
 ACTIONS = {
     'prefab-weld-library': {
         'name': '生成预制焊口库',
@@ -226,6 +243,11 @@ ACTIONS = {
         'script': PREFAB_ROOT / 'arrival' / 'material_library_maintenance.py',
         'module': '到货管理',
     },
+    'material-locking': {
+        'name': '材料匹配与锁定',
+        'script': PREFAB_ROOT / 'cutting' / 'weld_pre_schedule_matcher.py',
+        'module': '材料匹配与锁定',
+    },
     'anti-corrosion-schedule': {
         'name': '生成防腐委托',
         'script': PREFAB_ROOT / 'anti_corrosion' / 'main.py',
@@ -239,6 +261,11 @@ ACTIONS = {
     'auto-weld-schedule': {
         'name': '生成焊接排产单',
         'script': PREFAB_ROOT / 'welding' / 'auto_weld_schedule' / 'main.py',
+        'module': '焊接管理及排产',
+    },
+    'welding-pre-schedule': {
+        'name': '生成焊接预排产',
+        'script': PREFAB_ROOT / 'welding' / 'main.py',
         'module': '焊接管理及排产',
     },
     'weld-pre-schedule': {
@@ -279,10 +306,6 @@ LIBRARY_FILES = {
     'anti-fitting-library': {
         'name': '防腐管件法兰材料库',
         'path': LIBRARY_ROOT / '防腐管件法兰材料库.xlsx',
-    },
-    'anti-corrosion-commission-library': {
-        'name': '防腐委托库',
-        'path': LIBRARY_ROOT / '防腐委托库.xlsx',
     },
 }
 
@@ -338,10 +361,6 @@ def _library_files(data_root):
         'anti-fitting-library': {
             'name': '防腐管件法兰材料库',
             'path': library_root / '防腐管件法兰材料库.xlsx',
-        },
-        'anti-corrosion-commission-library': {
-            'name': '防腐委托库',
-            'path': library_root / '防腐委托库.xlsx',
         },
     }
 
@@ -486,12 +505,14 @@ def _database_module_file_info(project, relative_name, data_root=DATA_ROOT):
             return _database_source_file_info(project, relative_name, 'library', 'anti-pipe-library', row_model=PipeMaterialRow)
         if relative_name == '库管理/防腐管件法兰材料库.xlsx':
             return _database_source_file_info(project, relative_name, 'library', 'anti-fitting-library', row_model=FittingMaterialRow)
-        if relative_name == '库管理/防腐委托库.xlsx':
-            return _database_source_file_info(project, relative_name, 'library', 'anti-corrosion-commission-library', row_model=AntiCorrosionCommissionRow)
         if relative_name == '防腐委托单/防腐委托总表.xlsx':
             return _database_plan_record_info(project, relative_name, 'anti-corrosion')
         if relative_name == '中间结果/防腐预排产匹配结果.xlsx':
             return _database_source_file_info(project, relative_name, 'pre-schedule', 'anti-corrosion-pre-schedule', row_model=WeldPreScheduleRow)
+        if relative_name == '中间结果/材料匹配锁定结果.xlsx':
+            return _database_source_file_info(project, relative_name, 'pre-schedule', 'material-locking', row_model=WeldPreScheduleRow)
+        if relative_name == '中间结果/焊接预排产结果.xlsx':
+            return _database_source_file_info(project, relative_name, 'pre-schedule', 'welding-pre-schedule', row_model=WeldPreScheduleRow)
         if relative_name == '中间结果/焊口预排产匹配结果.xlsx':
             return _database_source_file_info(project, relative_name, 'pre-schedule', 'weld-pre-schedule', row_model=WeldPreScheduleRow)
         if relative_name == '中间结果/待确认管子材料库.xlsx':
@@ -1259,47 +1280,46 @@ def _anti_corrosion_dashboard_payload(project, data_root):
 
     with using_project_tables(project):
         commission_rows = list(
-            AntiCorrosionCommissionRow.objects
+            MasterScheduleRow.objects
             .filter(project=project)
+            .exclude(anti_corrosion_date='')
             .values(
-                'commission_no',
-                'commission_date',
-                'commission_limit_area',
-                'anti_corrosion_area',
+                'anti_corrosion_order_no',
+                'anti_corrosion_date',
                 'unit',
                 'pipeline',
                 'segment_no',
-                'source_file__file_updated_at',
+                'stage_payload',
+                'updated_at',
             )
         )
 
     grouped = {}
     for row in commission_rows:
-        commission_no = str(row.get('commission_no') or '').strip() or '未编号'
+        payload = dict((row.get('stage_payload') or {}).get('anti-corrosion') or {})
+        commission_no = str(payload.get('防腐委托单号') or row.get('anti_corrosion_order_no') or '').strip() or '未编号'
         item = grouped.setdefault(commission_no, {
             'commissionNo': commission_no,
-            'commissionDate': str(row.get('commission_date') or '').strip(),
-            'commissionLimitArea': _dashboard_number(_dashboard_quantity(row.get('commission_limit_area'))),
+            'commissionDate': str(payload.get('委托日期') or row.get('anti_corrosion_date') or '').strip(),
             'segmentCount': 0,
             'totalArea': Decimal('0'),
             'units': set(),
             'pipelines': set(),
-            'updatedAt': row.get('source_file__file_updated_at') or 0,
+            'updatedAt': row.get('updated_at').timestamp() if row.get('updated_at') else 0,
         })
         item['segmentCount'] += 1
-        item['totalArea'] += _dashboard_quantity(row.get('anti_corrosion_area'))
+        item['totalArea'] += _dashboard_quantity(payload.get('防腐面积'))
         for key, target in (('unit', 'units'), ('pipeline', 'pipelines')):
-            value = str(row.get(key) or '').strip()
+            value = str(payload.get({'unit': '单元号', 'pipeline': '管线号'}[key]) or row.get(key) or '').strip()
             if value:
                 item[target].add(value)
-        item['updatedAt'] = max(float(item['updatedAt'] or 0), float(row.get('source_file__file_updated_at') or 0))
+        item['updatedAt'] = max(float(item['updatedAt'] or 0), row.get('updated_at').timestamp() if row.get('updated_at') else 0)
 
     rows = []
     for item in grouped.values():
         rows.append({
             'commissionNo': item['commissionNo'],
             'commissionDate': item['commissionDate'],
-            'commissionLimitArea': item['commissionLimitArea'],
             'segmentCount': item['segmentCount'],
             'totalArea': _dashboard_number(item['totalArea']),
             'unitCount': len(item['units']),

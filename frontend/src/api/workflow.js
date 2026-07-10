@@ -88,8 +88,20 @@ export function fetchCuttingPreSchedule(params, options = {}) {
   return requestJson(`/cutting/pre-schedule/?${params}`, options)
 }
 
+export function fetchMaterialLockingRows(params, options = {}) {
+  return requestJson(`/material-locking/pre-schedule/?${params}`, options)
+}
+
 export function fetchAntiCorrosionPreSchedule(params, options = {}) {
   return requestJson(`/anti-corrosion/pre-schedule/?${params}`, options)
+}
+
+export function fetchAntiCorrosionCuttingVisualization(params, options = {}) {
+  return requestJson(`/anti-corrosion/cutting-visualization/?${params}`, options)
+}
+
+export function fetchWeldingPreSchedule(params, options = {}) {
+  return requestJson(`/welding/pre-schedule/?${params}`, options)
 }
 
 export function fetchCuttingVisualization(params, options = {}) {

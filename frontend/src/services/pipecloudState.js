@@ -243,10 +243,11 @@ export function setLanguage(value) {
 export const actionOrder = [
   'prefab-weld-library',
   'arrival-library',
-  'update-weld-arrival-status',
+  'material-locking',
   'anti-corrosion-pre-schedule',
   'weld-pre-schedule',
   'confirm-cutting-pre-schedule',
+  'welding-pre-schedule',
   'auto-weld-schedule',
 ]
 

@@ -1,5 +1,6 @@
 <script setup>
 import { ref } from 'vue'
+import DataVTable from '../../components/DataVTable.vue'
 import InfoTooltip from '../../components/InfoTooltip.vue'
 import WeldingDashboardPanel from '../../components/WeldingDashboardPanel.vue'
 import { localizedActionName, localizedModuleDescription } from '../../services/navigationLabels'
@@ -17,10 +18,21 @@ defineProps({
   weldingStageSaving: { type: Boolean, default: false },
   weldingScheduleConfig: { type: Object, required: true },
   weldingScheduleDefaults: { type: Object, default: () => ({}) },
+  weldingPreScheduleLoading: { type: Boolean, default: false },
+  weldingPreScheduleError: { type: String, default: '' },
+  weldingPreScheduleData: { type: Object, required: true },
+  weldingPreScheduleActiveSheet: { type: String, default: '' },
+  weldingPreScheduleTableColumns: { type: Array, default: () => [] },
   runningKey: { type: String, default: '' },
 })
 
-defineEmits(['execute-action', 'refresh-dashboard', 'update-welding-date', 'save-pending-stage'])
+defineEmits([
+  'execute-action',
+  'refresh-dashboard',
+  'update-welding-date',
+  'save-pending-stage',
+  'change-welding-pre-schedule-sheet',
+])
 
 const configPanels = ref(['config'])
 </script>
@@ -36,6 +48,58 @@ const configPanels = ref(['config'])
     />
   </v-card>
 
+  <v-card class="module-panel" :loading="weldingPreScheduleLoading">
+    <div class="section-head">
+      <div>
+        <div class="section-title-with-tip">
+          <h2>{{ t('weldingPreSchedule') }}</h2>
+          <InfoTooltip :text="t('weldingPreScheduleDescription')" />
+        </div>
+        <span>{{ weldingPreScheduleData.path || t('weldingPreScheduleDefaultPath') }}</span>
+      </div>
+      <div class="module-actions">
+        <v-btn
+          v-for="action in activeModule.actions.filter((item) => item.key === 'welding-pre-schedule')"
+          :key="action.key"
+          color="primary"
+          variant="tonal"
+          :loading="runningKey === action.key"
+          :disabled="Boolean(runningKey)"
+          @click="$emit('execute-action', action.key)"
+        >
+          {{ localizedActionName(action) }}
+        </v-btn>
+      </div>
+    </div>
+
+    <v-alert v-if="weldingPreScheduleError" :text="weldingPreScheduleError" type="error" density="compact" class="status-alert" />
+
+    <div class="library-toolbar">
+      <v-tabs
+        :model-value="weldingPreScheduleActiveSheet"
+        color="primary"
+        @update:model-value="$emit('change-welding-pre-schedule-sheet', $event)"
+      >
+        <v-tab v-for="sheet in weldingPreScheduleData.sheets" :key="sheet" :value="sheet">{{ sheet }}</v-tab>
+      </v-tabs>
+    </div>
+
+    <div class="library-meta">
+      <span>{{ t('currentSheet') }}：{{ weldingPreScheduleActiveSheet || t('unselected') }}</span>
+      <span>{{ t('totalRows') }}：{{ weldingPreScheduleData.total }}</span>
+      <span>{{ t('columnCount') }}：{{ weldingPreScheduleData.columns.length }}</span>
+    </div>
+
+    <DataVTable
+      :records="weldingPreScheduleData.rows"
+      :columns="weldingPreScheduleTableColumns"
+      :height="420"
+      :empty-text="t('noWeldingPreScheduleResult')"
+      filterable
+      row-key="库序号"
+    />
+  </v-card>
+
   <v-card class="module-panel welding-actions-card">
     <div class="section-head">
       <div>
@@ -48,7 +112,7 @@ const configPanels = ref(['config'])
 
     <div class="module-actions welding-dashboard-module-actions">
       <v-btn
-        v-for="action in activeModule.actions"
+        v-for="action in activeModule.actions.filter((item) => item.key !== 'welding-pre-schedule')"
         :key="action.key"
         color="primary"
         variant="tonal"

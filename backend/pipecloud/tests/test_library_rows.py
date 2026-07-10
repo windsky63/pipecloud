@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 from django.test import RequestFactory, SimpleTestCase
 
-from pipecloud.models import AntiCorrosionCommissionRow, WeldLibraryRow
+from pipecloud.models import WeldLibraryRow
 from pipecloud.services.db_storage import model_field_labels
 
 
@@ -17,11 +17,11 @@ class LibraryRowsTests(SimpleTestCase):
         project = Mock()
         catalog = {
             'weld-library': {'name': '预制焊口库'},
-            'anti-corrosion-commission-library': {'name': '防腐委托库'},
+            'pipe-library': {'name': '管子材料库'},
         }
 
         def info_side_effect(_project, key, library):
-            if key == 'anti-corrosion-commission-library':
+            if key == 'pipe-library':
                 raise RuntimeError('missing table')
             return {
                 'key': key,
@@ -47,7 +47,7 @@ class LibraryRowsTests(SimpleTestCase):
         payload = json.loads(response.content)
         fallback = payload['libraries'][1]
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(fallback['key'], 'anti-corrosion-commission-library')
+        self.assertEqual(fallback['key'], 'pipe-library')
         self.assertFalse(fallback['exists'])
         self.assertEqual(fallback['rowCount'], 0)
 
@@ -95,35 +95,6 @@ class LibraryRowsTests(SimpleTestCase):
         self.assertEqual(payload['readonlyColumns'], ['库序号'])
         self.assertNotIn('非模型字段', payload['rows'][0])
         self.assertEqual(payload['rows'][0]['库序号'], 'W-001')
-
-    def test_empty_anti_corrosion_commission_library_returns_empty_table(self):
-        request = RequestFactory().get('/api/libraries/anti-corrosion-commission-library/')
-        project = Mock()
-        library = {'name': '防腐委托库'}
-
-        with (
-            patch.object(
-                library_views,
-                '_request_project_context',
-                return_value=(project, None, None),
-            ),
-            patch.object(
-                library_views,
-                '_library_catalog',
-                return_value={'anti-corrosion-commission-library': library},
-            ),
-            patch.object(library_views, 'latest_source', return_value=None),
-        ):
-            response = library_views.library_rows(request, 'anti-corrosion-commission-library')
-
-        payload = json.loads(response.content)
-        expected_columns = list(model_field_labels(AntiCorrosionCommissionRow).values())
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(payload['columns'], expected_columns)
-        self.assertEqual(payload['primaryKeyColumns'], ['库序号'])
-        self.assertEqual(payload['readonlyColumns'], ['库序号'])
-        self.assertEqual(payload['total'], 0)
-        self.assertEqual(payload['rows'], [])
 
     def test_preserve_primary_key_values_keeps_existing_sequence(self):
         rows = [

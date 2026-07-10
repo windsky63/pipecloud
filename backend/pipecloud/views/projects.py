@@ -1,6 +1,10 @@
 from .common import *
 from pipecloud.services.db_storage import INITIALIZATION_MODELS, latest_source, replace_source_with_workbook, table_payload
-from pipecloud.services.project_constraints import project_constraints_payload, update_project_constraints
+from pipecloud.services.project_constraints import (
+    PROCESS_SEQUENCE_RULE,
+    project_constraints_payload,
+    update_project_constraints,
+)
 from pipecloud.services.project_tables import ensure_project_tables
 
 
@@ -21,6 +25,7 @@ def projects(request):
             return HttpResponseBadRequest(json.dumps({'error': error}, ensure_ascii=False), content_type='application/json')
         project = Project.objects.create(**values)
         ensure_project_tables(project)
+        _set_default_project_constraints(project)
         return JsonResponse(_project_payload(project), json_dumps_params={'ensure_ascii': False})
 
     return HttpResponseBadRequest(json.dumps({'error': '请求方法无效'}, ensure_ascii=False), content_type='application/json')
@@ -228,9 +233,18 @@ def import_projects(request):
                 )
             project = Project.objects.create(**values)
             ensure_project_tables(project)
+            _set_default_project_constraints(project)
             imported += 1
 
     return JsonResponse({
         'imported': imported,
         'total': Project.objects.count(),
     }, json_dumps_params={'ensure_ascii': False})
+
+
+def _set_default_project_constraints(project):
+    update_project_constraints(project, [{
+        'key': PROCESS_SEQUENCE_RULE,
+        'enabled': True,
+        'parameters': {'sequence': 'coating_before_welding'},
+    }])

@@ -6,25 +6,28 @@ import ScheduleDashboardPanel from '../../components/ScheduleDashboardPanel.vue'
 import { localizedActionName, localizedModuleDescription } from '../../services/navigationLabels'
 import { t } from '../../services/pipecloudState'
 
-defineProps({
+const props = defineProps({
   activeModule: { type: Object, required: true },
   activeModuleTitle: { type: String, required: true },
+  showDashboard: { type: Boolean, default: true },
+  showVisualization: { type: Boolean, default: false },
   dashboard: { type: Object, required: true },
   dashboardLoading: { type: Boolean, default: false },
   dashboardError: { type: String, default: '' },
+  preScheduleTitleKey: { type: String, default: 'cuttingPreSchedule' },
+  preSchedulePathFallbackKey: { type: String, default: 'preScheduleResultDefaultPath' },
+  resultTitleKey: { type: String, default: 'preScheduleResult' },
+  resultTipKey: { type: String, default: 'preScheduleResultTip' },
   preScheduleLoading: { type: Boolean, default: false },
-  cuttingLoading: { type: Boolean, default: false },
   preScheduleData: { type: Object, required: true },
-  preScheduleOptions: { type: Object, required: true },
-  concentrationDimensionOptions: { type: Array, default: () => [] },
   preScheduleActiveSheet: { type: String, default: '' },
   preScheduleError: { type: String, default: '' },
   preScheduleTableColumns: { type: Array, default: () => [] },
+  cuttingLoading: { type: Boolean, default: false },
   cuttingData: { type: Object, required: true },
   cuttingError: { type: String, default: '' },
   cuttingTooltip: { type: Object, required: true },
   cuttingPreScheduleAction: { type: Object, default: null },
-  cuttingConfirmAction: { type: Object, default: null },
   cuttingOverviewActions: { type: Array, default: () => [] },
   runningKey: { type: String, default: '' },
   formatLength: { type: Function, required: true },
@@ -39,9 +42,9 @@ const emit = defineEmits([
 ])
 
 const tableContainer = ref(null)
-const preScheduleConfigPanels = ref([])
 
 function emitTableContainer() {
+  if (!props.showVisualization) return
   emit('table-container-ready', tableContainer.value)
 }
 
@@ -51,12 +54,14 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  emit('table-container-ready', null)
+  if (props.showVisualization) {
+    emit('table-container-ready', null)
+  }
 })
 </script>
 
 <template>
-    <v-card class="module-panel" :loading="dashboardLoading">
+    <v-card v-if="showDashboard" class="module-panel" :loading="dashboardLoading">
       <ScheduleDashboardPanel
         mode="cutting"
         :title="t('cuttingDashboardTitle')"
@@ -67,11 +72,11 @@ onBeforeUnmount(() => {
       />
     </v-card>
 
-    <v-card class="module-panel cutting-pre-schedule-card" :loading="preScheduleLoading || cuttingLoading">
+    <v-card class="module-panel cutting-pre-schedule-card" :loading="preScheduleLoading">
       <div class="section-head">
         <div>
-          <h2>{{ t('cuttingPreSchedule') }}</h2>
-          <span>{{ preScheduleData.path || t('preScheduleResultDefaultPath') }}</span>
+          <h2>{{ t(preScheduleTitleKey) }}</h2>
+          <span>{{ preScheduleData.path || t(preSchedulePathFallbackKey) }}</span>
         </div>
         <div class="module-actions pre-schedule-actions">
           <v-btn
@@ -85,84 +90,9 @@ onBeforeUnmount(() => {
             {{ localizedActionName(cuttingPreScheduleAction) }}
           </v-btn>
           <v-btn :loading="preScheduleLoading" prepend-icon="mdi-refresh" @click="$emit('refresh-match-result')">{{ t('refreshMatchResult') }}</v-btn>
-          <v-btn :loading="cuttingLoading" prepend-icon="mdi-refresh" @click="$emit('refresh-visualization')">{{ t('refreshVisualization') }}</v-btn>
-          <v-btn
-            v-if="cuttingConfirmAction"
-            color="primary"
-            variant="tonal"
-            :loading="runningKey === cuttingConfirmAction.key"
-            :disabled="Boolean(runningKey)"
-            @click="$emit('execute-action', cuttingConfirmAction.key)"
-          >
-            {{ localizedActionName(cuttingConfirmAction) }}
-          </v-btn>
+          <v-btn v-if="showVisualization" :loading="cuttingLoading" prepend-icon="mdi-refresh" @click="$emit('refresh-visualization')">{{ t('refreshVisualization') }}</v-btn>
         </div>
       </div>
-
-      <v-expansion-panels v-model="preScheduleConfigPanels" class="pre-schedule-config future-schedule-config" variant="accordion">
-        <v-expansion-panel value="options">
-          <v-expansion-panel-title>
-            <div>
-              <strong>{{ t('cuttingPreScheduleParams') }}</strong>
-            </div>
-          </v-expansion-panel-title>
-          <v-expansion-panel-text>
-            <div class="pre-schedule-config-grid">
-              <label class="future-schedule-field pre-schedule-control-field">
-                <span>{{ t('pipelineConcentrationDimension') }}</span>
-                <v-select
-                  v-model="preScheduleOptions.concentrationDimension"
-                  :items="concentrationDimensionOptions"
-                  density="compact"
-                  variant="outlined"
-                  hide-details
-                  :disabled="runningKey === cuttingPreScheduleAction?.key"
-                />
-              </label>
-              <label class="future-schedule-field pre-schedule-control-field">
-                <span>{{ t('pipelineConcentrationThreshold') }}</span>
-                <v-text-field
-                  v-model.number="preScheduleOptions.concentrationThresholdPercent"
-                  type="number"
-                  min="0"
-                  max="100"
-                  step="1"
-                  suffix="%"
-                  density="compact"
-                  variant="outlined"
-                  hide-details
-                  :disabled="runningKey === cuttingPreScheduleAction?.key"
-                />
-                <small>{{ t('pipelineConcentrationHint') }}</small>
-              </label>
-              <label class="future-schedule-field pre-schedule-switch-field">
-                <span>{{ t('onlyAutoWeld') }}</span>
-                <v-switch
-                  v-model="preScheduleOptions.onlyAutoWeld"
-                  color="primary"
-                  density="compact"
-                  hide-details
-                  inset
-                  :disabled="runningKey === cuttingPreScheduleAction?.key"
-                />
-                <small>{{ preScheduleOptions.onlyAutoWeld ? t('onlyAutoWeldHint') : t('allUnfinishedHint') }}</small>
-              </label>
-              <label class="future-schedule-field pre-schedule-switch-field">
-                <span>{{ t('ignoreAntiCorrosionStatus') }}</span>
-                <v-switch
-                  v-model="preScheduleOptions.ignoreAntiCorrosionStatus"
-                  color="primary"
-                  density="compact"
-                  hide-details
-                  inset
-                  :disabled="runningKey === cuttingPreScheduleAction?.key"
-                />
-                <small>{{ t('ignoreAntiCorrosionStatusHint') }}</small>
-              </label>
-            </div>
-          </v-expansion-panel-text>
-        </v-expansion-panel>
-      </v-expansion-panels>
 
       <v-alert v-if="preScheduleError" :text="preScheduleError" type="error" density="compact" class="status-alert" />
 
@@ -170,8 +100,8 @@ onBeforeUnmount(() => {
         <div class="section-head compact-section-head">
           <div>
             <div class="section-title-with-tip">
-              <h2>{{ t('preScheduleResult') }}</h2>
-              <InfoTooltip :text="t('preScheduleResultTip')" />
+              <h2>{{ t(resultTitleKey) }}</h2>
+              <InfoTooltip :text="t(resultTipKey)" />
             </div>
           </div>
         </div>
@@ -196,7 +126,7 @@ onBeforeUnmount(() => {
         />
       </v-sheet>
 
-      <v-sheet class="cutting-visualization-section" color="transparent">
+      <v-sheet v-if="showVisualization" class="cutting-visualization-section" color="transparent">
         <div class="section-head compact-section-head">
           <div>
             <div class="section-title-with-tip">

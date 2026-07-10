@@ -14,7 +14,6 @@ from anti_corrosion.anti_corrosion_config import ANTI_CORROSION_FILES
 from cutting import weld_pre_schedule_matcher as material_matcher
 
 
-SEGMENT_SHORTAGE_REASON = '管段所需防腐材料未全部到货，整段暂不进入防腐预排产'
 ANTI_CORROSION_AREA_COL = '防腐面积'
 UNIT_AREA_COL = '单位面积'
 
@@ -69,99 +68,40 @@ def _row_with_anti_corrosion_area(row, pipe_unit_areas, fitting_unit_areas):
     return row_out
 
 
-def _match_pipeline_segments(group_df, pipe_states, fitting_stock, sequence, pipe_unit_areas, fitting_unit_areas):
+def _segment_has_anti_corrosion_material(segment_df):
+    for _, row in segment_df.iterrows():
+        pipe_demands, fitting_demands = _anti_corrosion_demands(row)
+        if pipe_demands or fitting_demands:
+            return True
+    return False
+
+
+def _pre_schedule_arrived_pipeline_segments(group_df, sequence, pipe_unit_areas, fitting_unit_areas):
     segment_col = material_matcher.COLUMNS['segment_no']
     accepted_rows = []
-    rejected_rows = []
     all_rows = []
-    detail_rows = []
     segment_count = 0
-    accepted_segment_count = 0
-    working_pipeline_pipe_states = material_matcher._copy_all_pipe_states(pipe_states)
-    working_pipeline_fitting_stock = fitting_stock.copy()
     next_sequence = sequence
 
     for _, segment_df in group_df.groupby(segment_col, sort=False, dropna=False):
-        group_has_anti_material = False
-        group_ok = True
-        group_details = []
-        working_pipe_states = material_matcher._copy_all_pipe_states(working_pipeline_pipe_states)
-        working_fitting_stock = working_pipeline_fitting_stock.copy()
-
-        for _, row in segment_df.iterrows():
-            pipe_demands, fitting_demands = _anti_corrosion_demands(row)
-            if not pipe_demands and not fitting_demands:
-                continue
-            group_has_anti_material = True
-
-            pipe_ok, next_pipe_states, pipe_details = material_matcher._try_allocate_pipe_demands(
-                row,
-                next_sequence,
-                pipe_demands,
-                working_pipe_states,
-            )
-            group_details.extend(pipe_details)
-            if pipe_ok:
-                working_pipe_states.update(next_pipe_states)
-
-            fitting_ok = False
-            next_fitting_stock = {}
-            fitting_details = []
-            if pipe_ok:
-                fitting_ok, next_fitting_stock, fitting_details = material_matcher._try_allocate_fitting_demands(
-                    row,
-                    next_sequence,
-                    fitting_demands,
-                    working_fitting_stock,
-                )
-            group_details.extend(fitting_details)
-            if fitting_ok:
-                working_fitting_stock.update(next_fitting_stock)
-            if not pipe_ok or not fitting_ok:
-                group_ok = False
-
-        if not group_has_anti_material:
+        if not _segment_has_anti_corrosion_material(segment_df):
             continue
 
         segment_count += 1
-        detail_rows.extend(group_details)
-        shortage_reasons = [
-            detail.get(material_matcher.MATCH_REASON_COL, '')
-            for detail in group_details
-            if detail.get(material_matcher.MATCH_RESULT_COL) == material_matcher.SHORTAGE_STATUS
-        ]
         for _, row in segment_df.iterrows():
             row_out = _row_with_anti_corrosion_area(row, pipe_unit_areas, fitting_unit_areas)
-            if group_ok:
-                row_out[material_matcher.MATCH_SEQ_COL] = next_sequence
-                row_out[material_matcher.STATUS_COL] = material_matcher.MATCHED_STATUS
-                row_out[material_matcher.REASON_COL] = ''
-                accepted_rows.append(row_out)
-                all_rows.append(row_out.copy())
-            else:
-                row_out[material_matcher.MATCH_SEQ_COL] = ''
-                row_out[material_matcher.STATUS_COL] = material_matcher.SHORTAGE_STATUS
-                row_out[material_matcher.REASON_COL] = material_matcher._format_joined(
-                    shortage_reasons + [SEGMENT_SHORTAGE_REASON]
-                )
-                rejected_rows.append(row_out)
-                all_rows.append(row_out.copy())
-
-        if group_ok:
-            working_pipeline_pipe_states = working_pipe_states
-            working_pipeline_fitting_stock = working_fitting_stock
-            accepted_segment_count += 1
-            next_sequence += 1
+            row_out[material_matcher.MATCH_SEQ_COL] = next_sequence
+            row_out[material_matcher.STATUS_COL] = material_matcher.MATCHED_STATUS
+            row_out[material_matcher.REASON_COL] = ''
+            accepted_rows.append(row_out)
+            all_rows.append(row_out.copy())
+        next_sequence += 1
 
     return {
         'accepted_rows': accepted_rows,
-        'rejected_rows': rejected_rows,
         'all_rows': all_rows,
-        'detail_rows': detail_rows,
         'segment_count': segment_count,
-        'accepted_segment_count': accepted_segment_count,
-        'pipe_states': working_pipeline_pipe_states,
-        'fitting_stock': working_pipeline_fitting_stock,
+        'accepted_segment_count': segment_count,
         'next_sequence': next_sequence,
     }
 
@@ -182,8 +122,6 @@ def match_anti_corrosion_pre_schedule_dataframes(
     fitting_df = material_matcher._normalize_fitting_library_or_empty(fitting_df)
     pipe_unit_areas = _unit_area_by_material(pipe_df)
     fitting_unit_areas = _unit_area_by_material(fitting_df)
-    pipe_states = material_matcher._build_pipe_states(pipe_df)
-    fitting_stock = material_matcher._build_fitting_stock(fitting_df)
     candidate_df = material_matcher._prepare_uncompleted_welds(weld_df, only_auto_weld=only_auto_weld)
     candidate_df = material_matcher._filter_truthy_statuses(candidate_df, [
         material_matcher.COLUMNS['material_arrival_status'],
@@ -198,17 +136,14 @@ def match_anti_corrosion_pre_schedule_dataframes(
 
     accepted_rows = []
     rejected_rows = []
-    detail_rows = []
     segment_count = 0
     accepted_segment_count = 0
     sequence = 1
     group_cols = [material_matcher.COLUMNS['unit'], material_matcher.COLUMNS['pipeline']]
 
     for _, group_df in candidate_df.groupby(group_cols, sort=False, dropna=False):
-        pipeline_result = _match_pipeline_segments(
+        pipeline_result = _pre_schedule_arrived_pipeline_segments(
             group_df,
-            pipe_states,
-            fitting_stock,
             sequence,
             pipe_unit_areas,
             fitting_unit_areas,
@@ -217,7 +152,6 @@ def match_anti_corrosion_pre_schedule_dataframes(
             continue
 
         segment_count += pipeline_result['segment_count']
-        detail_rows.extend(pipeline_result['detail_rows'])
         if not material_matcher._meets_pipeline_concentration(
             pipeline_result['all_rows'],
             concentration_dimension,
@@ -228,14 +162,11 @@ def match_anti_corrosion_pre_schedule_dataframes(
             continue
 
         accepted_rows.extend(pipeline_result['accepted_rows'])
-        rejected_rows.extend(pipeline_result['rejected_rows'])
-        pipe_states = pipeline_result['pipe_states']
-        fitting_stock = pipeline_result['fitting_stock']
         accepted_segment_count += pipeline_result['accepted_segment_count']
         sequence = pipeline_result['next_sequence']
 
     result_df = pd.DataFrame(accepted_rows + rejected_rows)
-    detail_df = pd.DataFrame(detail_rows, columns=material_matcher.PRE_SCHEDULE_DETAIL_COLUMNS)
+    detail_df = pd.DataFrame(columns=material_matcher.PRE_SCHEDULE_DETAIL_COLUMNS)
     return {
         'result_df': result_df,
         'detail_df': detail_df,

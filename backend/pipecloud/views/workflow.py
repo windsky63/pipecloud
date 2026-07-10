@@ -5,6 +5,7 @@ from pipecloud.services.db_storage import (
     PRE_SCHEDULE_MODELS,
     LIBRARY_MODELS,
     PLAN_FILE_MODELS,
+    dataframe_payload,
     latest_source,
     replace_source_with_workbook,
     table_payload,
@@ -15,11 +16,14 @@ from pipecloud.services.prefab_database import (
     generate_anti_corrosion_schedule_from_database,
     generate_future_schedule_from_database,
     generate_welding_schedule_from_database,
+    match_and_lock_materials_from_database,
     maintain_weld_library_from_database,
     maintain_material_libraries_from_database,
     match_anti_corrosion_pre_schedule_from_database,
+    match_welding_pre_schedule_from_database,
     match_weld_pre_schedule_from_database,
     stage_plan_output_files,
+    staged_plan_workbook_payload,
     update_weld_material_arrival_status_from_database,
     _plan_file_models,
 )
@@ -79,7 +83,7 @@ def summary(request):
         'root': _relative_path(PREFAB_ROOT),
         'dataRoot': _relative_path(data_root),
         'projectId': project.id if project else None,
-        'modules': [_module_payload(module, data_root, project) for module in MODULES],
+        'modules': [_module_payload(module, data_root, project) for module in _modules_for_project(project)],
         'actions': [_action_payload(key) for key in ACTIONS],
     }, json_dumps_params={'ensure_ascii': False})
 
@@ -90,7 +94,7 @@ def files(request):
     if error:
         return _project_bad_request(error)
     all_files = []
-    for module in MODULES:
+    for module in _modules_for_project(project):
         for file_name in module['files']:
             item = _database_module_file_info(project, file_name, data_root)
             item['module'] = module['name']
@@ -141,7 +145,7 @@ def sync_initialization_data(request):
         'sheets': sheets,
         'total': total,
         'columns': columns,
-        'summary': [_module_payload(module, data_root, project) for module in MODULES],
+        'summary': [_module_payload(module, data_root, project) for module in _modules_for_project(project)],
         'stats': stats,
     }, json_dumps_params={'ensure_ascii': False})
 
@@ -165,7 +169,7 @@ def update_initialization_project_metrics(request):
         'ok': True,
         'changed': changed,
         'project': _project_payload(project),
-        'summary': [_module_payload(module, data_root, project) for module in MODULES],
+        'summary': [_module_payload(module, data_root, project) for module in _modules_for_project(project)],
     }, json_dumps_params={'ensure_ascii': False})
 
 
@@ -355,8 +359,8 @@ def cutting_visualization(request):
     try:
         ensure_project_tables(project)
         source_specs = [
-            ('pending-pipe-library', '普通', LIBRARY_MODELS['pipe-library']),
-            ('pending-anti-pipe-library', '防腐', LIBRARY_MODELS['anti-pipe-library']),
+            ('pipe-library', '普通', LIBRARY_MODELS['pipe-library']),
+            ('anti-pipe-library', '防腐', LIBRARY_MODELS['anti-pipe-library']),
         ]
         frames = []
         source_paths = []
@@ -376,11 +380,11 @@ def cutting_visualization(request):
                     frames.append(frame)
                 source_paths.append(source.relative_path)
         if not source_paths:
-            raise ValueError('数据库中没有待确认管子材料库，请先生成下料预排产')
+            raise ValueError('数据库中没有管子材料库，请先生成材料库')
         pipe_df = pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
     except Exception as error:
         return HttpResponseBadRequest(
-            json.dumps({'error': f'读取数据库待确认管子材料库失败：{error}'}, ensure_ascii=False),
+            json.dumps({'error': f'读取数据库管子材料库失败：{error}'}, ensure_ascii=False),
             content_type='application/json',
         )
 
@@ -393,7 +397,7 @@ def cutting_visualization(request):
     missing_columns = [column for column in required_columns if column not in pipe_df.columns]
     if missing_columns:
         return HttpResponseBadRequest(
-            json.dumps({'error': f'待确认管子材料库缺少列：{", ".join(missing_columns)}'}, ensure_ascii=False),
+            json.dumps({'error': f'管子材料库缺少列：{", ".join(missing_columns)}'}, ensure_ascii=False),
             content_type='application/json',
         )
 
@@ -407,7 +411,66 @@ def cutting_visualization(request):
 
     return JsonResponse({
         'path': '、'.join(source_paths),
-        'source': 'pending',
+        'source': 'cutting',
+        'total': len(rows),
+        'totalOriginalLength': total_original,
+        'totalUsedLength': total_used,
+        'totalRemainingLength': total_remaining,
+        'averageUtilization': round(total_used / total_original * 100, 1) if total_original > 0 else 0,
+        'rows': rows,
+    }, json_dumps_params={'ensure_ascii': False})
+
+
+@require_GET
+def anti_corrosion_cutting_visualization(request):
+    project, data_root, error = _request_project_context(request, required=True)
+    if error:
+        return _project_bad_request(error)
+
+    try:
+        ensure_project_tables(project)
+        with using_project_tables(project):
+            source = DataSourceFile.objects.filter(
+                project=project,
+                source_type='library',
+                source_key='anti-pipe-library',
+            ).order_by('-file_updated_at', '-id').first()
+            if source is None:
+                raise ValueError('数据库中没有防腐管子材料库')
+            _, _, _, _, pipe_rows = table_payload(source, LIBRARY_MODELS['anti-pipe-library'], None)
+            pipe_df = pd.DataFrame(pipe_rows)
+            if not pipe_df.empty:
+                pipe_df['库存类型'] = '防腐'
+    except Exception as error:
+        return HttpResponseBadRequest(
+            json.dumps({'error': f'读取数据库防腐管子材料库失败：{error}'}, ensure_ascii=False),
+            content_type='application/json',
+        )
+
+    required_columns = [
+        CUTTING_COLUMNS['material_code'],
+        CUTTING_COLUMNS['pipe_no'],
+        CUTTING_COLUMNS['cut_lengths'],
+        CUTTING_COLUMNS['remaining_length'],
+    ]
+    missing_columns = [column for column in required_columns if column not in pipe_df.columns]
+    if missing_columns:
+        return HttpResponseBadRequest(
+            json.dumps({'error': f'防腐管子材料库缺少列：{", ".join(missing_columns)}'}, ensure_ascii=False),
+            content_type='application/json',
+        )
+
+    rows = [_cutting_pipe_payload(row) for _, row in pipe_df.iterrows()]
+    rows = [row for row in rows if row['originalLength'] > 0 and row['cutCount'] > 0]
+    rows.sort(key=lambda item: (item['materialCode'], item['pipeNo']))
+
+    total_original = round(sum(row['originalLength'] for row in rows), 3)
+    total_used = round(sum(row['usedLength'] for row in rows), 3)
+    total_remaining = round(sum(row['remainingLength'] for row in rows), 3)
+
+    return JsonResponse({
+        'path': source.relative_path,
+        'source': 'anti-corrosion',
         'total': len(rows),
         'totalOriginalLength': total_original,
         'totalUsedLength': total_used,
@@ -522,7 +585,7 @@ def _arrival_import_success_response(project, data_root, imported_files, backup_
             ),
             'stderr': '',
         },
-        'summary': [_module_payload(module, data_root, project) for module in MODULES],
+        'summary': [_module_payload(module, data_root, project) for module in _modules_for_project(project)],
     }, json_dumps_params={'ensure_ascii': False})
 
 
@@ -547,6 +610,74 @@ def anti_corrosion_pre_schedule_rows(request):
     except Exception as error:
         return HttpResponseBadRequest(
             json.dumps({'error': f'读取数据库防腐预排产匹配结果失败：{error}'}, ensure_ascii=False),
+            content_type='application/json',
+        )
+
+    return JsonResponse({
+        'path': source.relative_path,
+        'sheet': selected_sheet,
+        'sheets': sheets,
+        'total': total,
+        'columns': columns,
+        'rows': rows,
+    }, json_dumps_params={'ensure_ascii': False})
+
+
+@require_GET
+def material_locking_rows(request):
+    project, data_root, error = _request_project_context(request, required=True)
+    if error:
+        return _project_bad_request(error)
+
+    sheet_name = request.GET.get('sheet') or None
+    try:
+        ensure_project_tables(project)
+        with using_project_tables(project):
+            source = DataSourceFile.objects.filter(
+                project=project,
+                source_type='pre-schedule',
+                source_key='material-locking',
+            ).order_by('-file_updated_at', '-id').first()
+            if source is None:
+                raise ValueError('数据库中没有材料匹配锁定结果')
+        selected_sheet, sheets, total, columns, rows = table_payload(source, PRE_SCHEDULE_MODELS, sheet_name)
+    except Exception as error:
+        return HttpResponseBadRequest(
+            json.dumps({'error': f'读取数据库材料匹配锁定结果失败：{error}'}, ensure_ascii=False),
+            content_type='application/json',
+        )
+
+    return JsonResponse({
+        'path': source.relative_path,
+        'sheet': selected_sheet,
+        'sheets': sheets,
+        'total': total,
+        'columns': columns,
+        'rows': rows,
+    }, json_dumps_params={'ensure_ascii': False})
+
+
+@require_GET
+def welding_pre_schedule_rows(request):
+    project, data_root, error = _request_project_context(request, required=True)
+    if error:
+        return _project_bad_request(error)
+
+    sheet_name = request.GET.get('sheet') or None
+    try:
+        ensure_project_tables(project)
+        with using_project_tables(project):
+            source = DataSourceFile.objects.filter(
+                project=project,
+                source_type='pre-schedule',
+                source_key='welding-pre-schedule',
+            ).order_by('-file_updated_at', '-id').first()
+            if source is None:
+                raise ValueError('数据库中没有焊接预排产结果')
+        selected_sheet, sheets, total, columns, rows = table_payload(source, PRE_SCHEDULE_MODELS, sheet_name)
+    except Exception as error:
+        return HttpResponseBadRequest(
+            json.dumps({'error': f'读取数据库焊接预排产结果失败：{error}'}, ensure_ascii=False),
             content_type='application/json',
         )
 
@@ -681,7 +812,7 @@ def generate_future_schedule(request):
         ),
         'stderr': '',
         'result': result,
-        'summary': [_module_payload(module, data_root, project) for module in MODULES],
+        'summary': [_module_payload(module, data_root, project) for module in _modules_for_project(project)],
     }, json_dumps_params={'ensure_ascii': False})
 
 
@@ -705,11 +836,10 @@ def run_action(request, action_key):
 
     action_options = {}
 
-    if action_key in {'weld-pre-schedule', 'anti-corrosion-pre-schedule'}:
+    if action_key == 'anti-corrosion-pre-schedule':
         try:
             action_options.update(_pre_schedule_action_options(
                 payload,
-                allow_ignore_anti_corrosion_status=action_key == 'weld-pre-schedule',
             ))
         except ValueError as error:
             return HttpResponseBadRequest(
@@ -799,10 +929,14 @@ def run_action(request, action_key):
         elif action_key == 'arrival-library':
             result = maintain_material_libraries_from_database(project)
             stdout = (
-                f'已从数据库分流生成材料库：普通管子 {result["pipe_count"]} 条，'
-                f'普通管件法兰 {result["fitting_count"]} 条，'
-                f'待防腐管子 {result["anti_pipe_count"]} 条，'
-                f'待防腐管件法兰 {result["anti_fitting_count"]} 条'
+                f'已从数据库生成统一材料库：管子 {result["pipe_count"]} 条，'
+                f'管件法兰 {result["fitting_count"]} 条'
+            )
+        elif action_key == 'material-locking':
+            result = match_and_lock_materials_from_database(project)
+            stdout = (
+                f'已完成材料匹配与锁定：已锁定 {result["locked_count"]} 条，'
+                f'不可锁定 {result["rejected_count"]} 条'
             )
         elif action_key == 'update-weld-arrival-status':
             result = update_weld_material_arrival_status_from_database(project)
@@ -843,12 +977,11 @@ def run_action(request, action_key):
         elif action_key == 'weld-pre-schedule':
             result = match_weld_pre_schedule_from_database(
                 project,
-                only_auto_weld=action_options.get('onlyAutoWeld'),
-                ignore_anti_corrosion_status=action_options.get('ignoreAntiCorrosionStatus', False),
-                concentration_dimension=action_options.get('concentrationDimension'),
-                concentration_threshold_percent=action_options.get('concentrationThresholdPercent'),
             )
-            stdout = f'已从数据库生成焊口预排产：可排 {result["pre_schedule_count"]} 条，不可排 {result["rejected_count"]} 条'
+            stdout = f'已从数据库生成下料预排产：可排 {result["pre_schedule_count"]} 条'
+        elif action_key == 'welding-pre-schedule':
+            result = match_welding_pre_schedule_from_database(project)
+            stdout = f'已从数据库生成焊接预排产：可排 {result["pre_schedule_count"]} 条'
         elif action_key == 'confirm-cutting-pre-schedule':
             result = confirm_pre_schedule_from_database(project)
             stdout = (
@@ -884,7 +1017,7 @@ def run_action(request, action_key):
                 'stdout': '',
                 'stderr': error_text,
                 'error': error_text,
-                'summary': [_module_payload(module, data_root, project) for module in MODULES],
+                'summary': [_module_payload(module, data_root, project) for module in _modules_for_project(project)],
             }, ensure_ascii=False),
             content_type='application/json',
         )
@@ -909,7 +1042,7 @@ def run_action(request, action_key):
         'stdout': stdout,
         'stderr': '',
         'result': result,
-        'summary': [_module_payload(module, data_root, project) for module in MODULES],
+        'summary': [_module_payload(module, data_root, project) for module in _modules_for_project(project)],
     }, json_dumps_params={'ensure_ascii': False})
 
 
@@ -933,7 +1066,7 @@ def commit_staged_plan(request):
         'backupPaths': backup_paths,
         'syncWarnings': sync_warnings,
         'savedCount': len(copied_files),
-        'summary': [_module_payload(module, data_root, project) for module in MODULES],
+        'summary': [_module_payload(module, data_root, project) for module in _modules_for_project(project)],
     }, json_dumps_params={'ensure_ascii': False})
 
 
@@ -975,8 +1108,18 @@ def staged_plan_file_rows(request):
         file_name = str(source.display_name or '')
         sheet_models = _plan_file_models(file_name)
         if sheet_models is None:
-            raise ValueError(f'暂存计划文件未配置结构化数据表：{file_name}')
-        selected_sheet, sheets, total, columns, rows = table_payload(source, sheet_models, sheet_name)
+            workbook_payload = staged_plan_workbook_payload(source.source_key)
+            if not workbook_payload:
+                raise ValueError(f'暂存计划文件未配置结构化数据表：{file_name}')
+            sheets = list(workbook_payload.keys())
+            selected_sheet = sheet_name if sheet_name in sheets else (sheets[0] if sheets else '')
+            dataframe = workbook_payload.get(selected_sheet) if selected_sheet else pd.DataFrame()
+            payload = dataframe_payload(dataframe)
+            total = len(payload['rows'])
+            columns = payload['columns']
+            rows = payload['rows']
+        else:
+            selected_sheet, sheets, total, columns, rows = table_payload(source, sheet_models, sheet_name)
     except Exception as error:
         return HttpResponseBadRequest(
             json.dumps({'error': str(error)}, ensure_ascii=False),

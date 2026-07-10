@@ -519,6 +519,11 @@ html[data-theme="dark"] .v-overlay-container .v-list-item[aria-selected="true"] 
   align-self: start;
 }
 
+.home-project-layout > .project-panel.weld-panel.is-loading.is-empty {
+  height: auto;
+  min-height: 0;
+}
+
 .project-file-actions {
   display: flex;
   align-items: center;
@@ -529,6 +534,17 @@ html[data-theme="dark"] .v-overlay-container .v-list-item[aria-selected="true"] 
 
 .section-head .project-file-actions {
   margin-bottom: 0;
+}
+
+.project-settings-button {
+  max-width: 320px;
+}
+
+.project-settings-button .v-btn__content {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .project-search {
@@ -566,6 +582,67 @@ html[data-theme="dark"] .v-overlay-container .v-list-item[aria-selected="true"] 
 
 .project-switcher-control {
   display: block;
+}
+
+.project-constraint-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-height: 34px;
+}
+
+.project-constraint-options.is-compact {
+  min-height: 32px;
+}
+
+.project-constraint-options.is-disabled {
+  opacity: .72;
+}
+
+.project-constraint-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  max-width: 100%;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--strong);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1.25;
+  transition: border-color .18s ease, background .18s ease, color .18s ease, box-shadow .18s ease;
+}
+
+.project-constraint-option:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--primary) 54%, var(--line));
+  background: color-mix(in srgb, var(--primary) 8%, var(--panel));
+}
+
+.project-constraint-option.is-selected {
+  border-color: color-mix(in srgb, var(--primary) 72%, var(--line));
+  background: color-mix(in srgb, var(--primary) 13%, var(--panel));
+  color: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 14%, transparent);
+}
+
+.project-constraint-option:disabled {
+  cursor: not-allowed;
+}
+
+.project-constraint-option span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.project-constraint-option .v-icon {
+  flex: 0 0 auto;
 }
 
 .project-switcher {
@@ -678,24 +755,36 @@ html[data-theme="gray"] .vtable-host {
   background: var(--panel);
 }
 
-.project-create-head {
+.project-settings-dialog {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel);
+  color: var(--text);
+}
+
+.project-create-head,
+.project-settings-head {
   padding: 18px 20px 14px;
   border-bottom: 1px solid var(--line);
   background: var(--panel-soft);
 }
 
-.project-create-head div {
+.project-create-head div,
+.project-settings-head div {
   display: grid;
   gap: 5px;
 }
 
-.project-create-head strong {
+.project-create-head strong,
+.project-settings-head strong {
   color: var(--strong);
   font-size: 18px;
   line-height: 1.2;
 }
 
-.project-create-head span {
+.project-create-head span,
+.project-settings-head span {
   color: var(--muted);
   font-size: 13px;
   font-weight: 400;
@@ -703,6 +792,36 @@ html[data-theme="gray"] .vtable-host {
 
 .project-create-body {
   padding: 18px 20px 8px;
+}
+
+.project-settings-body {
+  display: grid;
+  gap: 18px;
+  padding: 18px 20px 8px;
+}
+
+.project-create-constraints {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.project-create-subhead {
+  display: grid;
+  gap: 4px;
+}
+
+.project-create-subhead strong {
+  color: var(--strong);
+  font-size: 13px;
+}
+
+.project-create-subhead span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .project-create-actions {
@@ -725,6 +844,21 @@ html[data-theme="gray"] .vtable-host {
 
 .project-form-field.is-required > span {
   color: var(--strong);
+}
+
+.project-form-field .required-mark {
+  color: #dc2626;
+  font-size: 14px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+html[data-theme="dark"] .project-form-field .required-mark {
+  color: #f87171;
+}
+
+html[data-theme="gray"] .project-form-field .required-mark {
+  color: #b91c1c;
 }
 
 .module-actions {

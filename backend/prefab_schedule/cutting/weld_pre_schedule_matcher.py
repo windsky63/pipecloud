@@ -47,6 +47,7 @@ GROUP_SHORTAGE_REASON = '同单元同管线分组中多数焊口无法匹配，�
 ORDINARY_POOL = '普通'
 ANTI_CORROSION_POOL = '防腐'
 INVENTORY_POOL_KEY = '库存类型'
+NO_PAINT_REQUIREMENT_VALUES = {'', '/', '\\', '-', '--', '无', '否', '不防腐', '无需防腐', 'N/A', 'NA', 'NONE', 'NULL'}
 
 
 def _read_excel_or_empty(file_path):
@@ -199,7 +200,7 @@ def _build_weld_material_demands(row):
         material_no = str(row.get(COLUMNS[f'material_no_{side}'], '')).strip().upper()
         material_code = str(row.get(COLUMNS[f'material_code_{side}'], '')).strip()
         material_unique = str(row.get(COLUMNS[f'material_unique_{side}'], '')).strip()
-        material_paint = str(row.get(COLUMNS[f'paint_{side}'], '')).strip().upper()
+        material_paint = str(row.get(COLUMNS[f'paint_{side}'], '')).strip()
         qty = pd.to_numeric(row.get(COLUMNS[f'qty_{side}']), errors='coerce')
 
         if material_code == '' or pd.isna(qty) or float(qty) <= 0:
@@ -209,7 +210,7 @@ def _build_weld_material_demands(row):
             MATERIAL_CODE_COL: material_code,
             MATERIAL_UNIQUE_COL: material_unique,
             '需求数量': float(qty),
-            INVENTORY_POOL_KEY: ANTI_CORROSION_POOL if material_paint.startswith('PA') else ORDINARY_POOL,
+            INVENTORY_POOL_KEY: ANTI_CORROSION_POOL if _has_anti_corrosion_paint_requirement(material_paint) else ORDINARY_POOL,
         }
         if material_no == 'P':
             pipe_demands.append(demand)
@@ -217,6 +218,14 @@ def _build_weld_material_demands(row):
             fitting_demands.append(demand)
 
     return pipe_demands, fitting_demands
+
+
+def _has_anti_corrosion_paint_requirement(value):
+    text = str(value or '').strip()
+    if not text:
+        return False
+    normalized = text.upper()
+    return normalized not in NO_PAINT_REQUIREMENT_VALUES
 
 
 def _demands_for_pool(demands, pool_name):
@@ -433,6 +442,18 @@ def _prepare_cutting_candidate_welds(weld_df, only_auto_weld=None, ignore_anti_c
     if not ignore_anti_corrosion_status:
         status_columns.append(COLUMNS['material_anti_corrosion_status'])
     return _filter_truthy_statuses(candidate_df, status_columns)
+
+
+def _prepare_simple_cutting_pre_schedule_welds(weld_df):
+    candidate_df = _prepare_uncompleted_welds(weld_df, only_auto_weld=False)
+    candidate_df = _filter_truthy_statuses(candidate_df, [
+        COLUMNS['material_arrival_status'],
+        COLUMNS['material_anti_corrosion_status'],
+    ])
+    cutting_col = COLUMNS['material_cutting_status']
+    if cutting_col not in candidate_df.columns:
+        return candidate_df.iloc[0:0].copy()
+    return candidate_df.loc[~_to_bool_series(candidate_df[cutting_col])].copy()
 
 
 def _library_seq_sort_key(value):
@@ -656,105 +677,25 @@ def match_weld_pre_schedule(
     concentration_dimension=None,
     concentration_threshold_percent=None,
 ):
-    concentration_dimension, concentration_threshold_percent = normalize_pipeline_concentration_options(
-        concentration_dimension,
-        concentration_threshold_percent,
-    )
     weld_df = _read_excel_or_empty(weld_library_file)
     if weld_df.empty:
         raise ValueError(f'焊口库为空，无法匹配预排产焊口：{weld_library_file}')
 
-    pipe_dfs = {
-        ORDINARY_POOL: _normalize_pipe_library_or_empty(_read_excel_or_empty(pipe_library_file)),
-        ANTI_CORROSION_POOL: _normalize_pipe_library_or_empty(_read_excel_or_empty(anti_corrosion_pipe_library_file)),
-    }
-    fitting_dfs = {
-        ORDINARY_POOL: _normalize_fitting_library_or_empty(_read_excel_or_empty(fitting_library_file)),
-        ANTI_CORROSION_POOL: _normalize_fitting_library_or_empty(_read_excel_or_empty(anti_corrosion_fitting_library_file)),
-    }
-    pipe_states_by_pool = {
-        pool: _build_pipe_states(dataframe)
-        for pool, dataframe in pipe_dfs.items()
-    }
-    fitting_stock_by_pool = {
-        pool: _build_fitting_stock(dataframe)
-        for pool, dataframe in fitting_dfs.items()
-    }
-    candidate_df = _prepare_cutting_candidate_welds(
-        weld_df,
-        only_auto_weld=only_auto_weld,
-        ignore_anti_corrosion_status=ignore_anti_corrosion_status,
-    )
-
-    accepted_rows = []
-    rejected_rows = []
-    all_rows = []
-    detail_rows = []
-    match_seq = 1
-
-    group_cols = [COLUMNS['unit'], COLUMNS['pipeline']]
-    for _, group_df in candidate_df.groupby(group_cols, sort=False, dropna=False):
-        group_result = _simulate_group_matches_by_inventory(
-            group_df,
-            pipe_states_by_pool,
-            fitting_stock_by_pool,
-            match_seq,
-        )
-        detail_rows.extend(group_result['detail_rows'])
-
-        if not _meets_pipeline_concentration(
-            group_result['all_rows'],
-            concentration_dimension,
-            concentration_threshold_percent,
-        ):
-            group_rejected_rows, group_all_rows = _reject_pipeline_rows(group_result['all_rows'])
-            rejected_rows.extend(group_rejected_rows)
-            all_rows.extend(group_all_rows)
-            continue
-
-        accepted_rows.extend(group_result['accepted_rows'])
-        rejected_rows.extend(group_result['rejected_rows'])
-        all_rows.extend(group_result['all_rows'])
-        pipe_states_by_pool = group_result['pipe_states_by_pool']
-        fitting_stock_by_pool = group_result['fitting_stock_by_pool']
-        match_seq = group_result['next_seq']
-
-    all_df = pd.DataFrame(all_rows)
-    accepted_df = pd.DataFrame(accepted_rows)
-    rejected_df = pd.DataFrame(rejected_rows)
-    detail_df = pd.DataFrame(detail_rows, columns=PRE_SCHEDULE_DETAIL_COLUMNS)
+    all_df = _prepare_simple_cutting_pre_schedule_welds(weld_df)
+    all_df[MATCH_SEQ_COL] = range(1, len(all_df) + 1)
+    all_df[STATUS_COL] = MATCHED_STATUS
+    all_df[REASON_COL] = ''
 
     prepare_output_file(output_file)
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
         all_df.to_excel(writer, sheet_name='预排产匹配结果', index=False)
-        detail_df.to_excel(writer, sheet_name='材料匹配明细', index=False)
-
-    pending_files = {
-        ORDINARY_POOL: (pending_pipe_library_file, pending_fitting_library_file),
-        ANTI_CORROSION_POOL: (
-            pending_anti_corrosion_pipe_library_file,
-            pending_anti_corrosion_fitting_library_file,
-        ),
-    }
-    for pool, (pending_pipe_file, pending_fitting_file) in pending_files.items():
-        updated_pipe_df = _apply_pipe_states_to_df(pipe_dfs[pool], pipe_states_by_pool[pool])
-        prepare_output_file(pending_pipe_file)
-        updated_pipe_df.to_excel(pending_pipe_file, index=False)
-
-        updated_fitting_df = _apply_fitting_stock_to_df(fitting_dfs[pool], fitting_stock_by_pool[pool])
-        prepare_output_file(pending_fitting_file)
-        updated_fitting_df.to_excel(pending_fitting_file, index=False)
 
     return {
-        'candidate_count': len(candidate_df),
-        'pre_schedule_count': len(accepted_df),
-        'rejected_count': len(rejected_df),
-        'detail_count': len(detail_df),
+        'candidate_count': len(all_df),
+        'pre_schedule_count': len(all_df),
+        'rejected_count': 0,
+        'detail_count': 0,
         'output_file': Path(output_file),
-        'pending_pipe_library': Path(pending_pipe_library_file),
-        'pending_fitting_library': Path(pending_fitting_library_file),
-        'pending_anti_corrosion_pipe_library': Path(pending_anti_corrosion_pipe_library_file),
-        'pending_anti_corrosion_fitting_library': Path(pending_anti_corrosion_fitting_library_file),
     }
 
 
@@ -763,9 +704,4 @@ if __name__ == '__main__':
     print(f"未完成焊口数：{result['candidate_count']}")
     print(f"可进入预排产焊口数：{result['pre_schedule_count']}")
     print(f"不可预排产焊口数：{result['rejected_count']}")
-    print(f"材料匹配明细数：{result['detail_count']}")
     print(f"焊口预排产匹配结果：{result['output_file']}")
-    print(f"待确认普通管子材料库：{result['pending_pipe_library']}")
-    print(f"待确认普通管件法兰材料库：{result['pending_fitting_library']}")
-    print(f"待确认防腐管子材料库：{result['pending_anti_corrosion_pipe_library']}")
-    print(f"待确认防腐管件法兰材料库：{result['pending_anti_corrosion_fitting_library']}")

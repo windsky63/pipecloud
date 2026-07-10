@@ -1,7 +1,7 @@
 from .common import *
 from django.db import transaction
 from pipecloud.services.db_storage import replace_source_rows, table_payload
-from pipecloud.services.prefab_database import derived_plan_file_payload, _plan_file_models
+from pipecloud.services.prefab_database import delete_plan_stage, derived_plan_file_payload, _plan_file_models
 from pipecloud.services.project_tables import ensure_project_tables, using_project_tables
 
 
@@ -120,31 +120,17 @@ def delete_plan(request, plan_key):
     deleted_rows = 0
     deleted_sources = 0
     deleted_records = 0
+    cleared_master_rows = 0
+    deleted_master_rows = 0
+    linked_plan_folders = {}
     try:
         with using_project_tables(project), transaction.atomic():
-            if plan_key == 'cutting':
-                deleted_rows, _ = WeldingPlanRow.objects.filter(project=project, cut_date=plan_date).delete()
-                deleted_sources, _ = DataSourceFile.objects.filter(
-                    project=project,
-                    source_type='plan',
-                    source_key__startswith=f'cutting:{plan_folder}:',
-                ).delete()
-                deleted_records, _ = PlanRecord.objects.filter(
-                    project=project,
-                    plan_key='cutting',
-                    pk=record.pk,
-                ).delete()
-            else:
-                deleted_sources, _ = DataSourceFile.objects.filter(
-                    project=project,
-                    source_type='plan',
-                    source_key__startswith=f'{plan_key}:{plan_folder}:',
-                ).delete()
-                deleted_records, _ = PlanRecord.objects.filter(
-                    project=project,
-                    plan_key=plan_key,
-                    pk=record.pk,
-                ).delete()
+            delete_result = delete_plan_stage(project, plan_key, plan_folder)
+            deleted_sources = delete_result['deletedSources']
+            deleted_records = delete_result['deletedRecords']
+            cleared_master_rows = delete_result['clearedMasterRows']
+            deleted_master_rows = delete_result['deletedMasterRows']
+            linked_plan_folders = delete_result['planFolders']
     except Exception as error:
         return HttpResponseBadRequest(
             json.dumps({'error': f'删除计划失败：{error}'}, ensure_ascii=False),
@@ -158,6 +144,9 @@ def delete_plan(request, plan_key):
         'deletedRows': deleted_rows,
         'deletedSources': deleted_sources,
         'deletedRecords': deleted_records,
+        'clearedMasterRows': cleared_master_rows,
+        'deletedMasterRows': deleted_master_rows,
+        'linkedPlanFolders': linked_plan_folders,
     }, json_dumps_params={'ensure_ascii': False})
 
 
@@ -190,13 +179,6 @@ def plan_file_rows(request, plan_key):
                 source_type='plan',
                 source_key=f'{plan_key}:{plan_folder}:{file_name}',
             ).first()
-            if source is None and plan_key == 'anti-corrosion' and file_name == '防腐委托库.xlsx':
-                source = DataSourceFile.objects.filter(
-                    project=project,
-                    source_type='library',
-                    source_key='anti-corrosion-commission-library',
-                    display_name=file_name,
-                ).order_by('-file_updated_at', '-id').first()
         if source is None:
             raise ValueError(f'计划文件尚未同步到数据库：{plan_folder}/{file_name}')
         selected_sheet, sheets, total, columns, rows = table_payload(source, sheet_models, sheet_name)

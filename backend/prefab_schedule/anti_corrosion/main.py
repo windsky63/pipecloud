@@ -27,9 +27,34 @@ PRE_SCHEDULE_SEQ_COL = '预排产序号'
 ANTI_CORROSION_AREA_COL = '防腐面积'
 COMMISSION_NO_COL = '防腐委托单号'
 COMMISSION_DATE_COL = '委托日期'
-COMMISSION_LIMIT_AREA_COL = '委托单防腐面积'
 MATCHED_STATUS = '可预排产'
 COMMISSION_FILE_PREFIX = '防腐委托单'
+COMMISSION_SHEET_NAME = '防腐委托单'
+MATERIAL_SUMMARY_SHEET_NAME = '防腐材料汇总表'
+MATERIAL_DETAIL_SHEET_NAME = '防腐材料明细表'
+MATERIAL_TYPE_COL = '材料类型'
+MATERIAL_UNIQUE_COL = '材料唯一码'
+REQUIRED_QTY_COL = '需求数量'
+MATCHED_QTY_COL = '匹配数量'
+MATCHED_RESOURCE_COL = '匹配库存标识'
+MATCH_RESULT_COL = '匹配结果'
+PIPE_NO_COL = '管子序号'
+COMPLETED_COUNT_COL = '完成个数'
+RELATED_LIBRARY_SEQ_COL = '关联库序号'
+RELATED_PRE_SCHEDULE_SEQ_COL = '关联预排产序号'
+MATERIAL_TABLE_COLUMNS = [
+    COMMISSION_NO_COL,
+    COMMISSION_DATE_COL,
+    MATERIAL_TYPE_COL,
+    MATERIAL_CODE_COL,
+    MATERIAL_UNIQUE_COL,
+    PIPE_NO_COL,
+    REQUIRED_QTY_COL,
+    MATCHED_QTY_COL,
+    COMPLETED_COUNT_COL,
+    RELATED_LIBRARY_SEQ_COL,
+    RELATED_PRE_SCHEDULE_SEQ_COL,
+]
 
 AREA_INPUT_COLUMNS = ['外径1', '壁厚1', '外径2', '壁厚2']
 OUTPUT_AREA_COLUMNS = [UNIT_AREA_COL, COMMISSION_AREA_COL, COMPLETED_AREA_COL]
@@ -96,15 +121,14 @@ def split_commission_files(summary_df):
         }]
 
     files = []
-    for commission_no, group_df in summary_df.groupby(COMMISSION_NO_COL, sort=False, dropna=False):
+    for commission_date, group_df in summary_df.groupby(COMMISSION_DATE_COL, sort=False, dropna=False):
         current_df = group_df.copy()
-        date_values = current_df[COMMISSION_DATE_COL].dropna().astype(str).str.strip()
-        commission_date = date_values.iloc[0] if not date_values.empty else ''
-        safe_no = str(commission_no or '').strip() or f'{COMMISSION_FILE_PREFIX}-{len(files) + 1:03d}'
+        commission_values = current_df[COMMISSION_NO_COL].dropna().astype(str).str.strip()
+        commission_no = '、'.join(list(dict.fromkeys(value for value in commission_values if value)))
         files.append({
-            'commission_no': safe_no,
-            'commission_date': commission_date,
-            'file_name': f'{COMMISSION_FILE_PREFIX}-{safe_no}.xlsx',
+            'commission_no': commission_no,
+            'commission_date': str(commission_date or '').strip(),
+            'file_name': f'{COMMISSION_FILE_PREFIX}.xlsx',
             'dataframe': current_df,
         })
     return files
@@ -118,6 +142,160 @@ def _read_excel_or_empty(file_path):
         return pd.read_excel(file_path)
     except ValueError:
         return pd.DataFrame()
+
+
+def _clean_text(value):
+    text = str(value or '').strip()
+    return '' if text.lower() == 'nan' else text
+
+
+def _joined(values):
+    cleaned = []
+    for value in values:
+        text = _clean_text(value)
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return '、'.join(cleaned)
+
+
+def _detail_rows_for_commission(commission_df, match_detail_df):
+    if commission_df is None or commission_df.empty or match_detail_df is None or match_detail_df.empty:
+        return pd.DataFrame(columns=MATERIAL_TABLE_COLUMNS)
+
+    detail_df = match_detail_df.copy()
+    for column in (
+        PRE_SCHEDULE_SEQ_COL,
+        '库序号',
+        MATERIAL_TYPE_COL,
+        MATERIAL_CODE_COL,
+        MATERIAL_UNIQUE_COL,
+        REQUIRED_QTY_COL,
+        MATCHED_QTY_COL,
+        MATCHED_RESOURCE_COL,
+        MATCH_RESULT_COL,
+    ):
+        if column not in detail_df.columns:
+            detail_df[column] = ''
+    if MATCH_RESULT_COL in detail_df.columns:
+        detail_df = detail_df.loc[
+            detail_df[MATCH_RESULT_COL].fillna('').astype(str).str.strip().eq(MATCHED_STATUS)
+        ].copy()
+    if detail_df.empty:
+        return pd.DataFrame(columns=MATERIAL_TABLE_COLUMNS)
+
+    commission_map_rows = []
+    for _, row in commission_df.iterrows():
+        commission_map_rows.append({
+            COMMISSION_NO_COL: row.get(COMMISSION_NO_COL, ''),
+            COMMISSION_DATE_COL: row.get(COMMISSION_DATE_COL, ''),
+            PRE_SCHEDULE_SEQ_COL: _clean_text(row.get(PRE_SCHEDULE_SEQ_COL, '')),
+            '库序号': _clean_text(row.get('库序号', '')),
+        })
+    commission_map = pd.DataFrame(commission_map_rows)
+
+    detail_df['_pre_schedule_seq_key'] = detail_df[PRE_SCHEDULE_SEQ_COL].fillna('').astype(str).str.strip()
+    detail_df['_library_seq_key'] = detail_df['库序号'].fillna('').astype(str).str.strip()
+    commission_map['_pre_schedule_seq_key'] = commission_map[PRE_SCHEDULE_SEQ_COL].fillna('').astype(str).str.strip()
+    commission_map['_library_seq_key'] = commission_map['库序号'].fillna('').astype(str).str.strip()
+
+    merged_frames = []
+    if commission_map['_pre_schedule_seq_key'].str.len().any():
+        merged_frames.append(detail_df.merge(
+            commission_map[[COMMISSION_NO_COL, COMMISSION_DATE_COL, '_pre_schedule_seq_key']],
+            on='_pre_schedule_seq_key',
+            how='inner',
+        ))
+    if commission_map['_library_seq_key'].str.len().any():
+        merged_frames.append(detail_df.merge(
+            commission_map[[COMMISSION_NO_COL, COMMISSION_DATE_COL, '_library_seq_key']],
+            on='_library_seq_key',
+            how='inner',
+        ))
+    if not merged_frames:
+        return pd.DataFrame(columns=MATERIAL_TABLE_COLUMNS)
+    merged = pd.concat(merged_frames, ignore_index=True, sort=False)
+    merged = merged.drop_duplicates(
+        subset=[COMMISSION_NO_COL, COMMISSION_DATE_COL, PRE_SCHEDULE_SEQ_COL, '库序号', MATERIAL_TYPE_COL, MATERIAL_CODE_COL, MATCHED_RESOURCE_COL],
+        keep='first',
+    )
+    return merged
+
+
+def build_anti_corrosion_material_summary(commission_df, match_detail_df):
+    detail_df = _detail_rows_for_commission(commission_df, match_detail_df)
+    if detail_df.empty:
+        return pd.DataFrame(columns=MATERIAL_TABLE_COLUMNS)
+
+    work_df = detail_df.copy()
+    for column in (REQUIRED_QTY_COL, MATCHED_QTY_COL):
+        work_df[column] = pd.to_numeric(work_df.get(column, 0), errors='coerce').fillna(0.0)
+    group_cols = [COMMISSION_NO_COL, COMMISSION_DATE_COL, MATERIAL_TYPE_COL, MATERIAL_CODE_COL]
+    rows = []
+    for keys, group in work_df.groupby(group_cols, sort=False, dropna=False):
+        values = dict(zip(group_cols, keys))
+        rows.append({
+            **values,
+            MATERIAL_UNIQUE_COL: _joined(group.get(MATERIAL_UNIQUE_COL, [])),
+            PIPE_NO_COL: '',
+            REQUIRED_QTY_COL: round(float(group[REQUIRED_QTY_COL].sum()), 6),
+            MATCHED_QTY_COL: round(float(group[MATCHED_QTY_COL].sum()), 6),
+            COMPLETED_COUNT_COL: 0,
+            RELATED_LIBRARY_SEQ_COL: _joined(group.get('库序号', [])),
+            RELATED_PRE_SCHEDULE_SEQ_COL: _joined(group.get(PRE_SCHEDULE_SEQ_COL, [])),
+        })
+    return pd.DataFrame(rows, columns=MATERIAL_TABLE_COLUMNS)
+
+
+def build_anti_corrosion_material_detail(commission_df, match_detail_df):
+    detail_df = _detail_rows_for_commission(commission_df, match_detail_df)
+    if detail_df.empty:
+        return pd.DataFrame(columns=MATERIAL_TABLE_COLUMNS)
+
+    work_df = detail_df.copy()
+    for column in (REQUIRED_QTY_COL, MATCHED_QTY_COL):
+        work_df[column] = pd.to_numeric(work_df.get(column, 0), errors='coerce').fillna(0.0)
+    work_df['_is_pipe'] = work_df.get(MATERIAL_TYPE_COL, '').fillna('').astype(str).str.contains('管子', na=False)
+    rows = []
+
+    pipe_df = work_df.loc[work_df['_is_pipe']].copy()
+    if not pipe_df.empty:
+        pipe_df[PIPE_NO_COL] = pipe_df.get(MATCHED_RESOURCE_COL, '').fillna('').astype(str).str.strip()
+        group_cols = [COMMISSION_NO_COL, COMMISSION_DATE_COL, MATERIAL_TYPE_COL, MATERIAL_CODE_COL, PIPE_NO_COL]
+        for keys, group in pipe_df.groupby(group_cols, sort=False, dropna=False):
+            values = dict(zip(group_cols, keys))
+            rows.append({
+                **values,
+                MATERIAL_UNIQUE_COL: _joined(group.get(MATERIAL_UNIQUE_COL, [])),
+                REQUIRED_QTY_COL: round(float(group[REQUIRED_QTY_COL].sum()), 6),
+                MATCHED_QTY_COL: round(float(group[MATCHED_QTY_COL].sum()), 6),
+                COMPLETED_COUNT_COL: 0,
+                RELATED_LIBRARY_SEQ_COL: _joined(group.get('库序号', [])),
+                RELATED_PRE_SCHEDULE_SEQ_COL: _joined(group.get(PRE_SCHEDULE_SEQ_COL, [])),
+            })
+
+    fitting_df = work_df.loc[~work_df['_is_pipe']].copy()
+    if not fitting_df.empty:
+        group_cols = [COMMISSION_NO_COL, COMMISSION_DATE_COL, MATERIAL_TYPE_COL, MATERIAL_CODE_COL]
+        for keys, group in fitting_df.groupby(group_cols, sort=False, dropna=False):
+            values = dict(zip(group_cols, keys))
+            rows.append({
+                **values,
+                MATERIAL_UNIQUE_COL: _joined(group.get(MATERIAL_UNIQUE_COL, [])),
+                PIPE_NO_COL: '',
+                REQUIRED_QTY_COL: round(float(group[REQUIRED_QTY_COL].sum()), 6),
+                MATCHED_QTY_COL: round(float(group[MATCHED_QTY_COL].sum()), 6),
+                COMPLETED_COUNT_COL: 0,
+                RELATED_LIBRARY_SEQ_COL: _joined(group.get('库序号', [])),
+                RELATED_PRE_SCHEDULE_SEQ_COL: _joined(group.get(PRE_SCHEDULE_SEQ_COL, [])),
+            })
+
+    return pd.DataFrame(rows, columns=MATERIAL_TABLE_COLUMNS)
+
+
+def build_anti_corrosion_commission_file_sheets(commission_df, match_detail_df=None):
+    return {
+        COMMISSION_SHEET_NAME: commission_df.copy() if commission_df is not None else pd.DataFrame(),
+    }
 
 
 def _build_pipe_commission_rows(pipe_df):
@@ -190,7 +368,6 @@ def build_anti_corrosion_commission_from_pre_schedule(
         return pd.DataFrame(columns=[
             COMMISSION_NO_COL,
             COMMISSION_DATE_COL,
-            COMMISSION_LIMIT_AREA_COL,
             ANTI_CORROSION_AREA_COL,
         ])
 
@@ -203,7 +380,6 @@ def build_anti_corrosion_commission_from_pre_schedule(
         return pd.DataFrame(columns=[
             COMMISSION_NO_COL,
             COMMISSION_DATE_COL,
-            COMMISSION_LIMIT_AREA_COL,
             ANTI_CORROSION_AREA_COL,
         ])
 
@@ -251,7 +427,6 @@ def build_anti_corrosion_commission_from_pre_schedule(
             group_df = work_df.loc[current_indexes].copy()
             group_df.insert(0, COMMISSION_NO_COL, f'FFWT-{date_text}-{commission_index:03d}')
             group_df.insert(1, COMMISSION_DATE_COL, date_text)
-            group_df.insert(2, COMMISSION_LIMIT_AREA_COL, area_limit if area_limit is not None else '')
             picked_frames.append(group_df)
             commission_index += 1
             return True
@@ -300,12 +475,9 @@ def build_anti_corrosion_commission_from_pre_schedule(
         work_df.insert(0, COMMISSION_NO_COL, f'FFWT-{date_text}-001')
     if COMMISSION_DATE_COL not in work_df.columns:
         work_df.insert(1, COMMISSION_DATE_COL, date_text)
-    if COMMISSION_LIMIT_AREA_COL not in work_df.columns:
-        work_df.insert(2, COMMISSION_LIMIT_AREA_COL, area_limit if area_limit is not None else '')
     leading_cols = [
         COMMISSION_NO_COL,
         COMMISSION_DATE_COL,
-        COMMISSION_LIMIT_AREA_COL,
         PRE_SCHEDULE_SEQ_COL,
         ANTI_CORROSION_AREA_COL,
     ]
@@ -319,7 +491,6 @@ def run_anti_corrosion_commission(
     fitting_library_file=ANTI_CORROSION_FILES['fitting_library'],
     commission_summary_output=ANTI_CORROSION_FILES['commission_summary_output'],
     pre_schedule_file=ANTI_CORROSION_FILES['pre_schedule_output'],
-    commission_library_output=ANTI_CORROSION_FILES['commission_library_output'],
     commission_area=400,
     date_mode='auto',
     commission_start_date=None,
@@ -354,13 +525,15 @@ def run_anti_corrosion_commission(
 
     prepare_output_file(commission_summary_output)
     summary_df.to_excel(commission_summary_output, index=False)
-    prepare_output_file(commission_library_output)
-    summary_df.to_excel(commission_library_output, index=False)
     commission_files = []
     for item in split_commission_files(summary_df):
         commission_file = Path(commission_summary_output).parent / item['commission_date'] / item['file_name']
         prepare_output_file(commission_file)
-        item['dataframe'].to_excel(commission_file, index=False)
+        with pd.ExcelWriter(commission_file, engine='openpyxl') as writer:
+            for sheet_name, dataframe in build_anti_corrosion_commission_file_sheets(
+                item['dataframe'],
+            ).items():
+                dataframe.to_excel(writer, sheet_name=sheet_name, index=False)
         commission_files.append(commission_file)
 
     return {
@@ -369,7 +542,6 @@ def run_anti_corrosion_commission(
         'summary_count': len(summary_df),
         'commission_file_count': len(commission_files),
         'commission_summary_output': Path(commission_summary_output),
-        'commission_library_output': Path(commission_library_output),
         'commission_files': commission_files,
     }
 

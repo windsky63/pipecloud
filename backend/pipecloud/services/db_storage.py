@@ -7,7 +7,6 @@ from django.db import transaction
 from openpyxl import load_workbook
 
 from pipecloud.models import (
-    AntiCorrosionCommissionRow,
     ArrivalMaterialRow,
     ArrivalOrderRow,
     DataSourceFile,
@@ -880,7 +879,6 @@ LIBRARY_MODELS = {
     'pending-fitting-library': {'*': FittingMaterialRow},
     'anti-fitting-library': {'*': FittingMaterialRow},
     'pending-anti-fitting-library': {'*': FittingMaterialRow},
-    'anti-corrosion-commission-library': {'*': AntiCorrosionCommissionRow},
 }
 
 PRE_SCHEDULE_MODELS = {
@@ -896,6 +894,5 @@ ARRIVAL_MODELS = {
 INITIALIZATION_MODELS = {'*': InitializationWeldRow}
 
 PLAN_FILE_MODELS = {
-    '防腐委托库.xlsx': {'*': AntiCorrosionCommissionRow},
     '管段焊口表.xlsx': {'*': WeldingPlanRow},
 }

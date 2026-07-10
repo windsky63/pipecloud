@@ -1,7 +1,6 @@
 from contextlib import contextmanager
 
 from pipecloud.models import (
-    AntiCorrosionCommissionRow,
     ArrivalMaterialRow,
     ArrivalOrderRow,
     DataSourceFile,
@@ -9,6 +8,7 @@ from pipecloud.models import (
     InitializationMaterialRow,
     InitializationWeldRow,
     InitializationWeldExtraData,
+    MasterScheduleRow,
     MaterialMatchDetailRow,
     PipeMaterialRow,
     PlanRecord,
@@ -29,10 +29,10 @@ PROJECT_SCOPED_MODELS = [
     MaterialMatchDetailRow,
     PipeMaterialRow,
     FittingMaterialRow,
-    AntiCorrosionCommissionRow,
     ArrivalOrderRow,
     ArrivalMaterialRow,
     WeldingPlanRow,
+    MasterScheduleRow,
 ]
 
 

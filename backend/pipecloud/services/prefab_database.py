@@ -12,6 +12,7 @@ from pipecloud.models import (
     DataSourceFile,
     FittingMaterialRow,
     MaterialMatchDetailRow,
+    MasterScheduleRow,
     PipeMaterialRow,
     PlanRecord,
     ProjectSchedulePolicy,
@@ -31,6 +32,7 @@ from pipecloud.services.db_storage import (
     sync_dataframes,
     table_payload,
 )
+from pipecloud.services.project_constraints import project_process_sequence
 from pipecloud.services.project_tables import ensure_project_tables, using_project_tables
 
 
@@ -50,7 +52,6 @@ from arrival.material_library_maintenance import (
     add_anti_corrosion_area,
     build_fitting_flange_material_library,
     build_pipe_material_library,
-    split_arrival_materials_by_anti_corrosion,
 )
 from initialization.weld_library_maintenance import (
     apply_completed_to_library,
@@ -67,7 +68,13 @@ from initialization.init_config import (
 )
 from initialization.auto_weld_split.link_process import process_all_groups
 from initialization.auto_weld_split.link_result_filter import LinkResultFilter
-from anti_corrosion.main import build_anti_corrosion_commission_from_pre_schedule, split_commission_files
+from anti_corrosion.main import (
+    build_anti_corrosion_commission_file_sheets,
+    build_anti_corrosion_commission_from_pre_schedule,
+    build_anti_corrosion_material_detail,
+    build_anti_corrosion_material_summary,
+    split_commission_files,
+)
 from anti_corrosion import pre_schedule_matcher as anti_pre_matcher
 from cutting import weld_pre_schedule_matcher as pre_matcher
 from cutting.cutting_config import MATCHED_STATUS, STATUS_COL
@@ -90,6 +97,7 @@ WELDING_DERIVED_FILE_NAMES = {
     '管件法兰领料单.xlsx',
 }
 CUTTING_DERIVED_FILE_NAMES = {'切管明细表.xlsx', '切管汇总表.xlsx'}
+ANTI_CORROSION_DERIVED_FILE_NAMES = {'防腐材料汇总表.xlsx', '防腐材料明细表.xlsx'}
 MASTER_DERIVED_FILE_NAME = '总排产计划.xlsx'
 SEGMENT_LIST_COLUMNS = ['单元号', '管线号', '管段号', '管段总寸径']
 CUTTING_DETAIL_COLUMNS = [
@@ -109,6 +117,87 @@ WELDING_PLAN_FILE_NAMES = [
     *sorted(WELDING_DERIVED_FILE_NAMES),
 ]
 CUTTING_PLAN_FILE_NAMES = sorted(CUTTING_DERIVED_FILE_NAMES)
+
+
+PLAN_STAGE_FIELDS = {
+    'anti-corrosion': 'anti_corrosion_date',
+    'cutting': 'cut_date',
+    'welding': 'weld_date',
+}
+
+STAGED_PLAN_WORKBOOKS = {}
+ANTI_CORROSION_COMMISSION_COLUMNS = [
+    '防腐委托单号',
+    '委托日期',
+    '预排产序号',
+    '防腐面积',
+    '库序号',
+    '单元号',
+    '单元名称',
+    '管线号',
+    '管段号',
+    '接头类型',
+    '壁厚',
+    '壁厚号',
+    '寸径',
+    '外径',
+    '焊接区域',
+    '材质',
+    '材质代号',
+    '初始焊口号',
+    '最终焊口号',
+    '材料代号1',
+    '材料代号2',
+    '材料唯一码1',
+    '材料唯一码2',
+    '材料代码1',
+    '材料代码2',
+    '材料油漆1',
+    '材料油漆2',
+    '数量1',
+    '数量2',
+    '描述1',
+    '描述2',
+    '焊接方式',
+    '材料到货状态',
+    '材料防腐状态',
+    '材料下料状态',
+    '材料焊接状态',
+    '优先级',
+    '预排产状态',
+    '不可预排产原因',
+]
+MASTER_COMMON_STAGE_COLUMNS = {
+    '库序号',
+    '来源工作表',
+    '单元号',
+    '管线号',
+    '管段号',
+    '初始焊口号',
+    '最终焊口号',
+    '寸径',
+    '壁厚',
+    '材质',
+    '优先级',
+    '材料到货状态',
+    '材料防腐状态',
+    '材料下料状态',
+    '材料焊接状态',
+    '是否完成',
+    COLUMNS['unit'],
+    COLUMNS['pipeline'],
+    COLUMNS['segment_no'],
+    COLUMNS['weld_no_start'],
+    COLUMNS['weld_no_final'],
+    COLUMNS['diameter'],
+    COLUMNS['thickness'],
+    COLUMNS['material'],
+    COLUMNS['completed_flag'],
+    COLUMNS['material_arrival_status'],
+    COLUMNS['material_anti_corrosion_status'],
+    COLUMNS['material_cutting_status'],
+}
+ANTI_CORROSION_STAGE_COLUMNS = {'防腐面积', '材料油漆', '材料油漆1', '材料油漆2'}
 
 
 def _model_dataframe(model, project, **filters):
@@ -200,6 +289,201 @@ def _drop_empty_segment_no(dataframe):
         return dataframe
     mask = dataframe[segment_no_col].notna() & dataframe[segment_no_col].astype(str).str.strip().ne('')
     return dataframe.loc[mask].copy()
+
+
+def _text_value(value):
+    text = str(value or '').strip()
+    return '' if text.lower() == 'nan' else text
+
+
+def _row_first(row, *columns):
+    for column in columns:
+        if column in row:
+            value = _text_value(row.get(column, ''))
+            if value:
+                return value
+    return ''
+
+
+def _date_value(value):
+    return _text_value(value).replace('-', '')[:8]
+
+
+def _stage_payload_for_row(row, plan_key):
+    if plan_key == 'anti-corrosion':
+        allowed = ANTI_CORROSION_STAGE_COLUMNS
+    else:
+        allowed = None
+    payload = {}
+    for key, value in row.items():
+        text_key = str(key)
+        if text_key.startswith('_') or text_key in MASTER_COMMON_STAGE_COLUMNS:
+            continue
+        if allowed is not None and text_key not in allowed:
+            continue
+        payload[text_key] = _text_value(value)
+    return {plan_key: payload}
+
+
+def _master_defaults_from_row(row, plan_key, plan_date):
+    defaults = {
+        'source_sheet': _row_first(row, future_schedule.SOURCE_SHEET_COL, '_source_sheet_name'),
+        'priority': _row_first(row, '优先级'),
+        'material_arrival_status': _row_first(row, COLUMNS['material_arrival_status'], '材料到货状态', '到货状态'),
+        'material_anti_corrosion_status': _row_first(row, COLUMNS['material_anti_corrosion_status'], '材料防腐状态', '防腐状态'),
+        'material_cutting_status': _row_first(row, COLUMNS['material_cutting_status'], '材料下料状态', '下料状态'),
+        'unit': _row_first(row, COLUMNS['unit']),
+        'pipeline': _row_first(row, COLUMNS['pipeline']),
+        'segment_no': _row_first(row, COLUMNS['segment_no']),
+        'weld_no_start': _row_first(row, COLUMNS['weld_no_start']),
+        'weld_no_final': _row_first(row, COLUMNS['weld_no_final']),
+        'diameter': _row_first(row, COLUMNS['diameter']),
+        'wall_thickness': _row_first(row, COLUMNS['thickness']),
+        'material': _row_first(row, COLUMNS['material']),
+        'completed_flag': _row_first(row, COLUMNS['completed_flag'], '是否完成'),
+    }
+    if plan_key == 'anti-corrosion':
+        defaults.update({
+            'anti_corrosion_order_no': _row_first(row, '防腐委托单号'),
+            'anti_corrosion_date': _date_value(_row_first(row, '委托日期') or plan_date),
+        })
+    if plan_key == 'cutting':
+        defaults.update({
+            'cut_order_no': _row_first(row, future_schedule.CUT_ORDER_NO_COL),
+            'cut_date': _date_value(_row_first(row, future_schedule.CUT_DATE_COL) or plan_date),
+        })
+    if plan_key == 'welding':
+        defaults.update({
+            'cut_order_no': _row_first(row, future_schedule.CUT_ORDER_NO_COL),
+            'cut_date': _date_value(_row_first(row, future_schedule.CUT_DATE_COL)),
+            'weld_order_no': _row_first(row, future_schedule.WELD_ORDER_NO_COL),
+            'weld_date': _date_value(_row_first(row, future_schedule.WELD_DATE_COL) or plan_date),
+        })
+    stage_payload = _stage_payload_for_row(row, plan_key)
+    defaults['stage_payload'] = stage_payload
+    return defaults
+
+
+def _merge_master_defaults(existing, defaults):
+    merged = {}
+    for key, value in defaults.items():
+        if key == 'stage_payload':
+            payload = dict(existing.stage_payload or {})
+            payload.update(value or {})
+            merged[key] = payload
+            continue
+        current = getattr(existing, key, '')
+        merged[key] = value if value not in (None, '') else current
+    return merged
+
+
+def _sync_master_schedule_rows(project, plan_key, plan_date, dataframe):
+    if dataframe is None or dataframe.empty or '库序号' not in dataframe.columns:
+        return 0
+    process_sequence = project_process_sequence(project)
+    start_stage = 'anti-corrosion' if process_sequence == 'coating_before_welding' else 'cutting'
+    updated = 0
+    for _, source_row in dataframe.fillna('').iterrows():
+        row = source_row.to_dict()
+        row['_project'] = project
+        library_seq = _row_first(row, '库序号')
+        if not library_seq:
+            continue
+        defaults = _master_defaults_from_row(row, plan_key, str(plan_date or ''))
+        if plan_key == start_stage:
+            defaults['production_start_stage'] = plan_key
+            defaults['production_start_date'] = defaults.get(PLAN_STAGE_FIELDS[plan_key], '')
+        record = MasterScheduleRow.objects.filter(project=project, library_seq=library_seq).first()
+        if record is None:
+            MasterScheduleRow.objects.create(project=project, library_seq=library_seq, **defaults)
+        else:
+            merged = _merge_master_defaults(record, defaults)
+            if not record.production_start_stage and plan_key == start_stage:
+                merged['production_start_stage'] = plan_key
+                merged['production_start_date'] = defaults.get(PLAN_STAGE_FIELDS[plan_key], '')
+            for field_name, value in merged.items():
+                setattr(record, field_name, value)
+            record.save(update_fields=[*merged.keys(), 'updated_at'])
+        updated += 1
+    return updated
+
+
+def _planned_library_seqs(project, required_field, missing_field=None):
+    queryset = MasterScheduleRow.objects.filter(project=project).exclude(**{required_field: ''})
+    if missing_field:
+        queryset = queryset.filter(**{missing_field: ''})
+    return set(queryset.values_list('library_seq', flat=True))
+
+
+def _filter_dataframe_to_library_seqs(dataframe, library_seqs):
+    if dataframe.empty or not library_seqs or '库序号' not in dataframe.columns:
+        return dataframe.iloc[0:0].copy()
+    return dataframe.loc[dataframe['库序号'].fillna('').astype(str).str.strip().isin(library_seqs)].copy()
+
+
+def delete_plan_stage(project, plan_key, plan_folder):
+    stage_date_field = PLAN_STAGE_FIELDS[plan_key]
+    affected_seqs = set(
+        MasterScheduleRow.objects
+        .filter(project=project, **{stage_date_field: plan_folder})
+        .values_list('library_seq', flat=True)
+    )
+    deleted_sources, _ = DataSourceFile.objects.filter(
+        project=project,
+        source_type='plan',
+        source_key__startswith=f'{plan_key}:{plan_folder}:',
+    ).delete()
+    deleted_records, _ = PlanRecord.objects.filter(
+        project=project,
+        plan_key=plan_key,
+        plan_folder=plan_folder,
+    ).delete()
+
+    cleared_master_rows = 0
+    deleted_master_rows = 0
+    stage_payload_key = plan_key
+    clear_fields = {
+        'anti-corrosion': [
+            'anti_corrosion_order_no',
+            'anti_corrosion_date',
+        ],
+        'cutting': [
+            'cut_order_no',
+            'cut_date',
+        ],
+        'welding': [
+            'weld_order_no',
+            'weld_date',
+        ],
+    }[plan_key]
+    for row in MasterScheduleRow.objects.filter(project=project, library_seq__in=affected_seqs):
+        for field_name in clear_fields:
+            setattr(row, field_name, '')
+        payload = dict(row.stage_payload or {})
+        payload.pop(stage_payload_key, None)
+        row.stage_payload = payload
+        if row.production_start_stage == plan_key:
+            row.production_start_stage = ''
+            row.production_start_date = ''
+        has_any_stage = any([
+            row.anti_corrosion_date,
+            row.cut_date,
+            row.weld_date,
+        ])
+        if has_any_stage:
+            row.save(update_fields=[*clear_fields, 'stage_payload', 'production_start_stage', 'production_start_date', 'updated_at'])
+            cleared_master_rows += 1
+        else:
+            row.delete()
+            deleted_master_rows += 1
+    return {
+        'librarySeqs': sorted(affected_seqs),
+        'planFolders': {plan_key: [plan_folder]},
+        'deletedSources': deleted_sources,
+        'deletedRecords': deleted_records,
+        'clearedMasterRows': cleared_master_rows,
+        'deletedMasterRows': deleted_master_rows,
+    }
 
 
 def _link_division_dataframe(results):
@@ -415,9 +699,63 @@ def _plan_file_models(file_name):
     models = PLAN_FILE_MODELS.get(file_name)
     if models is not None:
         return models
-    if str(file_name or '').startswith('防腐委托单-') and str(file_name or '').endswith('.xlsx'):
-        return PLAN_FILE_MODELS.get('防腐委托库.xlsx')
     return None
+
+
+def _is_anti_corrosion_commission_file(file_name):
+    text = str(file_name or '')
+    return text == '防腐委托单.xlsx' or (text.startswith('防腐委托单-') and text.endswith('.xlsx'))
+
+
+def _workbook_frames(workbook_payload):
+    return [
+        dataframe
+        for dataframe in (workbook_payload or {}).values()
+        if dataframe is not None and not dataframe.empty
+    ]
+
+
+def staged_plan_workbook_payload(source_key):
+    return STAGED_PLAN_WORKBOOKS.get(source_key) or {}
+
+
+def _anti_corrosion_commission_dataframe_from_master(project, plan_folder=None, file_name=None):
+    queryset = MasterScheduleRow.objects.filter(project=project).exclude(anti_corrosion_date='')
+    if plan_folder:
+        queryset = queryset.filter(anti_corrosion_date=str(plan_folder))
+    rows = []
+    for record in queryset.order_by('anti_corrosion_date', 'anti_corrosion_order_no', 'library_seq'):
+        payload = dict((record.stage_payload or {}).get('anti-corrosion') or {})
+        if not payload:
+            payload = {}
+        if file_name and file_name != '防腐委托单.xlsx':
+            expected = f"{payload.get('防腐委托单号') or record.anti_corrosion_order_no}.xlsx"
+            legacy_expected = f"防腐委托单-{payload.get('防腐委托单号') or record.anti_corrosion_order_no}.xlsx"
+            if expected != file_name and legacy_expected != file_name:
+                continue
+        row = {column: payload.get(column, '') for column in ANTI_CORROSION_COMMISSION_COLUMNS}
+        row['防腐委托单号'] = row.get('防腐委托单号') or record.anti_corrosion_order_no
+        row['委托日期'] = row.get('委托日期') or record.anti_corrosion_date
+        row['库序号'] = row.get('库序号') or record.library_seq
+        row['单元号'] = row.get('单元号') or record.unit
+        row['管线号'] = row.get('管线号') or record.pipeline
+        row['管段号'] = row.get('管段号') or record.segment_no
+        row['初始焊口号'] = row.get('初始焊口号') or record.weld_no_start
+        row['最终焊口号'] = row.get('最终焊口号') or record.weld_no_final
+        row['寸径'] = row.get('寸径') or record.diameter
+        row['壁厚'] = row.get('壁厚') or record.wall_thickness
+        row['材质'] = row.get('材质') or record.material
+        row['优先级'] = row.get('优先级') or record.priority
+        row['材料到货状态'] = row.get('材料到货状态') or record.material_arrival_status
+        row['材料防腐状态'] = row.get('材料防腐状态') or record.material_anti_corrosion_status
+        row['材料下料状态'] = row.get('材料下料状态') or record.material_cutting_status
+        row['材料焊接状态'] = row.get('材料焊接状态') or record.completed_flag
+        rows.append(row)
+    columns = list(dict.fromkeys([
+        *ANTI_CORROSION_COMMISSION_COLUMNS,
+        *[column for row in rows for column in row.keys()],
+    ]))
+    return pd.DataFrame(rows, columns=columns)
 
 
 def _sync_plan_output_files(project, output_files):
@@ -428,22 +766,30 @@ def _sync_plan_output_files(project, output_files):
         plan_date = output_file['plan_date']
         sheet_models = _plan_file_models(file_name)
         if sheet_models is None:
-            raise ValueError(f'{file_name} 是由管段焊口表派生的计划文件，不再单独写入数据库')
-        sync_dataframes(
-            project,
-            'plan',
-            f'{plan_key}:{plan_date}:{file_name}',
-            file_name,
-            _plan_source_path(plan_key, plan_date, file_name),
-            output_file['sheets'] or {'Sheet1': pd.DataFrame()},
-            sheet_models,
-        )
+            if plan_key != 'anti-corrosion' or not _is_anti_corrosion_commission_file(file_name):
+                raise ValueError(f'{file_name} 是由管段焊口表派生的计划文件，不再单独写入数据库')
+        else:
+            sync_dataframes(
+                project,
+                'plan',
+                f'{plan_key}:{plan_date}:{file_name}',
+                file_name,
+                _plan_source_path(plan_key, plan_date, file_name),
+                output_file['sheets'] or {'Sheet1': pd.DataFrame()},
+                sheet_models,
+            )
+        if plan_key in {'anti-corrosion', 'welding'}:
+            frames = _workbook_frames(output_file.get('sheets'))
+            if frames:
+                _sync_master_schedule_rows(project, plan_key, plan_date, pd.concat(frames, ignore_index=True, sort=False))
         if output_file.get('record', True):
             record_key = (plan_key, output_file['plan_name'], plan_date)
             record_groups.setdefault(record_key, []).append(file_name)
+            if plan_key == 'anti-corrosion':
+                record_groups[record_key].extend(sorted(ANTI_CORROSION_DERIVED_FILE_NAMES))
 
     for (plan_key, plan_name, plan_date), file_names in record_groups.items():
-        _sync_plan_record(project, plan_key, plan_name, plan_date, file_names)
+        _sync_plan_record(project, plan_key, plan_name, plan_date, list(dict.fromkeys(file_names)))
 
 
 def _source_to_dataframe(source, sheet_models, sheet_name=None):
@@ -492,6 +838,26 @@ def _welding_plan_dataframe(project, plan_folder=None, cut_date=None):
     if cut_date:
         queryset = queryset.filter(cut_date=str(cut_date))
     queryset = queryset.order_by('source_file_id', 'sheet_name', 'row_index')
+    rows = [
+        {labels[field_name]: row.get(field_name, '') for field_name in field_names}
+        for row in queryset.values(*field_names)
+    ]
+    return pd.DataFrame(rows, columns=list(labels.values()))
+
+
+def _anti_corrosion_commission_dataframe(project, plan_folder=None):
+    return _anti_corrosion_commission_dataframe_from_master(project, plan_folder=plan_folder)
+
+
+def _anti_corrosion_match_detail_dataframe(project):
+    labels = model_field_labels(MaterialMatchDetailRow)
+    field_names = list(labels.keys())
+    queryset = MaterialMatchDetailRow.objects.filter(
+        project=project,
+        source_file__source_type='pre-schedule',
+        source_file__source_key='material-locking',
+        sheet_name='材料匹配明细',
+    ).order_by('source_file_id', 'sheet_name', 'row_index')
     rows = [
         {labels[field_name]: row.get(field_name, '') for field_name in field_names}
         for row in queryset.values(*field_names)
@@ -717,6 +1083,29 @@ def _master_schedule_sheets_from_welding_plan(welding_df):
 def derived_plan_files_sheets(project, plan_key, plan_folder, file_names):
     requested = {str(file_name or '') for file_name in file_names or []}
     result = {}
+    anti_commission_files = {
+        file_name for file_name in requested if _is_anti_corrosion_commission_file(file_name)
+    }
+    if plan_key == 'anti-corrosion' and anti_commission_files:
+        for file_name in anti_commission_files:
+            result[file_name] = {
+                '防腐委托单': _anti_corrosion_commission_dataframe_from_master(
+                    project,
+                    plan_folder=plan_folder,
+                    file_name=file_name,
+                ),
+            }
+    if plan_key == 'anti-corrosion' and requested.intersection(ANTI_CORROSION_DERIVED_FILE_NAMES):
+        commission_df = _anti_corrosion_commission_dataframe(project, plan_folder=plan_folder)
+        match_detail_df = _anti_corrosion_match_detail_dataframe(project)
+        if '防腐材料汇总表.xlsx' in requested:
+            result['防腐材料汇总表.xlsx'] = {
+                'Sheet1': build_anti_corrosion_material_summary(commission_df, match_detail_df),
+            }
+        if '防腐材料明细表.xlsx' in requested:
+            result['防腐材料明细表.xlsx'] = {
+                'Sheet1': build_anti_corrosion_material_detail(commission_df, match_detail_df),
+            }
     if plan_key == 'welding' and requested.intersection(WELDING_DERIVED_FILE_NAMES):
         welding_df = _welding_plan_dataframe(project, plan_folder=plan_folder)
         if '管段清单.xlsx' in requested:
@@ -783,22 +1172,46 @@ def stage_plan_output_files(project, output_files):
         plan_date = output_file['plan_date']
         sheet_models = _plan_file_models(file_name)
         if sheet_models is None:
-            raise ValueError(f'{file_name} 是由管段焊口表派生的计划文件，不再单独暂存')
+            if plan_key != 'anti-corrosion' or not _is_anti_corrosion_commission_file(file_name):
+                raise ValueError(f'{file_name} 是由管段焊口表派生的计划文件，不再单独暂存')
         source_key = f'{stage_token}:{plan_key}:{plan_date}:{file_name}'
-        sync_dataframes(
-            project,
-            'plan-stage',
-            source_key,
-            file_name,
-            _plan_stage_source_path(stage_token, plan_key, plan_date, file_name),
-            output_file['sheets'] or {'Sheet1': pd.DataFrame()},
-            sheet_models,
-        )
-        source = DataSourceFile.objects.filter(
-            project=project,
-            source_type='plan-stage',
-            source_key=source_key,
-        ).order_by('-file_updated_at', '-id').first()
+        if sheet_models is None:
+            workbook_payload = {
+                str(sheet_name): dataframe.copy()
+                for sheet_name, dataframe in (output_file.get('sheets') or {'Sheet1': pd.DataFrame()}).items()
+            }
+            STAGED_PLAN_WORKBOOKS[source_key] = workbook_payload
+            source, _ = DataSourceFile.objects.update_or_create(
+                project=project,
+                source_type='plan-stage',
+                source_key=source_key,
+                defaults={
+                    'display_name': file_name,
+                    'relative_path': _plan_stage_source_path(stage_token, plan_key, plan_date, file_name),
+                    'file_size': 0,
+                    'file_updated_at': datetime.now().timestamp(),
+                    'sheet_names': list(workbook_payload.keys()),
+                    'sheet_columns': {
+                        sheet_name: [str(column) for column in dataframe.columns]
+                        for sheet_name, dataframe in workbook_payload.items()
+                    },
+                },
+            )
+        else:
+            sync_dataframes(
+                project,
+                'plan-stage',
+                source_key,
+                file_name,
+                _plan_stage_source_path(stage_token, plan_key, plan_date, file_name),
+                output_file['sheets'] or {'Sheet1': pd.DataFrame()},
+                sheet_models,
+            )
+            source = DataSourceFile.objects.filter(
+                project=project,
+                source_type='plan-stage',
+                source_key=source_key,
+            ).order_by('-file_updated_at', '-id').first()
         staged_files.append({
             'path': f'{plan_key}:{plan_date}:{file_name}',
             'sourceKey': source_key,
@@ -841,25 +1254,53 @@ def commit_staged_plan_outputs(project, stage_token):
                 continue
             _, plan_key, plan_date, file_name = parsed
             sheet_models = _plan_file_models(file_name)
-            if sheet_models is None:
-                continue
             workbook_payload = {}
-            for sheet_name in source.sheet_names or []:
-                selected_sheet, _, _, columns, rows = table_payload(source, sheet_models, sheet_name)
-                workbook_payload[selected_sheet or sheet_name] = pd.DataFrame(rows, columns=columns)
+            if sheet_models is None:
+                if plan_key != 'anti-corrosion' or not _is_anti_corrosion_commission_file(file_name):
+                    continue
+                workbook_payload = {
+                    sheet_name: dataframe.copy()
+                    for sheet_name, dataframe in (STAGED_PLAN_WORKBOOKS.get(source.source_key) or {}).items()
+                }
+            else:
+                for sheet_name in source.sheet_names or []:
+                    selected_sheet, _, _, columns, rows = table_payload(source, sheet_models, sheet_name)
+                    workbook_payload[selected_sheet or sheet_name] = pd.DataFrame(rows, columns=columns)
             if not workbook_payload:
                 continue
-            sync_dataframes(
-                project,
-                'plan',
-                f'{plan_key}:{plan_date}:{file_name}',
-                file_name,
-                _plan_source_path(plan_key, plan_date, file_name),
-                workbook_payload,
-                sheet_models,
-            )
+            if sheet_models is not None:
+                sync_dataframes(
+                    project,
+                    'plan',
+                    f'{plan_key}:{plan_date}:{file_name}',
+                    file_name,
+                    _plan_source_path(plan_key, plan_date, file_name),
+                    workbook_payload,
+                    sheet_models,
+                )
+            frames = [
+                dataframe
+                for dataframe in workbook_payload.values()
+                if dataframe is not None and not dataframe.empty
+            ]
+            if frames and plan_key in {'anti-corrosion', 'welding'}:
+                _sync_master_schedule_rows(project, plan_key, plan_date, pd.concat(frames, ignore_index=True, sort=False))
+            if frames and plan_key == 'welding':
+                cut_dates = set()
+                for dataframe in frames:
+                    if future_schedule.CUT_DATE_COL not in dataframe.columns:
+                        continue
+                    cut_dates.update(
+                        text
+                        for text in dataframe[future_schedule.CUT_DATE_COL].fillna('').astype(str).str.strip()
+                        if text
+                    )
+                for cut_date in cut_dates:
+                    frame = pd.concat(frames, ignore_index=True, sort=False)
+                    frame = frame.loc[frame[future_schedule.CUT_DATE_COL].fillna('').astype(str).str.strip().eq(cut_date)].copy()
+                    _sync_master_schedule_rows(project, 'cutting', cut_date, frame)
             if plan_key == 'anti-corrosion':
-                summary_df = workbook_payload.get('Sheet1')
+                summary_df = workbook_payload.get('防腐委托单')
                 if summary_df is None:
                     summary_df = next(iter(workbook_payload.values()), pd.DataFrame())
                 if summary_df is not None and not summary_df.empty:
@@ -880,20 +1321,21 @@ def commit_staged_plan_outputs(project, stage_token):
                     record_groups.setdefault(('cutting', cut_date), set()).update(CUTTING_PLAN_FILE_NAMES)
             else:
                 record_groups.setdefault(record_key, set()).add(file_name)
+                if plan_key == 'anti-corrosion':
+                    record_groups[record_key].update(ANTI_CORROSION_DERIVED_FILE_NAMES)
 
         if anti_commission_frames:
-            _sync_library_dataframe(
-                project,
-                'anti-corrosion-commission-library',
-                '防腐委托库.xlsx',
-                pd.concat(anti_commission_frames, ignore_index=True, sort=False),
-            )
+            anti_commission_df = pd.concat(anti_commission_frames, ignore_index=True, sort=False)
+            if project_process_sequence(project) == 'coating_before_welding':
+                lock_anti_corrosion_materials_from_dataframe(project, anti_commission_df)
 
         DataSourceFile.objects.filter(
             project=project,
             source_type='plan-stage',
             source_key__startswith=stage_prefix,
         ).delete()
+        for source_key in [source.source_key for source in sources]:
+            STAGED_PLAN_WORKBOOKS.pop(source_key, None)
 
     saved_files = []
     for (plan_key, plan_date), file_names in record_groups.items():
@@ -944,26 +1386,21 @@ def maintain_material_libraries_from_database(project):
         arrival_df = _arrival_material_dataframe(project)
         if arrival_df.empty:
             raise ValueError('数据库中没有入库单明细，无法生成材料库')
-        ordinary_df, anti_corrosion_df = split_arrival_materials_by_anti_corrosion(arrival_df)
-        pipe_df = build_pipe_material_library(ordinary_df)
-        fitting_df = build_fitting_flange_material_library(ordinary_df)
-        anti_pipe_df = add_anti_corrosion_area(
-            build_pipe_material_library(anti_corrosion_df),
+        pipe_df = add_anti_corrosion_area(
+            build_pipe_material_library(arrival_df),
             PIPE_STOCK_QTY_COL,
         )
-        anti_fitting_df = add_anti_corrosion_area(
-            build_fitting_flange_material_library(anti_corrosion_df),
+        fitting_df = add_anti_corrosion_area(
+            build_fitting_flange_material_library(arrival_df),
             STOCK_QTY_COL,
         )
         _sync_library_dataframe(project, 'pipe-library', '管子材料库.xlsx', pipe_df)
         _sync_library_dataframe(project, 'fitting-library', '管件法兰材料库.xlsx', fitting_df)
-        _sync_library_dataframe(project, 'anti-pipe-library', '防腐管子材料库.xlsx', anti_pipe_df)
-        _sync_library_dataframe(project, 'anti-fitting-library', '防腐管件法兰材料库.xlsx', anti_fitting_df)
         return {
             'pipe_count': len(pipe_df),
             'fitting_count': len(fitting_df),
-            'anti_pipe_count': len(anti_pipe_df),
-            'anti_fitting_count': len(anti_fitting_df),
+            'anti_pipe_count': 0,
+            'anti_fitting_count': 0,
         }
 
 
@@ -1054,56 +1491,140 @@ def _weld_row_material_requirements(row, pipe_codes, fitting_codes):
     return requirements
 
 
-def update_weld_material_arrival_status_from_database(project):
+def _weld_requires_anti_corrosion(row):
+    pipe_demands, fitting_demands = pre_matcher._build_weld_material_demands(row)
+    demands = list(pipe_demands or []) + list(fitting_demands or [])
+    return any(demand.get(pre_matcher.INVENTORY_POOL_KEY) == pre_matcher.ANTI_CORROSION_POOL for demand in demands)
+
+
+def match_and_lock_materials_from_database(
+    project,
+    only_auto_weld=False,
+    concentration_dimension=None,
+    concentration_threshold_percent=None,
+):
     ensure_project_tables(project)
     with using_project_tables(project), transaction.atomic():
-        weld_df = _model_dataframe(WeldLibraryRow, project)
+        weld_df, _, _ = _source_dataframe(project, 'library', 'weld-library', WeldLibraryRow)
+        pipe_df, _, _ = _source_dataframe(project, 'library', 'pipe-library', PipeMaterialRow)
+        fitting_df, _, _ = _source_dataframe(project, 'library', 'fitting-library', FittingMaterialRow)
         if weld_df.empty:
-            raise ValueError('数据库中预制焊口库为空，无法更新材料到货状态')
+            weld_df = _model_dataframe(WeldLibraryRow, project, source_file__source_key='weld-library')
+        if pipe_df.empty:
+            pipe_df = _model_dataframe(PipeMaterialRow, project, source_file__source_key='pipe-library')
+        if fitting_df.empty:
+            fitting_df = _model_dataframe(FittingMaterialRow, project, source_file__source_key='fitting-library')
+        if weld_df.empty:
+            raise ValueError('数据库中预制焊口库为空，无法进行材料匹配锁定')
+        if pipe_df.empty and fitting_df.empty:
+            raise ValueError('数据库中没有管子材料库或管件法兰材料库，无法进行材料匹配锁定')
 
-        pipe_df = _model_dataframe(PipeMaterialRow, project, source_file__source_key='pipe-library')
-        anti_pipe_df = _model_dataframe(PipeMaterialRow, project, source_file__source_key='anti-pipe-library')
-        fitting_df = _model_dataframe(FittingMaterialRow, project, source_file__source_key='fitting-library')
-        anti_fitting_df = _model_dataframe(FittingMaterialRow, project, source_file__source_key='anti-fitting-library')
+        pipe_df = pre_matcher._normalize_pipe_library_or_empty(pipe_df)
+        fitting_df = pre_matcher._normalize_fitting_library_or_empty(fitting_df)
+        pipe_states = pre_matcher._build_pipe_states(pipe_df)
+        fitting_stock = pre_matcher._build_fitting_stock(fitting_df)
 
-        pipe_stock = _material_stock_by_code(pd.concat([pipe_df, anti_pipe_df], ignore_index=True, sort=False))
-        fitting_stock = _material_stock_by_code(pd.concat([fitting_df, anti_fitting_df], ignore_index=True, sort=False))
-        if not pipe_stock and not fitting_stock:
-            raise ValueError('数据库中没有材料库库存，无法更新材料到货状态')
+        candidate_df = pre_matcher._prepare_uncompleted_welds(weld_df, only_auto_weld=only_auto_weld)
+        cutting_col = COLUMNS['material_cutting_status']
+        if cutting_col in candidate_df.columns:
+            candidate_df = candidate_df.loc[~pre_matcher._to_bool_series(candidate_df[cutting_col])].copy()
+
+        accepted_rows = []
+        rejected_rows = []
+        all_rows = []
+        detail_rows = []
+        match_seq = 1
+        group_cols = [pre_matcher.COLUMNS['unit'], pre_matcher.COLUMNS['pipeline']]
+        for _, group_df in candidate_df.groupby(group_cols, sort=False, dropna=False):
+            group_result = pre_matcher._simulate_group_matches(
+                group_df,
+                pipe_states,
+                fitting_stock,
+                match_seq,
+            )
+            detail_rows.extend(group_result['detail_rows'])
+            if pre_matcher._group_should_be_rejected(group_result):
+                group_rejected_rows, group_all_rows = pre_matcher._reject_group_rows(group_result)
+                rejected_rows.extend(group_rejected_rows)
+                all_rows.extend(group_all_rows)
+                continue
+            if not pre_matcher._meets_pipeline_concentration(
+                group_result['all_rows'],
+                concentration_dimension,
+                concentration_threshold_percent,
+            ):
+                group_rejected_rows, group_all_rows = pre_matcher._reject_pipeline_rows(group_result['all_rows'])
+                rejected_rows.extend(group_rejected_rows)
+                all_rows.extend(group_all_rows)
+                continue
+
+            accepted_rows.extend(group_result['accepted_rows'])
+            rejected_rows.extend(group_result['rejected_rows'])
+            all_rows.extend(group_result['all_rows'])
+            pipe_states = group_result['pipe_states']
+            fitting_stock = group_result['fitting_stock']
+            match_seq = group_result['next_seq']
+
+        result_df = pd.DataFrame(all_rows)
+        detail_df = pd.DataFrame(detail_rows, columns=pre_matcher.PRE_SCHEDULE_DETAIL_COLUMNS)
+        sync_dataframes(
+            project,
+            'pre-schedule',
+            'material-locking',
+            '材料匹配锁定结果.xlsx',
+            'database://pre-schedule/material-locking/材料匹配锁定结果.xlsx',
+            {'预排产匹配结果': result_df, '材料匹配明细': detail_df},
+            PRE_SCHEDULE_MODELS,
+        )
+
+        updated_pipe_df = pre_matcher._apply_pipe_states_to_df(pipe_df, pipe_states)
+        updated_fitting_df = pre_matcher._apply_fitting_stock_to_df(fitting_df, fitting_stock)
+        _sync_library_dataframe(project, 'pipe-library', '管子材料库.xlsx', updated_pipe_df)
+        _sync_library_dataframe(project, 'fitting-library', '管件法兰材料库.xlsx', updated_fitting_df)
 
         weld_df = _ensure_weld_material_status_columns(weld_df)
-        status_col = COLUMNS['material_arrival_status']
-        pipe_codes = set(pipe_stock)
-        fitting_codes = set(fitting_stock)
-        completed_count = 0
-        pending_count = 0
-
-        for index, row in weld_df.iterrows():
-            requirements = _weld_row_material_requirements(row, pipe_codes, fitting_codes)
-            enough = bool(requirements)
-            for material_type, code, quantity in requirements:
-                current_stock = pipe_stock.get(code, Decimal('0')) if material_type == 'pipe' else fitting_stock.get(code, Decimal('0'))
-                if current_stock < quantity:
-                    enough = False
-                    break
-            if enough:
-                for material_type, code, quantity in requirements:
-                    if material_type == 'pipe':
-                        pipe_stock[code] = pipe_stock.get(code, Decimal('0')) - quantity
-                    else:
-                        fitting_stock[code] = fitting_stock.get(code, Decimal('0')) - quantity
-                weld_df.at[index, status_col] = True
-                completed_count += 1
-            else:
-                weld_df.at[index, status_col] = False
-                pending_count += 1
-
-        _sync_library_dataframe(project, 'weld-library', '预制焊口库.xlsx', weld_df)
-        return {
-            'weld_count': len(weld_df),
-            'arrived_count': completed_count,
-            'pending_count': pending_count,
+        seq_col = COLUMNS['library_seq']
+        accepted_seqs = {
+            str(row.get(seq_col, '')).strip()
+            for row in accepted_rows
+            if str(row.get(seq_col, '')).strip()
         }
+        arrival_col = COLUMNS['material_arrival_status']
+        anti_col = COLUMNS['material_anti_corrosion_status']
+        arrived_count = 0
+        pending_count = 0
+        for index, row in weld_df.iterrows():
+            library_seq = str(row.get(seq_col, '')).strip()
+            if library_seq and library_seq in accepted_seqs:
+                weld_df.at[index, arrival_col] = True
+                weld_df.at[index, anti_col] = not _weld_requires_anti_corrosion(row)
+                arrived_count += 1
+            else:
+                weld_df.at[index, arrival_col] = False
+                weld_df.at[index, anti_col] = False
+                pending_count += 1
+        _sync_library_dataframe(project, 'weld-library', '预制焊口库.xlsx', weld_df)
+
+        return {
+            'candidate_count': len(candidate_df),
+            'locked_count': len(accepted_rows),
+            'rejected_count': len(rejected_rows),
+            'detail_count': len(detail_df),
+            'arrived_count': arrived_count,
+            'pending_count': pending_count,
+            'pipe_count': len(updated_pipe_df),
+            'fitting_count': len(updated_fitting_df),
+        }
+
+
+def update_weld_material_arrival_status_from_database(project):
+    result = match_and_lock_materials_from_database(project)
+    return {
+        'weld_count': result.get('candidate_count', 0),
+        'arrived_count': result.get('arrived_count', 0),
+        'pending_count': result.get('pending_count', 0),
+        **result,
+    }
 
 
 def confirm_pre_schedule_from_database(project):
@@ -1185,11 +1706,12 @@ def generate_anti_corrosion_schedule_from_database(
                 'plan_name': '防腐',
                 'plan_date': item['commission_date'] or datetime.now().strftime('%Y%m%d'),
                 'file_name': item['file_name'],
-                'sheets': {'Sheet1': item['dataframe']},
+                'sheets': build_anti_corrosion_commission_file_sheets(item['dataframe']),
                 'record': True,
             })
         if persist:
-            _sync_library_dataframe(project, 'anti-corrosion-commission-library', '防腐委托库.xlsx', summary_df)
+            if project_process_sequence(project) == 'coating_before_welding':
+                lock_anti_corrosion_materials_from_dataframe(project, summary_df)
             _sync_plan_output_files(project, output_files)
         result = {
             'pre_schedule_count': len(pre_df),
@@ -1203,6 +1725,37 @@ def generate_anti_corrosion_schedule_from_database(
         return result
 
 
+def lock_anti_corrosion_materials_from_dataframe(project, commission_df):
+    if commission_df is None or commission_df.empty:
+        return {'locked_count': 0}
+    ensure_project_tables(project)
+    with using_project_tables(project):
+        selected_seqs = {
+            str(value or '').strip()
+            for value in commission_df.get('库序号', [])
+            if str(value or '').strip()
+        }
+        if not selected_seqs:
+            return {'locked_count': 0}
+
+        weld_df, _, _ = _source_dataframe(project, 'library', 'weld-library', WeldLibraryRow)
+        if weld_df.empty:
+            weld_df = _model_dataframe(WeldLibraryRow, project, source_file__source_key='weld-library')
+        if weld_df.empty or '库序号' not in weld_df.columns:
+            return {'locked_count': 0}
+
+        weld_df = _ensure_weld_material_status_columns(weld_df)
+        mask = weld_df['库序号'].fillna('').astype(str).str.strip().isin(selected_seqs)
+        updated_count = int(mask.sum())
+        if updated_count:
+            weld_df.loc[mask, COLUMNS['material_anti_corrosion_status']] = True
+            _sync_library_dataframe(project, 'weld-library', '预制焊口库.xlsx', weld_df)
+
+        return {
+            'locked_count': updated_count,
+        }
+
+
 def match_anti_corrosion_pre_schedule_from_database(
     project,
     only_auto_weld=False,
@@ -1212,12 +1765,16 @@ def match_anti_corrosion_pre_schedule_from_database(
     ensure_project_tables(project)
     with using_project_tables(project):
         weld_df, _, _ = _source_dataframe(project, 'library', 'weld-library', WeldLibraryRow)
-        pipe_df, _, _ = _source_dataframe(project, 'library', 'anti-pipe-library', PipeMaterialRow)
-        fitting_df, _, _ = _source_dataframe(project, 'library', 'anti-fitting-library', FittingMaterialRow)
+        pipe_df, _, _ = _source_dataframe(project, 'library', 'pipe-library', PipeMaterialRow)
+        fitting_df, _, _ = _source_dataframe(project, 'library', 'fitting-library', FittingMaterialRow)
+        if weld_df.empty:
+            weld_df = _model_dataframe(WeldLibraryRow, project, source_file__source_key='weld-library')
+        if pipe_df.empty:
+            pipe_df = _model_dataframe(PipeMaterialRow, project, source_file__source_key='pipe-library')
+        if fitting_df.empty:
+            fitting_df = _model_dataframe(FittingMaterialRow, project, source_file__source_key='fitting-library')
         if weld_df.empty:
             raise ValueError('数据库中预制焊口库为空，无法生成防腐预排产')
-        if pipe_df.empty and fitting_df.empty:
-            raise ValueError('数据库中防腐材料库为空，无法生成防腐预排产')
 
         result = anti_pre_matcher.match_anti_corrosion_pre_schedule_dataframes(
             weld_df,
@@ -1227,6 +1784,15 @@ def match_anti_corrosion_pre_schedule_from_database(
             concentration_dimension=concentration_dimension,
             concentration_threshold_percent=concentration_threshold_percent,
         )
+        if project_process_sequence(project) == 'welding_before_coating':
+            planned_seqs = _planned_library_seqs(project, 'weld_date', 'anti_corrosion_date')
+            if planned_seqs:
+                result['result_df'] = _filter_dataframe_to_library_seqs(result['result_df'], planned_seqs)
+            if not result['detail_df'].empty and '库序号' in result['detail_df'].columns:
+                result['detail_df'] = _filter_dataframe_to_library_seqs(
+                    result['detail_df'],
+                    set(result['result_df'].get('库序号', [])),
+                )
         sync_dataframes(
             project,
             'pre-schedule',
@@ -1256,71 +1822,27 @@ def match_weld_pre_schedule_from_database(
     ensure_project_tables(project)
     with using_project_tables(project):
         weld_df, _, _ = _source_dataframe(project, 'library', 'weld-library', WeldLibraryRow)
-        ordinary_pipe_df, _, _ = _source_dataframe(project, 'library', 'pipe-library', PipeMaterialRow)
-        ordinary_fitting_df, _, _ = _source_dataframe(project, 'library', 'fitting-library', FittingMaterialRow)
-        anti_pipe_df, _, _ = _source_dataframe(project, 'library', 'anti-pipe-library', PipeMaterialRow)
-        anti_fitting_df, _, _ = _source_dataframe(project, 'library', 'anti-fitting-library', FittingMaterialRow)
         if weld_df.empty:
             raise ValueError('数据库中预制焊口库为空，无法生成预排产')
 
-        pipe_dfs = {
-            pre_matcher.ORDINARY_POOL: pre_matcher._normalize_pipe_library_or_empty(ordinary_pipe_df),
-            pre_matcher.ANTI_CORROSION_POOL: pre_matcher._normalize_pipe_library_or_empty(anti_pipe_df),
-        }
-        fitting_dfs = {
-            pre_matcher.ORDINARY_POOL: pre_matcher._normalize_fitting_library_or_empty(ordinary_fitting_df),
-            pre_matcher.ANTI_CORROSION_POOL: pre_matcher._normalize_fitting_library_or_empty(anti_fitting_df),
-        }
-        pipe_states_by_pool = {
-            pool: pre_matcher._build_pipe_states(dataframe)
-            for pool, dataframe in pipe_dfs.items()
-        }
-        fitting_stock_by_pool = {
-            pool: pre_matcher._build_fitting_stock(dataframe)
-            for pool, dataframe in fitting_dfs.items()
-        }
-        candidate_df = pre_matcher._prepare_cutting_candidate_welds(
-            weld_df,
-            only_auto_weld=only_auto_weld,
-            ignore_anti_corrosion_status=ignore_anti_corrosion_status,
-        )
-        concentration_dimension, concentration_threshold_percent = pre_matcher.normalize_pipeline_concentration_options(
-            concentration_dimension,
-            concentration_threshold_percent,
-        )
-
-        accepted_rows = []
-        rejected_rows = []
-        all_rows = []
-        detail_rows = []
-        match_seq = 1
-        group_cols = [pre_matcher.COLUMNS['unit'], pre_matcher.COLUMNS['pipeline']]
-        for _, group_df in candidate_df.groupby(group_cols, sort=False, dropna=False):
-            group_result = pre_matcher._simulate_group_matches_by_inventory(
-                group_df,
-                pipe_states_by_pool,
-                fitting_stock_by_pool,
-                match_seq,
-            )
-            detail_rows.extend(group_result['detail_rows'])
-            if not pre_matcher._meets_pipeline_concentration(
-                group_result['all_rows'],
-                concentration_dimension,
-                concentration_threshold_percent,
-            ):
-                group_rejected_rows, group_all_rows = pre_matcher._reject_pipeline_rows(group_result['all_rows'])
-                rejected_rows.extend(group_rejected_rows)
-                all_rows.extend(group_all_rows)
-                continue
-            accepted_rows.extend(group_result['accepted_rows'])
-            rejected_rows.extend(group_result['rejected_rows'])
-            all_rows.extend(group_result['all_rows'])
-            pipe_states_by_pool = group_result['pipe_states_by_pool']
-            fitting_stock_by_pool = group_result['fitting_stock_by_pool']
-            match_seq = group_result['next_seq']
-
-        all_df = pd.DataFrame(all_rows)
-        detail_df = pd.DataFrame(detail_rows, columns=pre_matcher.PRE_SCHEDULE_DETAIL_COLUMNS)
+        candidate_df = pre_matcher._prepare_uncompleted_welds(weld_df, only_auto_weld=False)
+        if project_process_sequence(project) == 'coating_before_welding':
+            planned_seqs = _planned_library_seqs(project, 'anti_corrosion_date', 'cut_date')
+            if planned_seqs:
+                candidate_df = _filter_dataframe_to_library_seqs(candidate_df, planned_seqs)
+        candidate_df = pre_matcher._filter_truthy_statuses(candidate_df, [
+            COLUMNS['material_arrival_status'],
+            COLUMNS['material_anti_corrosion_status'],
+        ])
+        cutting_col = COLUMNS['material_cutting_status']
+        if cutting_col not in candidate_df.columns:
+            candidate_df = candidate_df.iloc[0:0].copy()
+        else:
+            candidate_df = candidate_df.loc[~pre_matcher._to_bool_series(candidate_df[cutting_col])].copy()
+        all_df = candidate_df.copy()
+        all_df[pre_matcher.MATCH_SEQ_COL] = range(1, len(all_df) + 1)
+        all_df[pre_matcher.STATUS_COL] = MATCHED_STATUS
+        all_df[pre_matcher.REASON_COL] = ''
 
         sync_dataframes(
             project,
@@ -1328,39 +1850,51 @@ def match_weld_pre_schedule_from_database(
             'weld-pre-schedule',
             '焊口预排产匹配结果.xlsx',
             'database://pre-schedule/weld-pre-schedule/焊口预排产匹配结果.xlsx',
-            {'预排产匹配结果': all_df, '材料匹配明细': detail_df},
+            {'预排产匹配结果': all_df},
             PRE_SCHEDULE_MODELS,
         )
-        pending_keys = {
-            pre_matcher.ORDINARY_POOL: (
-                'pending-pipe-library',
-                '待确认管子材料库.xlsx',
-                'pending-fitting-library',
-                '待确认管件法兰材料库.xlsx',
-            ),
-            pre_matcher.ANTI_CORROSION_POOL: (
-                'pending-anti-pipe-library',
-                '待确认防腐管子材料库.xlsx',
-                'pending-anti-fitting-library',
-                '待确认防腐管件法兰材料库.xlsx',
-            ),
-        }
-        for pool, (pipe_key, pipe_name, fitting_key, fitting_name) in pending_keys.items():
-            updated_pipe_df = pre_matcher._apply_pipe_states_to_df(
-                pipe_dfs[pool],
-                pipe_states_by_pool[pool],
-            )
-            updated_fitting_df = pre_matcher._apply_fitting_stock_to_df(
-                fitting_dfs[pool],
-                fitting_stock_by_pool[pool],
-            )
-            _sync_library_dataframe(project, pipe_key, pipe_name, updated_pipe_df)
-            _sync_library_dataframe(project, fitting_key, fitting_name, updated_fitting_df)
         return {
             'candidate_count': len(candidate_df),
-            'pre_schedule_count': len(accepted_rows),
-            'rejected_count': len(rejected_rows),
-            'detail_count': len(detail_df),
+            'pre_schedule_count': len(all_df),
+            'rejected_count': 0,
+            'detail_count': 0,
+        }
+
+
+def match_welding_pre_schedule_from_database(project):
+    ensure_project_tables(project)
+    with using_project_tables(project):
+        weld_df, _, _ = _source_dataframe(project, 'library', 'weld-library', WeldLibraryRow)
+        if weld_df.empty:
+            raise ValueError('数据库中预制焊口库为空，无法生成焊接预排产')
+
+        candidate_df = pre_matcher._prepare_uncompleted_welds(weld_df, only_auto_weld=False)
+        planned_seqs = _planned_library_seqs(project, 'cut_date', 'weld_date')
+        if planned_seqs:
+            candidate_df = _filter_dataframe_to_library_seqs(candidate_df, planned_seqs)
+        candidate_df = pre_matcher._filter_truthy_statuses(candidate_df, [
+            COLUMNS['material_arrival_status'],
+            COLUMNS['material_anti_corrosion_status'],
+            COLUMNS['material_cutting_status'],
+        ])
+        result_df = candidate_df.copy()
+        result_df[pre_matcher.MATCH_SEQ_COL] = range(1, len(result_df) + 1)
+        result_df[pre_matcher.STATUS_COL] = MATCHED_STATUS
+        result_df[pre_matcher.REASON_COL] = ''
+
+        sync_dataframes(
+            project,
+            'pre-schedule',
+            'welding-pre-schedule',
+            '焊接预排产结果.xlsx',
+            'database://pre-schedule/welding-pre-schedule/焊接预排产结果.xlsx',
+            {'预排产匹配结果': result_df},
+            PRE_SCHEDULE_MODELS,
+        )
+        return {
+            'candidate_count': len(candidate_df),
+            'pre_schedule_count': len(result_df),
+            'rejected_count': 0,
         }
 
 
@@ -1439,6 +1973,18 @@ def _sync_welding_outputs(project, plan_date, all_extractions, cut_date=None):
     )
 
 
+def _plan_rows_from_extractions(plan_date, all_extractions, cut_date=None):
+    output_files = _welding_primary_output_files(plan_date, all_extractions, cut_date=cut_date)
+    frames = []
+    for output_file in output_files:
+        frames.extend(
+            dataframe
+            for dataframe in (output_file.get('sheets') or {}).values()
+            if dataframe is not None and not dataframe.empty
+        )
+    return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
+
+
 def _cutting_output_files(cut_date, weld_date, all_extractions):
     detail_sheets = {}
     summary_sheets = {}
@@ -1465,6 +2011,7 @@ def _cutting_output_files(cut_date, weld_date, all_extractions):
 
 
 def _sync_cutting_outputs(project, cut_date, weld_date, all_extractions):
+    _sync_master_schedule_rows(project, 'cutting', cut_date, _plan_rows_from_extractions(weld_date, all_extractions, cut_date=cut_date))
     _sync_plan_record(
         project,
         'cutting',
@@ -1478,14 +2025,19 @@ def _sync_cutting_outputs(project, cut_date, weld_date, all_extractions):
 def generate_welding_schedule_from_database(project, weld_date=None, target_diameter=None, orders_per_day=None):
     ensure_project_tables(project)
     with using_project_tables(project):
-        pre_df = _model_dataframe(WeldPreScheduleRow, project, pre_schedule_status=MATCHED_STATUS)
+        pre_df, _, _ = _source_dataframe(
+            project,
+            'pre-schedule',
+            'welding-pre-schedule',
+            WeldPreScheduleRow,
+            sheet_name='预排产匹配结果',
+        )
         if pre_df.empty:
-            raise ValueError('数据库中没有可预排产焊口')
-        weld_method_col = COLUMNS['weld_method']
-        if weld_method_col in pre_df.columns:
-            pre_df = pre_df.loc[pre_df[weld_method_col].fillna('').astype(str).str.strip().eq('自动焊')].copy()
+            raise ValueError('数据库中没有焊接预排产结果，请先生成焊接预排产')
+        if STATUS_COL in pre_df.columns:
+            pre_df = pre_df.loc[pre_df[STATUS_COL].fillna('').astype(str).str.strip().eq(MATCHED_STATUS)].copy()
         if pre_df.empty:
-            raise ValueError('数据库中没有可排产自动焊焊口')
+            raise ValueError('数据库中没有可生成焊接排产的预排产焊口')
         plan_date = get_weld_schedule_date(weld_date)
         target = float(target_diameter or EXTRACT['target_diameter'])
         orders = int(orders_per_day or EXTRACT['num_extractions'])
