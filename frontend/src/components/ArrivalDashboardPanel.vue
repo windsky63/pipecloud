@@ -83,36 +83,48 @@ function formatPercent(value) {
             v-for="item in viewItems"
             :key="item.value"
             :value="item.value"
-            :icon="item.icon"
+            icon
             variant="text"
             :aria-label="item.label"
-            :title="item.label"
-          />
+          >
+            <v-icon :icon="item.icon" />
+            <v-tooltip activator="parent" location="top">{{ item.label }}</v-tooltip>
+          </v-btn>
         </v-btn-toggle>
         <span v-if="!collapsed && (showRefresh || collapsible)" class="dashboard-action-divider" />
         <v-btn
           v-if="showRefresh"
           :loading="loading"
-          icon="mdi-refresh"
+          icon
           variant="text"
           :aria-label="t('refreshDashboard')"
           @click="emit('refresh')"
-        />
+        >
+          <v-icon icon="mdi-refresh" />
+          <v-tooltip activator="parent" location="top">{{ t('refreshDashboard') }}</v-tooltip>
+        </v-btn>
         <v-btn
           v-if="collapsible"
-          icon="mdi-eye-off-outline"
+          icon
           variant="text"
           :aria-label="t('hideDashboard')"
-          :title="t('hideDashboard')"
           @click="emit('hide')"
-        />
+        >
+          <v-icon icon="mdi-eye-off-outline" />
+          <v-tooltip activator="parent" location="top">{{ t('hideDashboard') }}</v-tooltip>
+        </v-btn>
         <v-btn
           v-if="collapsible"
-          :icon="collapsed ? 'mdi-chevron-down' : 'mdi-chevron-up'"
+          icon
           variant="text"
           :aria-label="collapsed ? t('expandDashboard') : t('collapseDashboard')"
           @click="emit('toggle')"
-        />
+        >
+          <v-icon :icon="collapsed ? 'mdi-chevron-down' : 'mdi-chevron-up'" />
+          <v-tooltip activator="parent" location="top">
+            {{ collapsed ? t('expandDashboard') : t('collapseDashboard') }}
+          </v-tooltip>
+        </v-btn>
       </div>
     </div>
 
@@ -210,17 +222,24 @@ function formatPercent(value) {
   display: grid;
   gap: 16px;
   padding: 16px;
-  border: 1px solid var(--line);
+  border: 1px solid color-mix(in srgb, var(--card-accent, var(--primary)) 40%, var(--line));
   border-radius: 8px;
-  background: var(--panel-soft);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--card-accent, var(--primary)) 8%, var(--panel)), var(--panel-soft));
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--card-accent, var(--primary)) 8%, transparent);
+  transition: transform 160ms ease, box-shadow 160ms ease;
 }
 
 .arrival-summary-card.is-pipe {
-  border-color: color-mix(in srgb, var(--primary) 38%, var(--line));
+  --card-accent: var(--primary);
 }
 
 .arrival-summary-card.is-other {
-  border-color: color-mix(in srgb, #0f9f6e 38%, var(--line));
+  --card-accent: #0f9f6e;
+}
+
+.arrival-summary-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 26px color-mix(in srgb, var(--card-accent, var(--primary)) 13%, transparent);
 }
 
 .arrival-summary-title,
@@ -256,10 +275,12 @@ function formatPercent(value) {
 
 .arrival-quantity-grid {
   grid-template-columns: repeat(5, minmax(0, 1fr));
+  align-items: stretch;
 }
 
 .arrival-quantity-grid > div {
   display: grid;
+  align-content: center;
   gap: 4px;
   padding: 10px;
   border-radius: 6px;

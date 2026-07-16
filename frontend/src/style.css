@@ -1171,6 +1171,7 @@ html[data-theme="gray"] .cutting-vtable-host {
 
 .calendar-plan-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -1196,6 +1197,16 @@ html[data-theme="gray"] .cutting-vtable-host {
   font-size: 17px;
   min-width: 108px;
   text-align: center;
+}
+
+.gantt-period-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.plan-table-tabs {
+  flex: 0 0 auto;
 }
 
 .vuetify-plan-calendar {
@@ -1280,11 +1291,6 @@ html[data-theme="gray"] .cutting-vtable-host {
 
 .plan-month-grid {
   border-top: 1px solid var(--line);
-}
-
-.plan-table-tabs {
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
 }
 
 .plan-pending-moves {

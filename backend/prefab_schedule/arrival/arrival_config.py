@@ -13,10 +13,6 @@ from project_config import *  # noqa: F401,F403
 
 ARRIVAL_FILES = {
     'arrival_dir': ARRIVAL_DIR,
-    'pipe_output': LIBRARY_DIR / '管子材料库.xlsx',
-    'fitting_output': LIBRARY_DIR / '管件法兰材料库.xlsx',
-    'anti_pipe_output': LIBRARY_DIR / '防腐管子材料库.xlsx',
-    'anti_fitting_output': LIBRARY_DIR / '防腐管件法兰材料库.xlsx',
 }
 
 ARRIVAL_COLUMNS = {
@@ -55,6 +51,11 @@ ARRIVAL_LIBRARY_COLUMNS = {
     'pipe_unique_code': '管子序号',
     'material_code_output': '材料代码',
     'anti_corrosion_status': '防腐状态',
+    'anti_corrosion_stock_qty': '防腐库存数量',
+    'locked_qty': '锁定数量',
+    'coated_locked_qty': '已防腐锁定数量',
+    'uncoated_locked_qty': '未防腐锁定数量',
+    'used_qty': '已使用数量',
     'unit_area': '单位面积',
     'anti_corrosion_area': '防腐面积',
 }
@@ -84,5 +85,10 @@ ARRIVAL_PIPE_RULES = {
         ARRIVAL_LIBRARY_COLUMNS['source_file'],
         ARRIVAL_LIBRARY_COLUMNS['arrival_date'],
         ARRIVAL_LIBRARY_COLUMNS['pipe_stock_qty'],
+        ARRIVAL_LIBRARY_COLUMNS['anti_corrosion_stock_qty'],
+        ARRIVAL_LIBRARY_COLUMNS['locked_qty'],
+        ARRIVAL_LIBRARY_COLUMNS['coated_locked_qty'],
+        ARRIVAL_LIBRARY_COLUMNS['uncoated_locked_qty'],
+        ARRIVAL_LIBRARY_COLUMNS['used_qty'],
     ],
 }

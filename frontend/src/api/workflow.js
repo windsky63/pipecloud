@@ -1,12 +1,12 @@
-import { requestJson } from './http'
+import { postJson, requestJson } from './http'
 import { uploadFilesRequest } from './uploads'
 
 export function fetchSummary(params, options = {}) {
   return requestJson(`/summary/?${params}`, options)
 }
 
-export function runWorkflowAction(actionKey, params, options = {}) {
-  const requestOptions = { method: 'POST' }
+export function runWorkflowAction(actionKey, params, options = {}, fetchOptions = {}) {
+  const requestOptions = { ...fetchOptions, method: 'POST' }
   if (options && Object.keys(options).length) {
     requestOptions.headers = {
       'Content-Type': 'application/json',
@@ -14,6 +14,15 @@ export function runWorkflowAction(actionKey, params, options = {}) {
     requestOptions.body = JSON.stringify(options)
   }
   return requestJson(`/run/${actionKey}/?${params}`, requestOptions)
+}
+
+export function cancelInitializationTask(taskId, options = {}) {
+  return requestJson('/initialization/cancel/', {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    body: JSON.stringify({ taskId }),
+  })
 }
 
 export function generateFutureSchedule(params, options = {}) {
@@ -90,6 +99,10 @@ export function fetchCuttingPreSchedule(params, options = {}) {
 
 export function fetchMaterialLockingRows(params, options = {}) {
   return requestJson(`/material-locking/pre-schedule/?${params}`, options)
+}
+
+export function releaseMaterialLockingRows(params, selectedLibrarySeqs) {
+  return postJson(`/material-locking/release/?${params}`, { selectedLibrarySeqs })
 }
 
 export function fetchAntiCorrosionPreSchedule(params, options = {}) {

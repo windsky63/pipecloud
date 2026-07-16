@@ -3,8 +3,11 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from django.test import Client, SimpleTestCase
+from django.test import Client, SimpleTestCase, TestCase
 from django.urls import reverse
+from django.utils import timezone
+
+from pipecloud.models import Project, ScheduledTaskRun
 
 
 class DeveloperPlanRolloverTests(SimpleTestCase):
@@ -40,6 +43,44 @@ class DeveloperPlanRolloverTests(SimpleTestCase):
         self.assertTrue(response.json()['ready'])
         self.assertIn('csrftoken', response.cookies)
         execute_rollovers.assert_not_called()
+
+
+class DeveloperScheduledTaskCsrfTests(TestCase):
+    def test_get_returns_persisted_task_logs(self):
+        project = Project.objects.create(project_name='日志项目')
+        task_run = ScheduledTaskRun.objects.create(
+            project=project,
+            task_name='sync_cutting_completion',
+            business_date=timezone.localdate(),
+            status='succeeded',
+            stats={'planName': '下料', 'matchedCount': 3, 'completedCount': 2},
+            finished_at=timezone.now(),
+        )
+
+        response = self.client.get(reverse('pipecloud-developer-scheduled-tasks'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['logs'][0]['id'], task_run.pk)
+        self.assertEqual(response.json()['logs'][0]['projectName'], '日志项目')
+        self.assertEqual(response.json()['logs'][0]['status'], 'succeeded')
+
+    @patch('pipecloud.views.developer.execute_all_completion_syncs', return_value=[])
+    def test_local_vite_origin_can_run_scheduled_task(self, execute_syncs):
+        client = Client(enforce_csrf_checks=True)
+        url = reverse('pipecloud-developer-scheduled-tasks')
+        client.get(url)
+        csrf_token = client.cookies['csrftoken'].value
+
+        response = client.post(
+            url,
+            data='{"key":"sync-anti-corrosion-completion"}',
+            content_type='application/json',
+            HTTP_ORIGIN='http://localhost:5173',
+            HTTP_X_CSRFTOKEN=csrf_token,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        execute_syncs.assert_called_once_with('anti-corrosion', force=False)
 
 
 class DeveloperDatabaseTests(SimpleTestCase):

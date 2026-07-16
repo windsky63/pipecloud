@@ -4,8 +4,8 @@ import ArrivalDashboardPanel from '../../components/ArrivalDashboardPanel.vue'
 import DataVTable from '../../components/DataVTable.vue'
 import FileUploadDropzone from '../../components/FileUploadDropzone.vue'
 import InfoTooltip from '../../components/InfoTooltip.vue'
-import { localizedActionName, localizedModuleDescription } from '../../services/navigationLabels'
-import { formatSize, formatTime, t } from '../../services/pipecloudState'
+import { localizedModuleDescription } from '../../services/navigationLabels'
+import { dashboardVisibility, displayDataPath, formatTime, setDashboardVisibility, t } from '../../services/pipecloudState'
 
 const props = defineProps({
   activeModule: { type: Object, required: true },
@@ -30,12 +30,10 @@ const props = defineProps({
   arrivalFileRows: { type: Array, default: () => [] },
   arrivalFileTableColumns: { type: Array, default: () => [] },
   arrivalImportCompleteKey: { type: Number, default: 0 },
-  runningKey: { type: String, default: '' },
 })
 
 const emit = defineEmits([
   'change-tab',
-  'execute-action',
   'refresh-today-arrival',
   'refresh-arrival-dashboard',
   'refresh-arrival-files',
@@ -45,6 +43,7 @@ const emit = defineEmits([
 ])
 
 const selectedArrivalUploadFiles = ref([])
+const dashboardCollapsed = ref(false)
 const arrivalImportResults = ref([])
 const arrivalImportActiveIndex = ref(0)
 const arrivalImportError = ref('')
@@ -59,6 +58,44 @@ const arrivalImportPreview = computed(() => {
 const arrivalImportPreviewColumns = computed(() => arrivalImportPreview.value.columns || [])
 const arrivalImportPreviewRows = computed(() => arrivalImportPreview.value.rows || [])
 const hasPendingArrivalImport = computed(() => selectedArrivalUploadFiles.value.length > 0 && arrivalImportResults.value.length > 0)
+const arrivalDateChartRows = computed(() => {
+  const grouped = new Map()
+  for (const row of props.arrivalDashboard.dateStats || []) {
+    const date = String(row.date || '-')
+    const item = grouped.get(date) || {
+      date,
+      pipeQty: 0,
+      otherQty: 0,
+      pipeRows: 0,
+      otherRows: 0,
+      pipeCount: 0,
+    }
+    const quantity = Number(row.quantity) || 0
+    if (row.materialType === 'pipe') {
+      item.pipeQty += quantity
+      item.pipeRows += Number(row.rowCount) || 0
+      item.pipeCount += Number(row.pipeCount) || 0
+    } else {
+      item.otherQty += quantity
+      item.otherRows += Number(row.rowCount) || 0
+    }
+    grouped.set(date, item)
+  }
+  return Array.from(grouped.values()).sort((left, right) => left.date.localeCompare(right.date))
+})
+const arrivalDateChartMax = computed(() => {
+  return Math.max(1, ...arrivalDateChartRows.value.map((row) => Math.max(row.pipeQty, row.otherQty)))
+})
+
+function barHeight(value) {
+  return `${Math.max(6, Math.round((Number(value) || 0) / arrivalDateChartMax.value * 120))}px`
+}
+
+function formatNumber(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return '0'
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 }).format(number)
+}
 
 async function setArrivalUploadFiles(files) {
   selectedArrivalUploadFiles.value = Array.from(files || [])
@@ -201,13 +238,18 @@ watch(() => props.arrivalImportCompleteKey, () => {
 
 <template>
   <ArrivalDashboardPanel
+    v-if="dashboardVisibility.arrival"
     :title="t('arrivalDashboardTitle')"
     :description="t('arrivalDashboardDescription')"
     :dashboard="arrivalDashboard"
     :loading="arrivalDashboardLoading"
     :error="arrivalDashboardError"
     show-refresh
+    collapsible
+    :collapsed="dashboardCollapsed"
     @refresh="$emit('refresh-arrival-dashboard')"
+    @hide="setDashboardVisibility('arrival', false)"
+    @toggle="dashboardCollapsed = !dashboardCollapsed"
   />
 
   <v-card class="module-panel" :loading="arrivalLoading">
@@ -218,6 +260,14 @@ watch(() => props.arrivalImportCompleteKey, () => {
           <InfoTooltip :text="localizedModuleDescription(activeModule)" />
         </div>
       </div>
+      <v-btn
+        :loading="arrivalLoading"
+        icon="mdi-refresh"
+        variant="text"
+        :aria-label="t('refreshTodayArrival')"
+        :title="t('refreshTodayArrival')"
+        @click="$emit('refresh-today-arrival')"
+      />
     </div>
 
     <v-alert v-if="arrivalError" :text="arrivalError" type="error" density="compact" class="status-alert" />
@@ -230,27 +280,49 @@ watch(() => props.arrivalImportCompleteKey, () => {
     <v-window :model-value="arrivalActiveTab" @update:model-value="$emit('change-tab', $event)">
       <v-window-item value="overview">
         <div class="arrival-tab-content">
-          <div class="module-actions arrival-overview-actions">
-            <v-btn
-              v-for="action in activeModule.actions"
-              :key="action.key"
-              color="primary"
-              variant="tonal"
-              :loading="runningKey === action.key"
-              :disabled="Boolean(runningKey)"
-              @click="$emit('execute-action', action.key)"
-            >
-              {{ localizedActionName(action) }}
-            </v-btn>
-            <v-btn :loading="arrivalLoading" prepend-icon="mdi-refresh" @click="$emit('refresh-today-arrival')">{{ t('refreshTodayArrival') }}</v-btn>
-          </div>
+          <section class="arrival-date-chart-panel">
+            <div class="section-head arrival-date-chart-head">
+              <div>
+                <h2>{{ t('arrivalOrderDateChart') }}</h2>
+                <span>{{ t('arrivalOrderDateChartDescription') }}</span>
+              </div>
+              <div class="arrival-date-chart-legend">
+                <span><i class="is-pipe" />{{ t('pipeMaterial') }}</span>
+                <span><i class="is-other" />{{ t('otherMaterial') }}</span>
+              </div>
+            </div>
+            <div v-if="arrivalDateChartRows.length" class="arrival-date-chart">
+              <div
+                v-for="row in arrivalDateChartRows"
+                :key="row.date"
+                class="arrival-date-chart-day"
+              >
+                <div class="arrival-date-bars">
+                  <div class="arrival-date-bar-wrap">
+                    <span>{{ formatNumber(row.pipeQty) }}</span>
+                    <div class="arrival-date-bar is-pipe" :style="{ height: barHeight(row.pipeQty) }" />
+                  </div>
+                  <div class="arrival-date-bar-wrap">
+                    <span>{{ formatNumber(row.otherQty) }}</span>
+                    <div class="arrival-date-bar is-other" :style="{ height: barHeight(row.otherQty) }" />
+                  </div>
+                </div>
+                <div class="arrival-date-label">
+                  <strong>{{ row.date }}</strong>
+                  <small>{{ t('arrivalDateRowsHint', { pipe: row.pipeRows, other: row.otherRows }) }}</small>
+                  <small v-if="row.pipeCount">{{ t('arrivalPipeCountWithValue', { value: formatNumber(row.pipeCount) }) }}</small>
+                </div>
+              </div>
+            </div>
+            <v-alert v-else :text="t('noArrivalOrderDateStats')" type="info" variant="tonal" density="compact" />
+          </section>
 
           <v-sheet class="arrival-today-layout" color="transparent">
             <div class="arrival-today-summary">
               <div class="section-head arrival-detail-head">
                 <div>
                   <h2>{{ t('todayArrivalDetail') }}</h2>
-                  <span>{{ todayArrival.file?.path || t('noArrivalOrderForDate', { date: todayArrival.date || t('today') }) }}</span>
+                  <span>{{ displayDataPath(todayArrival.file?.path, todayArrival.file?.name || t('noArrivalOrderForDate', { date: todayArrival.date || t('today') })) }}</span>
                 </div>
                 <v-chip color="secondary" variant="tonal">{{ t('rowCount', { count: todayArrival.total }) }}</v-chip>
               </div>
@@ -298,9 +370,8 @@ watch(() => props.arrivalImportCompleteKey, () => {
               @update:model-value="$emit('change-arrival-sheet', $event)"
             />
             <div class="arrival-file-meta">
-              <span>{{ t('fileMetaPath', { value: arrivalFileDetail.file?.path || '-' }) }}</span>
+              <span v-if="displayDataPath(arrivalFileDetail.file?.path)">{{ t('fileMetaPath', { value: displayDataPath(arrivalFileDetail.file?.path) }) }}</span>
               <span>{{ t('fileMetaRows', { value: arrivalFileDetail.total }) }}</span>
-              <span>{{ t('fileMetaSize', { value: formatSize(arrivalFileDetail.file?.size) }) }}</span>
               <span>{{ t('fileMetaUpdatedAt', { value: formatTime(arrivalFileDetail.file?.updatedAt) }) }}</span>
             </div>
           </div>
@@ -450,12 +521,127 @@ watch(() => props.arrivalImportCompleteKey, () => {
 
 .arrival-tab-content {
   display: grid;
-  gap: 0;
+  gap: 16px;
 }
 
 .arrival-overview-actions {
   margin-top: 18px;
   margin-bottom: 18px;
+}
+
+.arrival-date-chart-panel {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.arrival-date-chart-head {
+  margin: 0;
+}
+
+.arrival-date-chart-head h2 {
+  margin: 0;
+}
+
+.arrival-date-chart-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.arrival-date-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.arrival-date-chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.arrival-date-chart-legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.arrival-date-chart-legend .is-pipe,
+.arrival-date-bar.is-pipe {
+  background: #2563eb;
+}
+
+.arrival-date-chart-legend .is-other,
+.arrival-date-bar.is-other {
+  background: #0f9f6e;
+}
+
+.arrival-date-chart {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(116px, 1fr);
+  gap: 10px;
+  min-height: 210px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.arrival-date-chart-day {
+  display: grid;
+  align-content: end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.arrival-date-bars {
+  display: flex;
+  align-items: end;
+  justify-content: center;
+  gap: 8px;
+  height: 148px;
+  padding: 8px 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.arrival-date-bar-wrap {
+  display: grid;
+  justify-items: center;
+  align-items: end;
+  gap: 4px;
+  width: 40px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.arrival-date-bar {
+  width: 22px;
+  min-height: 6px;
+  border-radius: 5px 5px 0 0;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 24%);
+}
+
+.arrival-date-label {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  min-height: 58px;
+  text-align: center;
+}
+
+.arrival-date-label strong {
+  color: var(--strong);
+  font-size: 12px;
+}
+
+.arrival-date-label small {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .arrival-today-summary,

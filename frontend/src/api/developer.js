@@ -14,8 +14,23 @@ export async function runPlanRollover() {
   })
 }
 
+export async function fetchScheduledTasks() {
+  return requestJson('/developer/scheduled-tasks/')
+}
+
+export async function runScheduledTask(key, options = {}) {
+  await requestJson('/developer/scheduled-tasks/')
+  return postJson('/developer/scheduled-tasks/', { key, ...options }, {
+    headers: { 'X-CSRFToken': csrfToken() },
+  })
+}
+
 export async function fetchDatabaseOverview() {
   return requestJson('/developer/database/')
+}
+
+export async function fetchOperationLogs(limit = 500) {
+  return requestJson(`/developer/operation-logs/?limit=${limit}`)
 }
 
 export async function clearDatabase(tables = []) {

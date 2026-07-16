@@ -12,7 +12,12 @@ const props = defineProps({
   title: { type: String, default: '' },
   description: { type: String, default: '' },
   panel: { type: Boolean, default: true },
+  showRefresh: { type: Boolean, default: false },
+  collapsible: { type: Boolean, default: false },
+  collapsed: { type: Boolean, default: false },
 })
+
+const emit = defineEmits(['refresh', 'toggle', 'hide'])
 
 const activeView = ref('data')
 
@@ -27,7 +32,7 @@ const preSchedule = computed(() => props.dashboard.preSchedule || {})
 const statCards = computed(() => {
   if (isAntiCorrosion.value) {
     return [
-      { key: 'commissionCount', label: t('antiCorrosionCommissionCount'), value: props.dashboard.commissionCount || 0, hint: t('antiCorrosionSegmentCountHint', { count: props.dashboard.segmentCount || 0 }) },
+      { key: 'commissionCount', label: t('antiCorrosionCommissionCount'), value: props.dashboard.commissionCount || 0, hint: t('antiCorrosionWeldCountHint', { count: props.dashboard.weldCount || 0 }) },
       { key: 'totalArea', label: t('antiCorrosionTotalArea'), value: formatNumber(props.dashboard.totalArea), hint: t('squareMeterUnit') },
       { key: 'preSchedule', label: t('schedulablePreScheduleRows'), value: preSchedule.value.schedulableRows || 0, hint: t('preScheduleRowsRatio', { total: preSchedule.value.totalRows || 0, rejected: preSchedule.value.rejectedRows || 0 }) },
       { key: 'plans', label: t('schedulePlanCount'), value: props.dashboard.planCount || 0, hint: t('todayPlansCount', { count: props.dashboard.todayPlanCount || 0 }) },
@@ -55,9 +60,10 @@ const tableColumns = computed(() => {
     return [
       { field: 'commissionNo', title: t('antiCorrosionCommissionNo'), width: 180 },
       { field: 'commissionDate', title: t('commissionDate'), width: 120 },
+      { field: 'weldCount', title: t('weldCount'), width: 100 },
       { field: 'segmentCount', title: t('segmentCount'), width: 100 },
       { field: 'totalAreaText', title: t('antiCorrosionArea'), width: 120 },
-      { field: 'commissionLimitArea', title: t('commissionLimitArea'), width: 140 },
+      { field: 'diameterTotalText', title: t('planDiameterTotal'), width: 120 },
       { field: 'unitCount', title: t('unitCount'), width: 100 },
       { field: 'pipelineCount', title: t('pipelineCount'), width: 110 },
       { field: 'updatedText', title: t('updatedAt'), width: 180 },
@@ -98,6 +104,7 @@ function formatNumber(value) {
         <InfoTooltip v-if="description" :text="description" />
       </div>
       <v-btn-toggle
+        v-if="!collapsed"
         v-model="activeView"
         class="dashboard-icon-toggle"
         mandatory
@@ -109,18 +116,40 @@ function formatNumber(value) {
           v-for="item in viewItems"
           :key="item.value"
           :value="item.value"
-          :icon="item.icon"
+          icon
           variant="text"
           :aria-label="item.label"
-          :title="item.label"
-        />
+        >
+          <v-icon :icon="item.icon" />
+          <v-tooltip activator="parent" location="top">{{ item.label }}</v-tooltip>
+        </v-btn>
       </v-btn-toggle>
+      <div class="dashboard-panel-actions">
+        <v-btn v-if="showRefresh" icon variant="text" :aria-label="t('refresh')" @click="emit('refresh')">
+          <v-icon icon="mdi-refresh" />
+          <v-tooltip activator="parent" location="top">{{ t('refresh') }}</v-tooltip>
+        </v-btn>
+        <v-btn v-if="collapsible" icon variant="text" :aria-label="t('hideDashboard')" @click="emit('hide')">
+          <v-icon icon="mdi-eye-off-outline" />
+          <v-tooltip activator="parent" location="top">{{ t('hideDashboard') }}</v-tooltip>
+        </v-btn>
+        <v-btn v-if="collapsible" icon variant="text" :aria-label="collapsed ? t('expandDashboard') : t('collapseDashboard')" @click="emit('toggle')">
+          <v-icon :icon="collapsed ? 'mdi-chevron-down' : 'mdi-chevron-up'" />
+          <v-tooltip activator="parent" location="top">{{ collapsed ? t('expandDashboard') : t('collapseDashboard') }}</v-tooltip>
+        </v-btn>
+      </div>
     </div>
 
+    <template v-if="!collapsed">
     <v-alert v-if="error" :text="error" type="error" density="compact" class="status-alert" />
 
     <div v-if="activeView === 'data'" class="schedule-stat-grid">
-      <section v-for="card in statCards" :key="card.key" class="schedule-stat-card">
+      <section
+        v-for="card in statCards"
+        :key="card.key"
+        class="schedule-stat-card"
+        :class="`${isAntiCorrosion ? 'is-anti' : 'is-cutting'}-${card.key}`"
+      >
         <span>{{ card.label }}</span>
         <strong>{{ card.value }}</strong>
         <small>{{ card.hint }}</small>
@@ -133,7 +162,9 @@ function formatNumber(value) {
       :columns="tableColumns"
       :height="360"
       :empty-text="emptyText"
+      filterable
     />
+    </template>
   </component>
 </template>
 
@@ -154,6 +185,16 @@ function formatNumber(value) {
   flex-shrink: 0;
 }
 
+.dashboard-panel-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.schedule-dashboard-head {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
 .dashboard-icon-toggle :deep(.v-btn) {
   min-width: 36px;
   width: 36px;
@@ -171,14 +212,26 @@ function formatNumber(value) {
   gap: 6px;
   min-height: 108px;
   padding: 14px 16px;
-  border: 1px solid var(--line);
+  border: 1px solid color-mix(in srgb, var(--card-accent, var(--primary)) 42%, var(--line));
   border-radius: 8px;
-  background: var(--panel-soft);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--card-accent, var(--primary)) 8%, var(--panel)), var(--panel-soft));
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--card-accent, var(--primary)) 8%, transparent);
+  transition: transform 160ms ease, box-shadow 160ms ease;
 }
 
-.schedule-stat-card:first-child {
-  border-color: color-mix(in srgb, var(--primary) 35%, var(--line));
+.schedule-stat-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 26px color-mix(in srgb, var(--card-accent, var(--primary)) 13%, transparent);
 }
+
+.schedule-stat-card.is-anti-commissionCount,
+.schedule-stat-card.is-cutting-orderCount { --card-accent: var(--primary); }
+.schedule-stat-card.is-anti-totalArea,
+.schedule-stat-card.is-cutting-weldCount { --card-accent: #0f9f6e; }
+.schedule-stat-card.is-anti-preSchedule,
+.schedule-stat-card.is-cutting-diameterTotal { --card-accent: #d98b18; }
+.schedule-stat-card.is-anti-plans,
+.schedule-stat-card.is-cutting-preSchedule { --card-accent: #7c5ce0; }
 
 .schedule-stat-card span,
 .schedule-stat-card small {

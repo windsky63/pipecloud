@@ -2,7 +2,7 @@
 import * as VTable from '@visactor/vtable'
 import { FilterPlugin } from '@visactor/vtable-plugins'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import {
   fetchArrivalFileRows,
   fetchArrivalFiles,
@@ -13,6 +13,7 @@ import {
   fetchCuttingPreSchedule,
   fetchCuttingVisualization,
   fetchMaterialLockingRows,
+  releaseMaterialLockingRows,
   fetchInitializationStats,
   commitStagedPlan,
   fetchStagedPlanFileRows,
@@ -30,12 +31,15 @@ import GenericModule from './GenericModule.vue'
 import InitializationModule from './InitializationModule.vue'
 import PrefabWorkspaceHeader from './PrefabWorkspaceHeader.vue'
 import WeldingModule from './WeldingModule.vue'
+import { fetchLibraryRows } from '../../api/libraries'
 import { selectedProjectId, selectedProjectParams } from '../../services/projectState'
 import { localizedModuleTitle } from '../../services/navigationLabels'
 import { getBasicVTableTheme, getVTablePalette, vTableThemeKey } from '../../services/vtableTheme'
 import { attachVTableColumnSelectionCount, createVTableSelectionLayout } from '../../services/vtableSelectionCount'
 import {
   errorMessage,
+  beaconCancelRunningInitialization,
+  cancelRunningInitialization,
   formatSize,
   formatTime,
   lastRun,
@@ -53,6 +57,18 @@ let workspaceLoadController = null
 let workspaceLoadTimer = null
 const initializationLoading = ref(false)
 const initializationError = ref('')
+const initializationOptions = ref({
+  fillMaterialUnits: true,
+  initializationFilters: {
+    prefabWeldArea: true,
+    prefabMaterialType: true,
+    autoJointType: true,
+    autoWallThickness: true,
+    autoDiameter: true,
+    autoSegmentNo: true,
+  },
+})
+const initializationLeaveDialog = ref({ show: false, resolve: null })
 const initializationStats = ref({
   totalWeldCount: 0,
   prefabWeldCount: 0,
@@ -84,13 +100,31 @@ const weldingDashboard = ref({
 })
 const weldingScheduleConfig = ref({
   weldDate: '',
+  dateMode: 'auto',
+  weldStartDate: '',
+  manualWeldDates: '',
+  maxDays: '',
   targetDiameter: '',
   ordersPerDay: '',
+  commissionArea: 1500,
+  skipHolidays: true,
+  holidayDates: '',
+  canceledWeekendDates: '',
 })
 const weldingScheduleMessage = ref('')
 const weldingScheduleError = ref('')
 const weldingPendingStage = ref(null)
 const weldingStageSaving = ref(false)
+const weldingPendingPreviewLoading = ref(false)
+const weldingPendingPreviewError = ref('')
+const weldingPendingPreview = ref({
+  file: null,
+  sheet: '',
+  sheets: [],
+  total: 0,
+  columns: [],
+  rows: [],
+})
 const weldingPreScheduleLoading = ref(false)
 const weldingPreScheduleError = ref('')
 const weldingPreScheduleActiveSheet = ref('')
@@ -128,8 +162,42 @@ const materialLibraryConfirmDialog = ref({
   files: [],
   resolve: null,
 })
+const materialReleaseConfirmDialog = ref({
+  show: false,
+  rowCount: 0,
+  seqCount: 0,
+  resolve: null,
+})
+const materialLockingSelectionLoading = ref(false)
+const materialLockingSelectionError = ref('')
+const materialLockingSelectionRows = ref([])
+const materialLockingSelectionColumns = ref([])
+const materialLockingSelectedRows = ref([])
+const MANUAL_SELECTION_COMMON_FIELDS = new Set([
+  '壁厚',
+  '壁厚号',
+  '寸径',
+  '外径',
+  '材质',
+  '材质代号',
+  '材料代号1',
+  '材料代号2',
+  '材料唯一码1',
+  '材料唯一码2',
+  '材料代码1',
+  '材料代码2',
+  '材料油漆1',
+  '材料油漆2',
+  '数量1',
+  '数量2',
+  '单位1',
+  '单位2',
+  '描述1',
+  '描述2',
+])
 const futureScheduleConfig = ref({
   dateMode: 'auto',
+  selectionMode: 'auto',
   weldStartDate: '',
   manualWeldDates: '',
   maxDays: '',
@@ -139,6 +207,7 @@ const futureScheduleConfig = ref({
   holidayDates: '',
   canceledWeekendDates: '',
   cuttingLeadDays: '',
+  antiCorrosionLeadDays: '',
 })
 const arrivalActiveTab = ref('overview')
 const arrivalLoading = ref(false)
@@ -173,6 +242,11 @@ const arrivalFileDetail = ref({
   rows: [],
   summary: {},
 })
+const futureScheduleSelectionLoading = ref(false)
+const futureScheduleSelectionError = ref('')
+const futureScheduleSelectionRows = ref([])
+const futureScheduleSelectionColumns = ref([])
+const futureScheduleSelectedRows = ref([])
 const selectedArrivalFile = ref('')
 const selectedArrivalSheet = ref('')
 const arrivalImportCompleteKey = ref(0)
@@ -181,6 +255,33 @@ const cuttingError = ref('')
 const cuttingDashboardLoading = ref(false)
 const cuttingDashboardError = ref('')
 const cuttingDashboard = ref(emptyCuttingDashboard())
+const cuttingScheduleMessage = ref('')
+const cuttingScheduleError = ref('')
+const cuttingScheduleSelectedRows = ref([])
+const cuttingPendingStage = ref(null)
+const cuttingStageSaving = ref(false)
+const cuttingPendingPreviewLoading = ref(false)
+const cuttingPendingPreviewError = ref('')
+const cuttingPendingPreview = ref({
+  file: null,
+  sheet: '',
+  sheets: [],
+  total: 0,
+  columns: [],
+  rows: [],
+})
+const cuttingScheduleOptions = ref({
+  selectionMode: 'auto',
+  targetDiameter: '',
+  ordersPerDay: '',
+  dateMode: 'auto',
+  weldStartDate: '',
+  manualWeldDates: '',
+  maxDays: '',
+  skipHolidays: true,
+  holidayDates: '',
+  canceledWeekendDates: '',
+})
 const preScheduleLoading = ref(false)
 const preScheduleError = ref('')
 const preScheduleActiveSheet = ref('')
@@ -197,14 +298,18 @@ const preScheduleOptions = ref({
   ignoreAntiCorrosionStatus: false,
   concentrationDimension: 'segment',
   concentrationThresholdPercent: 50,
+  selectionMode: 'auto',
 })
+const materialLockingResultSelectedRows = ref([])
+const materialLockingReleaseLoading = ref(false)
 const antiCorrosionPreScheduleOptions = ref({
   onlyAutoWeld: false,
   concentrationDimension: 'segment',
   concentrationThresholdPercent: 50,
 })
 const antiCorrosionCommissionOptions = ref({
-  commissionArea: 400,
+  selectionMode: 'auto',
+  commissionArea: 1500,
   dateMode: 'auto',
   weldStartDate: '',
   manualWeldDates: '',
@@ -219,6 +324,7 @@ const antiCorrosionPendingStage = ref(null)
 const antiCorrosionStageSaving = ref(false)
 const antiCorrosionPendingPreviewLoading = ref(false)
 const antiCorrosionPendingPreviewError = ref('')
+let antiCorrosionPendingPreviewRequestId = 0
 const antiCorrosionPendingPreview = ref({
   file: null,
   sheet: '',
@@ -349,6 +455,7 @@ const weldingScheduleAction = computed(() => {
   return activeModule.value?.actions?.find((action) => action.key === 'auto-weld-schedule') || null
 })
 const weldingScheduleDefaults = computed(() => weldingScheduleAction.value?.defaults || {})
+const cuttingScheduleDefaults = computed(() => cuttingOverviewActions.value.find((action) => action.key === 'cutting-schedule')?.defaults || {})
 const futureScheduleDefaults = computed(() => futureScheduleAction.value?.defaults || {})
 const futureScheduleDateModeOptions = computed(() => [
   { title: t('autoGenerateDates'), value: 'auto' },
@@ -358,14 +465,24 @@ const pipelineConcentrationDimensionOptions = computed(() => [
   { title: t('segmentConcentration'), value: 'segment' },
   { title: t('weldConcentration'), value: 'weld' },
 ])
+const materialLockingSelectionModeOptions = computed(() => [
+  { title: t('autoSelectWelds'), value: 'auto' },
+  { title: t('manualSelectWelds'), value: 'manual' },
+])
 const scheduleCalendarStart = computed(() => `${new Date().getFullYear()}-01-01`)
 const scheduleCalendarEnd = computed(() => `${new Date().getFullYear() + 3}-12-31`)
 const manualWeldDateList = computed(() => parseDateList(futureScheduleConfig.value.manualWeldDates))
 const holidayDateList = computed(() => parseDateList(futureScheduleConfig.value.holidayDates))
 const canceledWeekendDateList = computed(() => parseDateList(futureScheduleConfig.value.canceledWeekendDates))
+const weldingManualDateList = computed(() => parseDateList(weldingScheduleConfig.value.manualWeldDates))
+const weldingHolidayDateList = computed(() => parseDateList(weldingScheduleConfig.value.holidayDates))
+const weldingCanceledWeekendDateList = computed(() => parseDateList(weldingScheduleConfig.value.canceledWeekendDates))
 const antiCorrosionManualDateList = computed(() => parseDateList(antiCorrosionCommissionOptions.value.manualWeldDates))
 const antiCorrosionHolidayDateList = computed(() => parseDateList(antiCorrosionCommissionOptions.value.holidayDates))
 const antiCorrosionCanceledWeekendDateList = computed(() => parseDateList(antiCorrosionCommissionOptions.value.canceledWeekendDates))
+const cuttingManualDateList = computed(() => parseDateList(cuttingScheduleOptions.value.manualWeldDates))
+const cuttingHolidayDateList = computed(() => parseDateList(cuttingScheduleOptions.value.holidayDates))
+const cuttingCanceledWeekendDateList = computed(() => parseDateList(cuttingScheduleOptions.value.canceledWeekendDates))
 const calendarWeekendDates = computed(() => weekendDatesBetween(scheduleCalendarStart.value, scheduleCalendarEnd.value))
 const holidayCalendarDateList = computed(() => {
   if (!futureScheduleConfig.value.skipHolidays) return []
@@ -381,6 +498,22 @@ const antiCorrosionHolidayCalendarDateList = computed(() => {
   return Array.from(new Set([
     ...calendarWeekendDates.value.filter((date) => !canceled.has(date)),
     ...antiCorrosionHolidayDateList.value,
+  ])).sort()
+})
+const weldingHolidayCalendarDateList = computed(() => {
+  if (!weldingScheduleConfig.value.skipHolidays) return []
+  const canceled = new Set(weldingCanceledWeekendDateList.value)
+  return Array.from(new Set([
+    ...calendarWeekendDates.value.filter((date) => !canceled.has(date)),
+    ...weldingHolidayDateList.value,
+  ])).sort()
+})
+const cuttingHolidayCalendarDateList = computed(() => {
+  if (!cuttingScheduleOptions.value.skipHolidays) return []
+  const canceled = new Set(cuttingCanceledWeekendDateList.value)
+  return Array.from(new Set([
+    ...calendarWeekendDates.value.filter((date) => !canceled.has(date)),
+    ...cuttingHolidayDateList.value,
   ])).sort()
 })
 const arrivalFileTableColumns = computed(() => [
@@ -407,6 +540,8 @@ const arrivalFileOptions = computed(() => arrivalFiles.value.files.map((file) =>
 const todayArrivalColumns = computed(() => buildDynamicColumns(todayArrival.value.columns))
 const arrivalFileDetailColumns = computed(() => buildDynamicColumns(arrivalFileDetail.value.columns))
 const futurePendingPreviewColumns = computed(() => buildDynamicColumns(futurePendingPreview.value.columns))
+const cuttingPendingPreviewColumns = computed(() => buildDynamicColumns(cuttingPendingPreview.value.columns))
+const weldingPendingPreviewColumns = computed(() => buildDynamicColumns(weldingPendingPreview.value.columns))
 const todayArrivalSummaryRows = computed(() => buildArrivalSummaryRows(todayArrival.value.summary))
 const arrivalFileDetailSummaryRows = computed(() => buildArrivalSummaryRows(arrivalFileDetail.value.summary))
 const preScheduleTableColumns = computed(() => {
@@ -416,6 +551,11 @@ const preScheduleTableColumns = computed(() => {
     width: 150,
   }))
 })
+const materialLockingSelectionTableColumns = computed(() => buildDynamicColumns(materialLockingSelectionColumns.value))
+const futureScheduleSelectionTableColumns = computed(() => buildDynamicColumns(futureScheduleSelectionColumns.value))
+const canSelectMaterialLockingResultRows = computed(() => (
+  showMaterialLocking.value && preScheduleActiveSheet.value === '预排产匹配结果'
+))
 
 function buildDynamicColumns(columns) {
   return (columns || []).map((column) => ({
@@ -503,8 +643,25 @@ function setDateList(key, dates) {
   futureScheduleConfig.value[key] = dates.join(', ')
 }
 
+function manualSelectionColumns(columns) {
+  return (columns || []).filter((column) => !MANUAL_SELECTION_COMMON_FIELDS.has(column))
+}
+
+function isTruthyCell(value) {
+  const text = String(value ?? '').trim().toLowerCase()
+  return ['true', '1', 'yes', 'y', '是', '已到货'].includes(text)
+}
+
 function setAntiCorrosionDateList(key, dates) {
   antiCorrosionCommissionOptions.value[key] = dates.join(', ')
+}
+
+function setWeldingDateList(key, dates) {
+  weldingScheduleConfig.value[key] = dates.join(', ')
+}
+
+function setCuttingDateList(key, dates) {
+  cuttingScheduleOptions.value[key] = dates.join(', ')
 }
 
 function updateDateList(key, value) {
@@ -582,9 +739,18 @@ function updateAntiCorrosionStartDate(value) {
   antiCorrosionCommissionOptions.value.weldStartDate = formatDateForInput(value)
 }
 
+function updateCuttingStartDate(value) {
+  cuttingScheduleOptions.value.weldStartDate = formatDateForInput(value)
+}
+
 function updateAntiCorrosionManualDateList(value) {
   const dates = Array.isArray(value) ? Array.from(new Set(value.map(formatDateForInput).filter(Boolean))).sort() : parseDateList(value)
   setAntiCorrosionDateList('manualWeldDates', dates)
+}
+
+function updateCuttingManualDateList(value) {
+  const dates = Array.isArray(value) ? Array.from(new Set(value.map(formatDateForInput).filter(Boolean))).sort() : parseDateList(value)
+  setCuttingDateList('manualWeldDates', dates)
 }
 
 function updateAntiCorrosionHolidayDateList(value) {
@@ -598,8 +764,37 @@ function updateAntiCorrosionHolidayDateList(value) {
   setAntiCorrosionDateList('canceledWeekendDates', Array.from(new Set(canceledWeekends)).filter((date) => allWeekendSet.has(date)).sort())
 }
 
-function updateWeldingDate(value) {
-  weldingScheduleConfig.value.weldDate = formatDateForInput(value)
+function updateCuttingHolidayDateList(value) {
+  const selectedDates = Array.isArray(value) ? value.map(formatDateForInput).filter(Boolean) : parseDateList(value)
+  const selectedSet = new Set(selectedDates)
+  const allWeekendSet = new Set(calendarWeekendDates.value)
+  const weekdayHolidays = selectedDates.filter((date) => !isWeekendDate(date))
+  const canceledWeekends = calendarWeekendDates.value.filter((date) => !selectedSet.has(date))
+
+  setCuttingDateList('holidayDates', Array.from(new Set(weekdayHolidays)).sort())
+  setCuttingDateList('canceledWeekendDates', Array.from(new Set(canceledWeekends)).filter((date) => allWeekendSet.has(date)).sort())
+}
+
+function updateWeldingStartDate(value) {
+  const date = formatDateForInput(value)
+  weldingScheduleConfig.value.weldStartDate = date
+  weldingScheduleConfig.value.weldDate = date
+}
+
+function updateWeldingManualDateList(value) {
+  const dates = Array.isArray(value) ? Array.from(new Set(value.map(formatDateForInput).filter(Boolean))).sort() : parseDateList(value)
+  setWeldingDateList('manualWeldDates', dates)
+}
+
+function updateWeldingHolidayDateList(value) {
+  const selectedDates = Array.isArray(value) ? value.map(formatDateForInput).filter(Boolean) : parseDateList(value)
+  const selectedSet = new Set(selectedDates)
+  const allWeekendSet = new Set(calendarWeekendDates.value)
+  const weekdayHolidays = selectedDates.filter((date) => !isWeekendDate(date))
+  const canceledWeekends = calendarWeekendDates.value.filter((date) => !selectedSet.has(date))
+
+  setWeldingDateList('holidayDates', Array.from(new Set(weekdayHolidays)).sort())
+  setWeldingDateList('canceledWeekendDates', Array.from(new Set(canceledWeekends)).filter((date) => allWeekendSet.has(date)).sort())
 }
 
 function syncWeekendHolidayDates() {
@@ -610,6 +805,65 @@ function syncWeekendHolidayDates() {
   }
   setDateList('holidayDates', holidayDateList.value.filter((date) => !isWeekendDate(date)).sort())
   setDateList('canceledWeekendDates', canceledWeekendDateList.value.filter((date) => isWeekendDate(date)).sort())
+}
+
+function syncWeldingWeekendHolidayDates() {
+  if (!weldingScheduleConfig.value.skipHolidays) {
+    setWeldingDateList('holidayDates', [])
+    setWeldingDateList('canceledWeekendDates', [])
+    return
+  }
+  setWeldingDateList('holidayDates', weldingHolidayDateList.value.filter((date) => !isWeekendDate(date)).sort())
+  setWeldingDateList('canceledWeekendDates', weldingCanceledWeekendDateList.value.filter((date) => isWeekendDate(date)).sort())
+}
+
+function applyWeldingScheduleDefaults() {
+  const defaults = weldingScheduleDefaults.value || {}
+  const startDate = formatDateForInput(defaults.weldStartDate || defaults.weldDate)
+  if (!weldingScheduleConfig.value.weldStartDate && startDate) {
+    weldingScheduleConfig.value.weldStartDate = startDate
+  }
+  if (!weldingScheduleConfig.value.weldDate && startDate) {
+    weldingScheduleConfig.value.weldDate = startDate
+  }
+  if (!weldingScheduleConfig.value.targetDiameter && defaults.targetDiameter) {
+    weldingScheduleConfig.value.targetDiameter = defaults.targetDiameter
+  }
+  if (!weldingScheduleConfig.value.ordersPerDay && defaults.ordersPerDay) {
+    weldingScheduleConfig.value.ordersPerDay = defaults.ordersPerDay
+  }
+  if (typeof defaults.skipHolidays === 'boolean') {
+    weldingScheduleConfig.value.skipHolidays = defaults.skipHolidays
+  }
+  if (!weldingScheduleConfig.value.holidayDates && defaults.holidayDates) {
+    weldingScheduleConfig.value.holidayDates = defaults.holidayDates
+  }
+  if (!weldingScheduleConfig.value.canceledWeekendDates && defaults.canceledWeekendDates) {
+    weldingScheduleConfig.value.canceledWeekendDates = defaults.canceledWeekendDates
+  }
+}
+
+function applyCuttingScheduleDefaults() {
+  const defaults = cuttingScheduleDefaults.value || {}
+  const startDate = formatDateForInput(defaults.weldStartDate || defaults.weldDate)
+  if (!cuttingScheduleOptions.value.weldStartDate && startDate) {
+    cuttingScheduleOptions.value.weldStartDate = startDate
+  }
+  if (!cuttingScheduleOptions.value.targetDiameter && defaults.targetDiameter) {
+    cuttingScheduleOptions.value.targetDiameter = defaults.targetDiameter
+  }
+  if (!cuttingScheduleOptions.value.ordersPerDay && defaults.ordersPerDay) {
+    cuttingScheduleOptions.value.ordersPerDay = defaults.ordersPerDay
+  }
+  if (typeof defaults.skipHolidays === 'boolean') {
+    cuttingScheduleOptions.value.skipHolidays = defaults.skipHolidays
+  }
+  if (!cuttingScheduleOptions.value.holidayDates && defaults.holidayDates) {
+    cuttingScheduleOptions.value.holidayDates = defaults.holidayDates
+  }
+  if (!cuttingScheduleOptions.value.canceledWeekendDates && defaults.canceledWeekendDates) {
+    cuttingScheduleOptions.value.canceledWeekendDates = defaults.canceledWeekendDates
+  }
 }
 
 function ensureModuleRoute() {
@@ -1066,7 +1320,7 @@ function resetWeldingDashboard() {
 }
 
 async function loadWeldingDashboard(options = {}) {
-  if (!showWeldingDashboard.value) return
+  if (!showWeldingDashboard.value && !showFutureSchedule.value) return
   weldingDashboardLoading.value = true
   weldingDashboardError.value = ''
   try {
@@ -1163,7 +1417,7 @@ async function loadArrivalDashboard(options = {}) {
 }
 
 async function loadAntiCorrosionDashboard(options = {}) {
-  if (!showAntiCorrosionPreSchedule.value) return
+  if (!showAntiCorrosionPreSchedule.value && !showFutureSchedule.value) return
   antiCorrosionDashboardLoading.value = true
   antiCorrosionDashboardError.value = ''
   try {
@@ -1180,7 +1434,7 @@ async function loadAntiCorrosionDashboard(options = {}) {
 }
 
 async function loadCuttingDashboard(options = {}) {
-  if (!showCuttingVisualization.value) return
+  if (!showCuttingVisualization.value && !showFutureSchedule.value) return
   cuttingDashboardLoading.value = true
   cuttingDashboardError.value = ''
   try {
@@ -1272,6 +1526,7 @@ async function loadPreScheduleRows(sheet = preScheduleActiveSheet.value, options
     if (options.signal?.aborted) return
     preScheduleData.value = payload
     preScheduleActiveSheet.value = payload.sheet || ''
+    materialLockingResultSelectedRows.value = []
   } catch (error) {
     if (error?.name === 'AbortError') return
     preScheduleData.value = {
@@ -1290,6 +1545,7 @@ async function loadPreScheduleRows(sheet = preScheduleActiveSheet.value, options
 
 async function changePreScheduleSheet(sheet) {
   preScheduleActiveSheet.value = sheet
+  materialLockingResultSelectedRows.value = []
   await loadPreScheduleRows(sheet)
 }
 
@@ -1364,6 +1620,7 @@ async function changeWeldingPreScheduleSheet(sheet) {
 }
 
 function resetAntiCorrosionPendingPreview() {
+  antiCorrosionPendingPreviewRequestId += 1
   antiCorrosionPendingPreviewLoading.value = false
   antiCorrosionPendingPreviewError.value = ''
   antiCorrosionPendingPreview.value = {
@@ -1378,16 +1635,28 @@ function resetAntiCorrosionPendingPreview() {
 
 async function loadAntiCorrosionPendingFile(file, sheet = '') {
   if (!file || !antiCorrosionPendingStage.value?.token) return
+  const requestId = ++antiCorrosionPendingPreviewRequestId
+  const stageToken = antiCorrosionPendingStage.value.token
   antiCorrosionPendingPreviewLoading.value = true
   antiCorrosionPendingPreviewError.value = ''
+  antiCorrosionPendingPreview.value = {
+    file,
+    sheet: '',
+    sheets: [],
+    total: 0,
+    columns: [],
+    rows: [],
+  }
   try {
     const payload = await fetchStagedPlanFileRows(
       selectedProjectParams(),
-      antiCorrosionPendingStage.value.token,
+      stageToken,
       file.path,
       file.sourceKey,
       sheet,
     )
+    if (requestId !== antiCorrosionPendingPreviewRequestId) return
+    if (stageToken !== antiCorrosionPendingStage.value?.token) return
     antiCorrosionPendingPreview.value = {
       file,
       sheet: payload.sheet || '',
@@ -1398,10 +1667,13 @@ async function loadAntiCorrosionPendingFile(file, sheet = '') {
     }
   } catch (error) {
     if (error?.name === 'AbortError') return
-    resetAntiCorrosionPendingPreview()
+    if (requestId !== antiCorrosionPendingPreviewRequestId) return
+    if (stageToken !== antiCorrosionPendingStage.value?.token) return
     antiCorrosionPendingPreviewError.value = t('stagedPlanFileReadFailed', { message: error.message })
   } finally {
-    antiCorrosionPendingPreviewLoading.value = false
+    if (requestId === antiCorrosionPendingPreviewRequestId) {
+      antiCorrosionPendingPreviewLoading.value = false
+    }
   }
 }
 
@@ -1428,6 +1700,110 @@ async function saveAntiCorrosionPendingStage() {
     antiCorrosionCommissionError.value = t('stagedPlansSaveFailed', { message: error.message })
   } finally {
     antiCorrosionStageSaving.value = false
+  }
+}
+
+function resetCuttingPendingPreview() {
+  cuttingPendingPreviewLoading.value = false
+  cuttingPendingPreviewError.value = ''
+  cuttingPendingPreview.value = {
+    file: null,
+    sheet: '',
+    sheets: [],
+    total: 0,
+    columns: [],
+    rows: [],
+  }
+}
+
+function resetWeldingPendingPreview() {
+  weldingPendingPreviewLoading.value = false
+  weldingPendingPreviewError.value = ''
+  weldingPendingPreview.value = {
+    file: null,
+    sheet: '',
+    sheets: [],
+    total: 0,
+    columns: [],
+    rows: [],
+  }
+}
+
+async function loadWeldingPendingFile(file, sheet = '') {
+  if (!file || !weldingPendingStage.value?.token) return
+  weldingPendingPreviewLoading.value = true
+  weldingPendingPreviewError.value = ''
+  try {
+    const payload = await fetchStagedPlanFileRows(
+      selectedProjectParams(),
+      weldingPendingStage.value.token,
+      file.path,
+      file.sourceKey,
+      sheet,
+    )
+    weldingPendingPreview.value = {
+      file,
+      sheet: payload.sheet || '',
+      sheets: payload.sheets || [],
+      total: payload.total || 0,
+      columns: payload.columns || [],
+      rows: payload.rows || [],
+    }
+  } catch (error) {
+    if (error?.name === 'AbortError') return
+    resetWeldingPendingPreview()
+    weldingPendingPreviewError.value = t('stagedPlanFileReadFailed', { message: error.message })
+  } finally {
+    weldingPendingPreviewLoading.value = false
+  }
+}
+
+async function loadCuttingPendingFile(file, sheet = '') {
+  if (!file || !cuttingPendingStage.value?.token) return
+  cuttingPendingPreviewLoading.value = true
+  cuttingPendingPreviewError.value = ''
+  try {
+    const payload = await fetchStagedPlanFileRows(
+      selectedProjectParams(),
+      cuttingPendingStage.value.token,
+      file.path,
+      file.sourceKey,
+      sheet,
+    )
+    cuttingPendingPreview.value = {
+      file,
+      sheet: payload.sheet || '',
+      sheets: payload.sheets || [],
+      total: payload.total || 0,
+      columns: payload.columns || [],
+      rows: payload.rows || [],
+    }
+  } catch (error) {
+    if (error?.name === 'AbortError') return
+    resetCuttingPendingPreview()
+    cuttingPendingPreviewError.value = t('stagedPlanFileReadFailed', { message: error.message })
+  } finally {
+    cuttingPendingPreviewLoading.value = false
+  }
+}
+
+async function saveCuttingPendingStage() {
+  if (!cuttingPendingStage.value?.token) return
+  cuttingScheduleError.value = ''
+  cuttingStageSaving.value = true
+  try {
+    const payload = await commitStagedPlan(selectedProjectParams(), cuttingPendingStage.value.token)
+    summary.value.modules = payload.summary || summary.value.modules
+    cuttingPendingStage.value = null
+    resetCuttingPendingPreview()
+    cuttingScheduleMessage.value = t('cuttingScheduleSavedToLibrary', { count: payload.savedFiles?.length || 0 })
+    await loadSummary()
+    await loadCuttingDashboard()
+    await loadPreScheduleRows(preScheduleActiveSheet.value)
+  } catch (error) {
+    cuttingScheduleError.value = t('stagedPlansSaveFailed', { message: error.message })
+  } finally {
+    cuttingStageSaving.value = false
   }
 }
 
@@ -1526,10 +1902,36 @@ async function executeAction(actionKey) {
     const shouldContinue = await confirmExistingMaterialLibraries()
     if (!shouldContinue) return
   }
+  if (actionKey === 'material-locking' && preScheduleOptions.value.selectionMode === 'manual') {
+    if (!materialLockingSelectedRows.value.length) {
+      errorMessage.value = t('manualMaterialLockingNeedsSelection')
+      return
+    }
+  }
+  if (actionKey === 'anti-corrosion-schedule' && antiCorrosionCommissionOptions.value.selectionMode === 'manual') {
+    if (!antiCorrosionSelectedRows.value.length) {
+      antiCorrosionCommissionError.value = t('manualAntiCorrosionCommissionNeedsSelection')
+      return
+    }
+  }
+  if (actionKey === 'cutting-schedule' && cuttingScheduleOptions.value.selectionMode === 'manual') {
+    if (!cuttingScheduleSelectedRows.value.length) {
+      cuttingScheduleError.value = t('manualCuttingScheduleNeedsSelection')
+      return
+    }
+  }
   const options = actionOptionsPayload(actionKey)
   if (actionKey === 'auto-weld-schedule') {
     weldingScheduleError.value = ''
     weldingScheduleMessage.value = ''
+    weldingPendingStage.value = null
+    resetWeldingPendingPreview()
+  }
+  if (actionKey === 'cutting-schedule') {
+    cuttingScheduleError.value = ''
+    cuttingScheduleMessage.value = ''
+    cuttingPendingStage.value = null
+    resetCuttingPendingPreview()
   }
   if (actionKey === 'anti-corrosion-schedule') {
     antiCorrosionCommissionError.value = ''
@@ -1542,14 +1944,32 @@ async function executeAction(actionKey) {
   if (actionKey === 'auto-weld-schedule') {
     const payload = lastRun.value || {}
     if (payload.ok && payload.stageToken) {
+      const files = buildStagedFileRows(payload.stagedFiles || [])
       weldingPendingStage.value = {
         token: payload.stageToken,
-        files: buildStagedFileRows(payload.stagedFiles || []),
+        files,
       }
       weldingScheduleMessage.value = t('plansStagedForSave', { count: payload.stagedFiles?.length || 0 })
+      if (files[0]) {
+        await loadWeldingPendingFile(files[0])
+      }
     } else if (payload.ok) {
       weldingPendingStage.value = null
       weldingScheduleMessage.value = t('allPlansGenerated')
+    }
+  }
+  if (actionKey === 'cutting-schedule') {
+    const payload = lastRun.value || {}
+    if (payload.ok && payload.stageToken) {
+      const files = buildStagedFileRows(payload.stagedFiles || [])
+      cuttingPendingStage.value = {
+        token: payload.stageToken,
+        files,
+      }
+      cuttingScheduleMessage.value = t('cuttingScheduleStagedForSave', { count: files.length })
+      if (files[0]) {
+        await loadCuttingPendingFile(files[0])
+      }
     }
   }
   if (actionKey === 'anti-corrosion-schedule') {
@@ -1570,7 +1990,7 @@ async function executeAction(actionKey) {
     await loadSummary()
     await loadInitializationStats()
   }
-  if (showCuttingVisualization.value && actionKey === 'weld-pre-schedule') {
+  if (showCuttingVisualization.value && ['weld-pre-schedule', 'cutting-schedule'].includes(actionKey)) {
     await loadSummary()
     await loadCuttingDashboard()
     await loadPreScheduleRows()
@@ -1593,6 +2013,27 @@ async function executeAction(actionKey) {
   if (showArrivalTabs.value) {
     await loadArrivalDashboard()
   }
+}
+
+function confirmInitializationLeave() {
+  if (runningKey.value !== 'prefab-weld-library') return Promise.resolve(true)
+  return new Promise((resolve) => {
+    initializationLeaveDialog.value = { show: true, resolve }
+  })
+}
+
+async function resolveInitializationLeave(shouldLeave) {
+  const resolve = initializationLeaveDialog.value.resolve
+  initializationLeaveDialog.value = { show: false, resolve: null }
+  if (shouldLeave) await cancelRunningInitialization()
+  resolve?.(shouldLeave)
+}
+
+function handleInitializationBeforeUnload(event) {
+  if (runningKey.value !== 'prefab-weld-library') return
+  event.preventDefault()
+  event.returnValue = t('initializationLeavePrompt')
+  beaconCancelRunningInitialization()
 }
 
 function existingMaterialLibraryFiles() {
@@ -1630,26 +2071,139 @@ function resolveMaterialLibraryConfirmation(confirmed) {
   resolve?.(confirmed)
 }
 
+function confirmMaterialRelease(rowCount, seqCount) {
+  return new Promise((resolve) => {
+    materialReleaseConfirmDialog.value = {
+      show: true,
+      rowCount,
+      seqCount,
+      resolve,
+    }
+  })
+}
+
+function resolveMaterialReleaseConfirmation(confirmed) {
+  const resolve = materialReleaseConfirmDialog.value.resolve
+  materialReleaseConfirmDialog.value = {
+    show: false,
+    rowCount: 0,
+    seqCount: 0,
+    resolve: null,
+  }
+  resolve?.(confirmed)
+}
+
+async function loadMaterialLockingSelectionRows() {
+  materialLockingSelectionLoading.value = true
+  materialLockingSelectionError.value = ''
+  materialLockingSelectedRows.value = []
+  try {
+    const payload = await fetchLibraryRows('weld-library', selectedProjectParams())
+    materialLockingSelectionRows.value = payload.rows || []
+    materialLockingSelectionColumns.value = manualSelectionColumns(payload.columns)
+  } catch (error) {
+    materialLockingSelectionRows.value = []
+    materialLockingSelectionColumns.value = []
+    materialLockingSelectionError.value = t('materialLockingSelectionReadFailed', { message: error.message })
+  } finally {
+    materialLockingSelectionLoading.value = false
+  }
+}
+
+async function loadFutureScheduleSelectionRows() {
+  futureScheduleSelectionLoading.value = true
+  futureScheduleSelectionError.value = ''
+  futureScheduleSelectedRows.value = []
+  try {
+    const payload = await fetchLibraryRows('weld-library', selectedProjectParams())
+    const rows = (payload.rows || []).filter((row) => (
+      isTruthyCell(row?.['材料到货状态']) && !isTruthyCell(row?.['材料焊接状态'])
+    ))
+    futureScheduleSelectionRows.value = rows
+    futureScheduleSelectionColumns.value = manualSelectionColumns(payload.columns)
+  } catch (error) {
+    futureScheduleSelectionRows.value = []
+    futureScheduleSelectionColumns.value = []
+    futureScheduleSelectionError.value = t('futureScheduleSelectionReadFailed', { message: error.message })
+  } finally {
+    futureScheduleSelectionLoading.value = false
+  }
+}
+
 function actionOptionsPayload(actionKey) {
+  if (actionKey === 'prefab-weld-library') {
+    return { ...initializationOptions.value }
+  }
   if (actionKey === 'weld-pre-schedule') {
     return {}
+  }
+  if (actionKey === 'material-locking') {
+    const options = { ...preScheduleOptions.value }
+    if (options.selectionMode === 'manual') {
+      options.selectedLibrarySeqs = materialLockingSelectedRows.value
+        .map((row) => row?.['库序号'])
+        .filter((value) => value !== undefined && value !== null && String(value).trim() !== '')
+    }
+    return options
   }
   if (actionKey === 'anti-corrosion-pre-schedule') {
     return { ...antiCorrosionPreScheduleOptions.value }
   }
   if (actionKey === 'anti-corrosion-schedule') {
-    return {
+    const options = {
       ...antiCorrosionCommissionOptions.value,
       stageOnly: true,
-      selectedLibrarySeqs: antiCorrosionSelectedRows.value
-        .map((row) => row?.['库序号'])
-        .filter((value) => value !== undefined && value !== null && String(value).trim() !== ''),
     }
+    if (options.selectionMode === 'manual') {
+      options.selectedLibrarySeqs = antiCorrosionSelectedRows.value
+        .map((row) => row?.['库序号'])
+        .filter((value) => value !== undefined && value !== null && String(value).trim() !== '')
+    }
+    return options
   }
   if (actionKey === 'auto-weld-schedule') {
     return { ...generationOptionsPayload(weldingScheduleConfig.value), stageOnly: true }
   }
+  if (actionKey === 'cutting-schedule') {
+    const options = {
+      ...cuttingScheduleOptions.value,
+      stageOnly: true,
+    }
+    if (options.selectionMode === 'manual') {
+      options.selectedLibrarySeqs = cuttingScheduleSelectedRows.value
+        .map((row) => row?.['库序号'])
+        .filter((value) => value !== undefined && value !== null && String(value).trim() !== '')
+    }
+    return options
+  }
   return {}
+}
+
+async function releaseSelectedMaterialLocks() {
+  const selectedRowCount = materialLockingResultSelectedRows.value.length
+  const selectedLibrarySeqs = materialLockingResultSelectedRows.value
+    .map((row) => row?.['库序号'])
+    .filter((value) => value !== undefined && value !== null && String(value).trim() !== '')
+  if (!selectedLibrarySeqs.length) {
+    errorMessage.value = t('releaseMaterialsNeedsSelection')
+    return
+  }
+  const confirmed = await confirmMaterialRelease(selectedRowCount, selectedLibrarySeqs.length)
+  if (!confirmed) return
+  materialLockingReleaseLoading.value = true
+  errorMessage.value = ''
+  try {
+    const payload = await releaseMaterialLockingRows(selectedProjectParams(), selectedLibrarySeqs)
+    summary.value.modules = payload.summary || summary.value.modules
+    materialLockingResultSelectedRows.value = []
+    await loadSummary()
+    await loadPreScheduleRows(preScheduleActiveSheet.value)
+    await loadCuttingVisualization()
+  } catch (error) {
+    errorMessage.value = t('releaseMaterialsFailed', { message: error.message })
+  } finally {
+    materialLockingReleaseLoading.value = false
+  }
 }
 
 function generationOptionsPayload(config) {
@@ -1662,7 +2216,13 @@ function generationOptionsPayload(config) {
 }
 
 function futureScheduleOptionsPayload() {
-  return { ...generationOptionsPayload(futureScheduleConfig.value), stageOnly: true }
+  const options = { ...generationOptionsPayload(futureScheduleConfig.value), stageOnly: true }
+  if (options.selectionMode === 'manual') {
+    options.selectedLibrarySeqs = futureScheduleSelectedRows.value
+      .map((row) => row?.['库序号'])
+      .filter((value) => value !== undefined && value !== null && String(value).trim() !== '')
+  }
+  return options
 }
 
 function buildStagedFileRows(files) {
@@ -1671,26 +2231,15 @@ function buildStagedFileRows(files) {
     const parts = String(path || '').includes(':')
       ? String(path || '').split(':')
       : String(path || '').split(/[\\/]/)
-    const name = typeof file === 'string' ? parts.at(-1) : file.name
+    const name = typeof file === 'string' ? parts.at(-1) : (file.name || file.fileName)
     const planKey = typeof file === 'string' ? parts[0] : file.planKey
     const planDate = typeof file === 'string' ? parts[1] || '' : file.planDate
-    const normalizedDate = String(planDate || '').replaceAll('-', '')
-    const displayDate = normalizedDate.length === 8
-      ? `${normalizedDate.slice(0, 4)}-${normalizedDate.slice(4, 6)}-${normalizedDate.slice(6)}`
-      : String(planDate || '')
-    const extensionIndex = String(name || '').lastIndexOf('.')
-    const displayName = ['welding', 'cutting'].includes(planKey) && displayDate
-      ? (
-          extensionIndex > 0
-            ? `${name.slice(0, extensionIndex)}-${displayDate}${name.slice(extensionIndex)}`
-            : `${name}-${displayDate}`
-        )
-      : name
     return {
       path,
       sourceKey: typeof file === 'string' ? '' : file.sourceKey,
       name,
-      displayName,
+      displayName: name,
+      planKey,
       planType: typeof file === 'string' ? parts[0] : (file.planName || file.planKey),
       planDate,
       weldDate: typeof file === 'string' ? parts[1] || '' : file.weldDate,
@@ -1764,6 +2313,10 @@ function changeFuturePendingSheet(sheet) {
 
 async function executeFutureSchedule() {
   if (!futureScheduleAction.value) return
+  if (futureScheduleConfig.value.selectionMode === 'manual' && !futureScheduleSelectedRows.value.length) {
+    futureScheduleError.value = t('futureScheduleNeedsSelection')
+    return
+  }
   futureScheduleLoading.value = true
   futureScheduleError.value = ''
   futureScheduleMessage.value = ''
@@ -1777,11 +2330,15 @@ async function executeFutureSchedule() {
     }
     summary.value.modules = payload.summary || summary.value.modules
     if (payload.stageToken) {
+      const stagedFiles = buildStagedFileRows(payload.stagedFiles || [])
       futurePendingStage.value = {
         token: payload.stageToken,
-        files: buildStagedFileRows(payload.stagedFiles || []),
+        files: stagedFiles,
       }
       futureScheduleMessage.value = t('plansStagedForSave', { count: payload.stagedFiles?.length || 0 })
+      if (stagedFiles.length) {
+        await loadFuturePendingFile(stagedFiles[0])
+      }
     } else {
       futureScheduleMessage.value = t('allPlansGenerated')
       await loadSummary()
@@ -1811,7 +2368,11 @@ async function commitPendingStage(stageRef, setMessage, setError, savingRef) {
       : t('stagedPlansSaved', { count: payload.savedFiles?.length || 0 })
     setMessage(warningText)
     await loadSummary()
-    await loadWeldingDashboard()
+    await Promise.all([
+      loadAntiCorrosionDashboard(),
+      loadCuttingDashboard(),
+      loadWeldingDashboard(),
+    ])
   } catch (error) {
     setError(t('stagedPlansSaveFailed', { message: error.message }))
   } finally {
@@ -1819,13 +2380,14 @@ async function commitPendingStage(stageRef, setMessage, setError, savingRef) {
   }
 }
 
-function saveWeldingPendingStage() {
-  return commitPendingStage(
+async function saveWeldingPendingStage() {
+  await commitPendingStage(
     weldingPendingStage,
     (message) => { weldingScheduleMessage.value = message },
     (message) => { weldingScheduleError.value = message },
     weldingStageSaving,
   )
+  if (!weldingPendingStage.value) resetWeldingPendingPreview()
 }
 
 async function saveFuturePendingStage() {
@@ -1847,12 +2409,29 @@ watch(
     () => futureScheduleConfig.value.maxDays,
     () => futureScheduleConfig.value.manualWeldDates,
     () => futureScheduleConfig.value.cuttingLeadDays,
+    () => futureScheduleConfig.value.antiCorrosionLeadDays,
     () => futureScheduleDefaults.value.weldStartDate,
     () => futureScheduleDefaults.value.cuttingLeadDays,
+    () => futureScheduleDefaults.value.antiCorrosionLeadDays,
   ],
   syncWeekendHolidayDates,
   { immediate: true },
 )
+watch(
+  [
+    () => weldingScheduleConfig.value.skipHolidays,
+    () => weldingScheduleConfig.value.dateMode,
+    () => weldingScheduleConfig.value.weldStartDate,
+    () => weldingScheduleConfig.value.maxDays,
+    () => weldingScheduleConfig.value.manualWeldDates,
+    () => weldingScheduleDefaults.value.weldStartDate,
+    () => weldingScheduleDefaults.value.weldDate,
+  ],
+  syncWeldingWeekendHolidayDates,
+  { immediate: true },
+)
+watch(weldingScheduleDefaults, applyWeldingScheduleDefaults, { immediate: true })
+watch(cuttingScheduleDefaults, applyCuttingScheduleDefaults, { immediate: true })
 watch(
   [
     () => antiCorrosionCommissionOptions.value.skipHolidays,
@@ -1871,8 +2450,41 @@ watch(() => route.params.moduleKey, () => {
   }
   scheduleWorkspaceLoad()
 })
+watch(
+  () => preScheduleOptions.value.selectionMode,
+  (selectionMode) => {
+    if (selectionMode === 'manual') {
+      loadMaterialLockingSelectionRows()
+    } else {
+      materialLockingSelectedRows.value = []
+      materialLockingSelectionError.value = ''
+    }
+  },
+)
+watch(
+  () => futureScheduleConfig.value.selectionMode,
+  (selectionMode) => {
+    if (selectionMode === 'manual') {
+      loadFutureScheduleSelectionRows()
+    } else {
+      futureScheduleSelectedRows.value = []
+      futureScheduleSelectionError.value = ''
+    }
+  },
+)
+watch(
+  () => antiCorrosionCommissionOptions.value.selectionMode,
+  (selectionMode) => {
+    if (selectionMode !== 'manual') {
+      antiCorrosionSelectedRows.value = []
+    }
+  },
+)
 const antiCorrosionPreScheduleTableColumns = computed(() => {
-  return buildDynamicColumns(antiCorrosionPreScheduleData.value.columns)
+  const columns = antiCorrosionCommissionOptions.value.selectionMode === 'manual'
+    ? manualSelectionColumns(antiCorrosionPreScheduleData.value.columns)
+    : antiCorrosionPreScheduleData.value.columns
+  return buildDynamicColumns(columns)
 })
 const weldingPreScheduleTableColumns = computed(() => {
   return buildDynamicColumns(weldingPreScheduleData.value.columns)
@@ -1891,10 +2503,14 @@ watch(vTableThemeKey, async () => {
 })
 
 onMounted(async () => {
+  window.addEventListener('beforeunload', handleInitializationBeforeUnload)
   await runWorkspaceLoad({ includeSummary: !summary.value.modules.length })
 })
 
+onBeforeRouteLeave(() => confirmInitializationLeave())
+
 onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', handleInitializationBeforeUnload)
   cancelWorkspaceLoad()
   releaseCuttingVTable()
   if (resizeObserver) {
@@ -1920,9 +2536,9 @@ onBeforeUnmount(() => {
     :initialization-loading="initializationLoading"
     :initialization-stats="initializationStats"
     :initialization-error="initializationError"
+    :initialization-options="initializationOptions"
     :running-key="runningKey"
     @execute-action="executeAction"
-    @refresh-stats="loadInitializationStats"
   />
 
   <ArrivalModule
@@ -1949,9 +2565,7 @@ onBeforeUnmount(() => {
     :arrival-file-rows="arrivalFileRows"
     :arrival-file-table-columns="arrivalFileTableColumns"
     :arrival-import-complete-key="arrivalImportCompleteKey"
-    :running-key="runningKey"
     @change-tab="arrivalActiveTab = $event"
-    @execute-action="executeAction"
     @refresh-today-arrival="loadTodayArrival"
     @refresh-arrival-dashboard="loadArrivalDashboard"
     @refresh-arrival-files="loadArrivalFiles"
@@ -1978,15 +2592,30 @@ onBeforeUnmount(() => {
     :pre-schedule-active-sheet="preScheduleActiveSheet"
     :pre-schedule-error="preScheduleError"
     :pre-schedule-table-columns="preScheduleTableColumns"
+    :pre-schedule-result-selectable="canSelectMaterialLockingResultRows"
+    :pre-schedule-result-selected-count="materialLockingResultSelectedRows.length"
+    :release-materials-loading="materialLockingReleaseLoading"
     :cutting-loading="cuttingLoading"
     :cutting-data="cuttingData"
     :cutting-error="cuttingError"
     :cutting-tooltip="cuttingTooltip"
     :cutting-pre-schedule-action="materialLockingAction"
     :cutting-overview-actions="[]"
+    show-pre-schedule-options
+    :pre-schedule-options="preScheduleOptions"
+    :concentration-dimension-options="pipelineConcentrationDimensionOptions"
+    :selection-mode-options="materialLockingSelectionModeOptions"
+    :manual-selection-loading="materialLockingSelectionLoading"
+    :manual-selection-error="materialLockingSelectionError"
+    :manual-selection-rows="materialLockingSelectionRows"
+    :manual-selection-columns="materialLockingSelectionTableColumns"
+    :manual-selection-selected-count="materialLockingSelectedRows.length"
     :running-key="runningKey"
     :format-length="formatLength"
     @execute-action="executeAction"
+    @manual-selection-change="materialLockingSelectedRows = $event.rows || []"
+    @result-selection-change="materialLockingResultSelectedRows = $event.rows || []"
+    @release-selected-materials="releaseSelectedMaterialLocks"
     @refresh-match-result="loadPreScheduleRows"
     @refresh-visualization="loadCuttingVisualization"
     @change-pre-schedule-sheet="changePreScheduleSheet"
@@ -2001,8 +2630,9 @@ onBeforeUnmount(() => {
     :dashboard-loading="antiCorrosionDashboardLoading"
     :dashboard-error="antiCorrosionDashboardError"
     :pre-schedule-action="antiCorrosionPreScheduleAction"
-    :pre-schedule-options="antiCorrosionPreScheduleOptions"
     :commission-options="antiCorrosionCommissionOptions"
+    :selection-mode-options="materialLockingSelectionModeOptions"
+    :selected-pre-schedule-count="antiCorrosionSelectedRows.length"
     :date-mode-options="futureScheduleDateModeOptions"
     :schedule-calendar-start="scheduleCalendarStart"
     :schedule-calendar-end="scheduleCalendarEnd"
@@ -2016,7 +2646,6 @@ onBeforeUnmount(() => {
     :commission-preview-error="antiCorrosionPendingPreviewError"
     :commission-preview-data="antiCorrosionPendingPreview"
     :commission-preview-columns="antiCorrosionCommissionPreviewColumns"
-    :concentration-dimension-options="pipelineConcentrationDimensionOptions"
     :overview-actions="antiCorrosionOverviewActions"
     :pre-schedule-loading="antiCorrosionPreScheduleLoading"
     :pre-schedule-error="antiCorrosionPreScheduleError"
@@ -2047,12 +2676,30 @@ onBeforeUnmount(() => {
     :pre-schedule-active-sheet="preScheduleActiveSheet"
     :pre-schedule-error="preScheduleError"
     :pre-schedule-table-columns="preScheduleTableColumns"
+    :show-result-header="false"
     :cutting-loading="cuttingLoading"
     :cutting-data="cuttingData"
     :cutting-error="cuttingError"
     :cutting-tooltip="cuttingTooltip"
     :cutting-pre-schedule-action="cuttingPreScheduleAction"
     :cutting-overview-actions="cuttingOverviewActions"
+    :cutting-pending-stage="cuttingPendingStage"
+    :cutting-schedule-message="cuttingScheduleMessage"
+    :cutting-schedule-error="cuttingScheduleError"
+    :cutting-stage-saving="cuttingStageSaving"
+    :cutting-preview-loading="cuttingPendingPreviewLoading"
+    :cutting-preview-error="cuttingPendingPreviewError"
+    :cutting-preview-data="cuttingPendingPreview"
+    :cutting-preview-columns="cuttingPendingPreviewColumns"
+    :cutting-schedule-options="cuttingScheduleOptions"
+    :cutting-schedule-defaults="cuttingScheduleDefaults"
+    :date-mode-options="futureScheduleDateModeOptions"
+    :selection-mode-options="materialLockingSelectionModeOptions"
+    :manual-selection-selected-count="cuttingScheduleSelectedRows.length"
+    :schedule-calendar-start="scheduleCalendarStart"
+    :schedule-calendar-end="scheduleCalendarEnd"
+    :manual-date-list="cuttingManualDateList"
+    :holiday-calendar-date-list="cuttingHolidayCalendarDateList"
     :running-key="runningKey"
     :format-length="formatLength"
     @execute-action="executeAction"
@@ -2060,6 +2707,12 @@ onBeforeUnmount(() => {
     @refresh-visualization="loadCuttingVisualization"
     @change-pre-schedule-sheet="changePreScheduleSheet"
     @table-container-ready="setCuttingTableContainer"
+    @preview-cutting-file="loadCuttingPendingFile"
+    @save-cutting-stage="saveCuttingPendingStage"
+    @update-cutting-start-date="updateCuttingStartDate"
+    @update-cutting-manual-date-list="updateCuttingManualDateList"
+    @update-cutting-holiday-date-list="updateCuttingHolidayDateList"
+    @manual-selection-change="cuttingScheduleSelectedRows = $event.rows || []"
   />
 
   <FutureScheduleModule
@@ -2080,16 +2733,30 @@ onBeforeUnmount(() => {
     :future-schedule-config="futureScheduleConfig"
     :future-schedule-defaults="futureScheduleDefaults"
     :future-schedule-date-mode-options="futureScheduleDateModeOptions"
+    :selection-mode-options="materialLockingSelectionModeOptions"
+    :manual-selection-loading="futureScheduleSelectionLoading"
+    :manual-selection-error="futureScheduleSelectionError"
+    :manual-selection-rows="futureScheduleSelectionRows"
+    :manual-selection-columns="futureScheduleSelectionTableColumns"
+    :manual-selection-selected-count="futureScheduleSelectedRows.length"
     :schedule-calendar-start="scheduleCalendarStart"
     :schedule-calendar-end="scheduleCalendarEnd"
     :manual-weld-date-list="manualWeldDateList"
     :holiday-calendar-date-list="holidayCalendarDateList"
-    :loading="loading"
+    :anti-corrosion-dashboard="antiCorrosionDashboard"
+    :anti-corrosion-dashboard-loading="antiCorrosionDashboardLoading"
+    :anti-corrosion-dashboard-error="antiCorrosionDashboardError"
+    :cutting-dashboard="cuttingDashboard"
+    :cutting-dashboard-loading="cuttingDashboardLoading"
+    :cutting-dashboard-error="cuttingDashboardError"
+    :welding-dashboard="weldingDashboard"
+    :welding-dashboard-loading="weldingDashboardLoading"
+    :welding-dashboard-error="weldingDashboardError"
     @execute-future-schedule="executeFutureSchedule"
-    @refresh-status="loadSummary"
     @update-weld-start-date="updateWeldStartDate"
     @update-manual-weld-date-list="updateManualWeldDateList"
     @update-holiday-date-list="updateHolidayDateList"
+    @manual-selection-change="futureScheduleSelectedRows = $event.rows || []"
     @preview-pending-file="loadFuturePendingFile"
     @change-pending-preview-sheet="changeFuturePendingSheet"
     @save-pending-stage="saveFuturePendingStage"
@@ -2106,8 +2773,17 @@ onBeforeUnmount(() => {
     :welding-schedule-error="weldingScheduleError"
     :welding-pending-stage="weldingPendingStage"
     :welding-stage-saving="weldingStageSaving"
+    :welding-preview-loading="weldingPendingPreviewLoading"
+    :welding-preview-error="weldingPendingPreviewError"
+    :welding-preview-data="weldingPendingPreview"
+    :welding-preview-columns="weldingPendingPreviewColumns"
     :welding-schedule-config="weldingScheduleConfig"
     :welding-schedule-defaults="weldingScheduleDefaults"
+    :date-mode-options="futureScheduleDateModeOptions"
+    :schedule-calendar-start="scheduleCalendarStart"
+    :schedule-calendar-end="scheduleCalendarEnd"
+    :manual-date-list="weldingManualDateList"
+    :holiday-calendar-date-list="weldingHolidayCalendarDateList"
     :welding-pre-schedule-loading="weldingPreScheduleLoading"
     :welding-pre-schedule-error="weldingPreScheduleError"
     :welding-pre-schedule-data="weldingPreScheduleData"
@@ -2116,8 +2792,11 @@ onBeforeUnmount(() => {
     :running-key="runningKey"
     @execute-action="executeAction"
     @refresh-dashboard="loadWeldingDashboard"
-    @update-welding-date="updateWeldingDate"
+    @update-welding-start-date="updateWeldingStartDate"
+    @update-welding-manual-date-list="updateWeldingManualDateList"
+    @update-welding-holiday-date-list="updateWeldingHolidayDateList"
     @save-pending-stage="saveWeldingPendingStage"
+    @preview-welding-file="loadWeldingPendingFile"
     @change-welding-pre-schedule-sheet="changeWeldingPreScheduleSheet"
   />
 
@@ -2146,6 +2825,18 @@ onBeforeUnmount(() => {
     </v-card>
   </v-dialog>
 
+  <v-dialog v-model="initializationLeaveDialog.show" max-width="480" persistent>
+    <v-card class="schedule-confirm-dialog" variant="flat">
+      <v-card-title>{{ t('initializationLeaveTitle') }}</v-card-title>
+      <v-card-text>{{ t('initializationLeavePrompt') }}</v-card-text>
+      <v-card-actions>
+        <v-spacer />
+        <v-btn @click="resolveInitializationLeave(false)">{{ t('stayOnPage') }}</v-btn>
+        <v-btn color="error" variant="flat" @click="resolveInitializationLeave(true)">{{ t('leaveAndCancel') }}</v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
+
   <v-dialog v-model="materialLibraryConfirmDialog.show" max-width="520" persistent>
     <v-card class="schedule-confirm-dialog" variant="flat">
       <v-card-title>{{ t('materialLibraryExistsTitle') }}</v-card-title>
@@ -2159,6 +2850,27 @@ onBeforeUnmount(() => {
         </v-btn>
         <v-btn color="warning" variant="tonal" @click="resolveMaterialLibraryConfirmation(true)">
           {{ t('continueGenerateMaterialLibrary') }}
+        </v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
+
+  <v-dialog v-model="materialReleaseConfirmDialog.show" max-width="520" persistent>
+    <v-card class="schedule-confirm-dialog" variant="flat">
+      <v-card-title>{{ t('releaseMaterialsConfirmTitle') }}</v-card-title>
+      <v-card-text>
+        {{ t('releaseMaterialsConfirmText', {
+          rows: materialReleaseConfirmDialog.rowCount,
+          seqs: materialReleaseConfirmDialog.seqCount,
+        }) }}
+      </v-card-text>
+      <v-card-actions>
+        <v-spacer />
+        <v-btn variant="text" @click="resolveMaterialReleaseConfirmation(false)">
+          {{ t('cancel') }}
+        </v-btn>
+        <v-btn color="warning" variant="tonal" @click="resolveMaterialReleaseConfirmation(true)">
+          {{ t('confirmReleaseMaterials') }}
         </v-btn>
       </v-card-actions>
     </v-card>
@@ -2184,4 +2896,5 @@ onBeforeUnmount(() => {
   color: var(--muted);
   line-height: 1.6;
 }
+
 </style>

@@ -1,7 +1,17 @@
 from .common import *
-from pipecloud.models import MasterScheduleRow
-from pipecloud.services.db_storage import LIBRARY_MODELS, PLAN_FILE_MODELS, latest_source, model_field_labels, replace_source_rows, table_payload
+from pipecloud.models import MasterScheduleRow, WeldCommonData
+from pipecloud.services.db_storage import (
+    LIBRARY_MODELS,
+    PLAN_FILE_MODELS,
+    WELD_STATUS_FIELD_LABELS,
+    apply_weld_status_to_dataframe,
+    latest_source,
+    model_field_labels,
+    replace_source_rows,
+    table_payload,
+)
 from pipecloud.services.prefab_database import (
+    PLAN_STAGE_EXCLUDED_COLUMNS,
     CUTTING_DERIVED_FILE_NAMES,
     MASTER_DERIVED_FILE_NAME,
     WELDING_DERIVED_FILE_NAMES,
@@ -18,6 +28,10 @@ PLAN_LIBRARY_SPECS = {
 }
 
 BUSINESS_PRIMARY_FIELD_NAMES = {'library_seq'}
+BUSINESS_PRIMARY_FIELD_NAMES_BY_MODEL = {
+    PipeMaterialRow: {'pipe_no'},
+    FittingMaterialRow: {'material_code'},
+}
 BUSINESS_PRIMARY_COLUMN = '库序号'
 LIBRARY_HIDDEN_COLUMNS = {}
 MASTER_STAGE_LABELS = {
@@ -48,8 +62,9 @@ MASTER_COMMON_STAGE_COLUMNS = {
     '是否完成',
     '完成状态',
     '焊接状态',
-}
+} | set(model_field_labels(MasterScheduleRow).values()) | set(model_field_labels(WeldCommonData).values())
 ANTI_CORROSION_STAGE_COLUMNS = {'防腐面积', '材料油漆', '材料油漆1', '材料油漆2'}
+STATUS_COLUMNS = set(WELD_STATUS_FIELD_LABELS.values())
 
 
 def _visible_library_columns(library_key, columns):
@@ -67,7 +82,8 @@ def _model_columns_for_field_names(model, field_names):
 
 
 def _model_primary_key_columns(model):
-    columns = _model_columns_for_field_names(model, BUSINESS_PRIMARY_FIELD_NAMES)
+    field_names = BUSINESS_PRIMARY_FIELD_NAMES_BY_MODEL.get(model, BUSINESS_PRIMARY_FIELD_NAMES)
+    columns = _model_columns_for_field_names(model, field_names)
     return [column for column in columns if column]
 
 
@@ -80,8 +96,9 @@ def _visible_stage_payload_columns(stage_key, stage_payload):
         allowed = ANTI_CORROSION_STAGE_COLUMNS
     else:
         allowed = None
+    excluded = PLAN_STAGE_EXCLUDED_COLUMNS
     for column_name, value in stage_payload.items():
-        if column_name in MASTER_COMMON_STAGE_COLUMNS:
+        if column_name in MASTER_COMMON_STAGE_COLUMNS or column_name in excluded:
             continue
         if allowed is not None and column_name not in allowed:
             continue
@@ -90,15 +107,32 @@ def _visible_stage_payload_columns(stage_key, stage_payload):
 
 def _master_schedule_library_dataframe(project):
     labels = model_field_labels(MasterScheduleRow)
+    common_labels = model_field_labels(WeldCommonData)
     base_field_names = [
         field_name
         for field_name in labels.keys()
         if field_name not in MASTER_LIBRARY_EXCLUDED_FIELDS
     ]
+    base_column_labels = {labels[field_name] for field_name in base_field_names}
+    common_field_names = [
+        field_name for field_name, label in common_labels.items()
+        if field_name != 'library_seq' and label not in base_column_labels
+    ]
     rows = []
     stage_columns = []
-    for record in MasterScheduleRow.objects.filter(project=project).order_by('library_seq'):
+    queryset = MasterScheduleRow.objects.filter(project=project).select_related('common_data').order_by('library_seq')
+    fallback_common_by_seq = {
+        row.library_seq: row
+        for row in WeldCommonData.objects.filter(
+            project=project,
+            library_seq__in=queryset.values_list('library_seq', flat=True),
+        )
+    }
+    for record in queryset:
         values = {labels[field_name]: getattr(record, field_name, '') for field_name in base_field_names}
+        common_data = record.common_data or fallback_common_by_seq.get(record.library_seq)
+        for field_name in common_field_names:
+            values[common_labels[field_name]] = getattr(common_data, field_name, '') if common_data else ''
         payload = record.stage_payload or {}
         for stage_key, stage_label in MASTER_STAGE_LABELS.items():
             stage_payload = payload.get(stage_key) or {}
@@ -110,8 +144,12 @@ def _master_schedule_library_dataframe(project):
                 if column not in stage_columns:
                     stage_columns.append(column)
         rows.append(values)
-    columns = [labels[field_name] for field_name in base_field_names] + stage_columns
-    return pd.DataFrame(rows, columns=columns), stage_columns
+    columns = [
+        *[labels[field_name] for field_name in base_field_names],
+        *[common_labels[field_name] for field_name in common_field_names],
+        *stage_columns,
+    ]
+    return apply_weld_status_to_dataframe(project, pd.DataFrame(rows, columns=columns)), stage_columns
 
 
 def _preserve_primary_key_values(rows, current_rows, primary_key_columns):
@@ -184,7 +222,7 @@ def _plan_library_dataframe(project, library, sheet_models):
             path = payload['path']
         if not frames:
             return None, ''
-        return pd.concat(frames, ignore_index=True), path
+        return apply_weld_status_to_dataframe(project, pd.concat(frames, ignore_index=True)), path
 
     row_model = sheet_models.get('*')
     if row_model is None:
@@ -207,7 +245,7 @@ def _plan_library_dataframe(project, library, sheet_models):
     if not rows:
         return None, ''
 
-    dataframe = pd.DataFrame(rows)
+    dataframe = apply_weld_status_to_dataframe(project, pd.DataFrame(rows))
     return dataframe, source_qs.first().relative_path
 
 
@@ -231,6 +269,7 @@ def _empty_library_rows_payload(library_key, library, path=''):
         'primaryKeyColumns': primary_key_columns,
         'readonlyColumns': primary_key_columns,
         'stageColumns': [],
+        'statusColumns': [column for column in columns if column in STATUS_COLUMNS],
         'rows': [],
     }
 
@@ -369,6 +408,7 @@ def library_rows(request, library_key):
                 'primaryKeyColumns': primary_key_columns,
                 'readonlyColumns': primary_key_columns,
                 'stageColumns': stage_columns,
+                'statusColumns': [column for column in columns if column in STATUS_COLUMNS],
                 'rows': rows,
             }, json_dumps_params={'ensure_ascii': False})
         selected_sheet, _, total, columns, rows = table_payload(source, sheet_models, None)
@@ -394,6 +434,7 @@ def library_rows(request, library_key):
         'primaryKeyColumns': primary_key_columns,
         'readonlyColumns': primary_key_columns,
         'stageColumns': [],
+        'statusColumns': [column for column in columns if column in STATUS_COLUMNS],
         'rows': rows,
     }, json_dumps_params={'ensure_ascii': False})
 

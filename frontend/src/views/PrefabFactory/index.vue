@@ -161,10 +161,10 @@ const selectedNodeInfo = computed(() => {
 })
 
 const selectedInfoCardTitle = computed(() => {
-  if (selectedNodeInfo.value?.materialInfo) return '材料信息'
+  if (selectedNodeInfo.value?.materialInfo) return t('materialInfo')
   if (selectedNodeInfo.value?.todayMaterialGroup) return t('todayPipeMaterialModels')
   if (selectedNodeInfo.value?.workshopEquipment) return t('todayWeldingPlan')
-  return '选中子结构信息'
+  return t('selectedSubstructureInfo')
 })
 
 const selectedInfoCardBadge = computed(() => {
@@ -175,19 +175,19 @@ const selectedInfoCardBadge = computed(() => {
   if (selectedNodeInfo.value?.workshopEquipment) {
     return selectedNodeInfo.value.weldingPlan?.date || t('noTodayWeldingPlan')
   }
-  return selectedNodeInfo.value?.type || '未选择'
+  return selectedNodeInfo.value?.type || t('unselected')
 })
 
 const todayMaterialTableColumns = computed(() => [
   { field: '__index', title: '#', width: 64, fixed: 'left' },
   { field: 'uniqueCode', title: t('materialUniqueCode'), width: 190, fixed: 'left', sort: true },
   { field: 'materialCode', title: t('materialCode'), width: 160, sort: true },
-  { field: 'materialMark', title: '材料标记', width: 140, sort: true },
+  { field: 'materialMark', title: t('materialMark'), width: 140, sort: true },
   { field: 'quantityText', title: t('materialQuantity'), width: 130, sort: true },
-  { field: 'diameter', title: '寸径', width: 110, sort: true },
-  { field: 'wallThickness', title: '壁厚', width: 110, sort: true },
-  { field: 'material', title: '材质', width: 130, sort: true },
-  { field: 'paint', title: '材料油漆', width: 150, sort: true },
+  { field: 'diameter', title: t('diameter'), width: 110, sort: true },
+  { field: 'wallThickness', title: t('wallThickness'), width: 110, sort: true },
+  { field: 'material', title: t('material'), width: 130, sort: true },
+  { field: 'paint', title: t('materialPaint'), width: 150, sort: true },
   { field: 'description', title: t('materialDescription'), width: 280, sort: true },
 ])
 
@@ -464,15 +464,15 @@ function drawSelectionInfoTexture(info) {
     ? [
         [t('materialCode'), pipeMaterial.materialCode || '-'],
         [t('materialQuantity'), `${pipeMaterial.quantity || '-'} ${pipeMaterial.unitName || ''}`.trim()],
-        ['寸径', pipeMaterial.diameter || '-'],
+        [t('diameter'), pipeMaterial.diameter || '-'],
         [t('materialDescription'), pipeMaterial.description || '-'],
       ]
     : todayMaterialGroup
       ? [
-          ['材料项数', String(info.materialSummary?.total || 0)],
-          ['材料编码数', String(info.materialSummary?.materialCodeCount || 0)],
-          ['管材项数', String(info.materialSummary?.pipeCount || 0)],
-          ['管件项数', String(info.materialSummary?.fittingCount || 0)],
+          [t('materialItemCount'), String(info.materialSummary?.total || 0)],
+          [t('materialCodeCount'), String(info.materialSummary?.materialCodeCount || 0)],
+          [t('pipeItemCount'), String(info.materialSummary?.pipeCount || 0)],
+          [t('fittingItemCount'), String(info.materialSummary?.fittingCount || 0)],
         ]
     : info.workshopEquipment
       ? [
@@ -482,10 +482,10 @@ function drawSelectionInfoTexture(info) {
           [t('segmentCount'), String(weldingPlan?.segmentCount || 0)],
         ]
     : [
-        ['网格数', String(info.meshCount)],
-        ['子项数', String(info.childCount)],
-        ['尺寸', info.sizeText],
-        ['中心', info.centerText],
+        [t('meshCount'), String(info.meshCount)],
+        [t('childCount'), String(info.childCount)],
+        [t('dimensions'), info.sizeText],
+        [t('center'), info.centerText],
       ]
   ctx.font = '500 17px Arial'
   rows.forEach(([label, value], index) => {
@@ -502,8 +502,8 @@ function drawSelectionInfoTexture(info) {
     pipeMaterial
       ? t('materialUniqueCode')
       : (todayMaterialGroup
-          ? '今日计划材料汇总'
-          : (info.workshopEquipment ? t('workshopOneEquipment') : '选中子结构信息')),
+          ? t('todayPlanMaterialSummary')
+          : (info.workshopEquipment ? t('workshopOneEquipment') : t('selectedSubstructureInfo'))),
     30,
     252,
   )
@@ -1579,7 +1579,7 @@ onBeforeUnmount(() => {
 
       <v-card class="factory-tree-card" rounded="lg" variant="flat">
         <v-card-item class="factory-card-item factory-tree-head">
-          <template #title>模型结构</template>
+          <template #title>{{ t('modelStructure') }}</template>
           <template #append>
             <span class="factory-tree-count">
               {{ treeSearchText.trim() ? `${treeResultCount} / ${modelStats.objects}` : `${visibleTreeNodes.length} / ${modelStats.objects}` }}
@@ -1594,13 +1594,13 @@ onBeforeUnmount(() => {
             hide-details
             clearable
             variant="outlined"
-            placeholder="搜索子结构名称"
+            :placeholder="t('searchSubstructure')"
             prepend-inner-icon="mdi-magnify"
           />
         </div>
-        <div v-if="loading" class="factory-tree-empty">模型加载中</div>
-        <div v-else-if="errorMessage" class="factory-tree-empty">暂无结构树</div>
-        <div v-else-if="treeSearchText.trim() && !visibleTreeNodes.length" class="factory-tree-empty">无匹配结构</div>
+        <div v-if="loading" class="factory-tree-empty">{{ t('modelLoading') }}</div>
+        <div v-else-if="errorMessage" class="factory-tree-empty">{{ t('noStructureTree') }}</div>
+        <div v-else-if="treeSearchText.trim() && !visibleTreeNodes.length" class="factory-tree-empty">{{ t('noMatchingStructure') }}</div>
         <div v-else ref="treeList" class="factory-tree-list">
           <button
             v-for="node in visibleTreeNodes"
@@ -1651,10 +1651,10 @@ onBeforeUnmount(() => {
         <div><span>{{ t('materialUniqueCode') }}</span><strong>{{ selectedNodeInfo.materialInfo.uniqueCode }}</strong></div>
         <div><span>{{ t('materialCode') }}</span><strong>{{ selectedNodeInfo.materialInfo.materialCode || '-' }}</strong></div>
         <div><span>{{ t('materialQuantity') }}</span><strong>{{ selectedNodeInfo.materialInfo.quantity || '-' }} {{ selectedNodeInfo.materialInfo.unitName }}</strong></div>
-        <div><span>寸径</span><strong>{{ selectedNodeInfo.materialInfo.diameter || '-' }}</strong></div>
-        <div><span>壁厚</span><strong>{{ selectedNodeInfo.materialInfo.wallThickness || '-' }}</strong></div>
-        <div><span>材质</span><strong>{{ selectedNodeInfo.materialInfo.material || '-' }}</strong></div>
-        <div><span>材料油漆</span><strong>{{ selectedNodeInfo.materialInfo.paint || '-' }}</strong></div>
+        <div><span>{{ t('diameter') }}</span><strong>{{ selectedNodeInfo.materialInfo.diameter || '-' }}</strong></div>
+        <div><span>{{ t('wallThickness') }}</span><strong>{{ selectedNodeInfo.materialInfo.wallThickness || '-' }}</strong></div>
+        <div><span>{{ t('material') }}</span><strong>{{ selectedNodeInfo.materialInfo.material || '-' }}</strong></div>
+        <div><span>{{ t('materialPaint') }}</span><strong>{{ selectedNodeInfo.materialInfo.paint || '-' }}</strong></div>
         <div><span>{{ t('materialDescription') }}</span><strong>{{ selectedNodeInfo.materialInfo.description || '-' }}</strong></div>
       </div>
       <template v-else-if="selectedNodeInfo.todayMaterialGroup">
@@ -1663,10 +1663,10 @@ onBeforeUnmount(() => {
           <span>{{ todayMaterialSummary.date }}</span>
         </div>
         <div class="factory-info-grid factory-material-summary-grid">
-          <div><span>材料项数</span><strong>{{ todayMaterialSummary.total }}</strong></div>
-          <div><span>材料编码数</span><strong>{{ todayMaterialSummary.materialCodeCount }}</strong></div>
-          <div><span>管材项数</span><strong>{{ todayMaterialSummary.pipeCount }}</strong></div>
-          <div><span>管件项数</span><strong>{{ todayMaterialSummary.fittingCount }}</strong></div>
+          <div><span>{{ t('materialItemCount') }}</span><strong>{{ todayMaterialSummary.total }}</strong></div>
+          <div><span>{{ t('materialCodeCount') }}</span><strong>{{ todayMaterialSummary.materialCodeCount }}</strong></div>
+          <div><span>{{ t('pipeItemCount') }}</span><strong>{{ todayMaterialSummary.pipeCount }}</strong></div>
+          <div><span>{{ t('fittingItemCount') }}</span><strong>{{ todayMaterialSummary.fittingCount }}</strong></div>
         </div>
         <div class="factory-material-table">
           <DataVTable
@@ -1723,17 +1723,17 @@ onBeforeUnmount(() => {
       <template v-else>
         <div class="factory-info-summary">
           <strong :title="selectedNodeInfo.name">{{ selectedNodeInfo.name }}</strong>
-          <span>网格数 {{ selectedNodeInfo.meshCount }}</span>
+          <span>{{ t('meshCount') }} {{ selectedNodeInfo.meshCount }}</span>
         </div>
         <div class="factory-info-grid">
-          <div><span>类型</span><strong>{{ selectedNodeInfo.type }}</strong></div>
-          <div><span>子项</span><strong>{{ selectedNodeInfo.childCount }}</strong></div>
-          <div><span>尺寸</span><strong>{{ selectedNodeInfo.sizeText }}</strong></div>
-          <div><span>中心</span><strong>{{ selectedNodeInfo.centerText }}</strong></div>
+          <div><span>{{ t('type') }}</span><strong>{{ selectedNodeInfo.type }}</strong></div>
+          <div><span>{{ t('children') }}</span><strong>{{ selectedNodeInfo.childCount }}</strong></div>
+          <div><span>{{ t('dimensions') }}</span><strong>{{ selectedNodeInfo.sizeText }}</strong></div>
+          <div><span>{{ t('center') }}</span><strong>{{ selectedNodeInfo.centerText }}</strong></div>
         </div>
       </template>
     </div>
-    <div v-else class="factory-info-empty">点击左侧结构树或三维模型中的子结构后，这里会展示对应信息。</div>
+    <div v-else class="factory-info-empty">{{ t('selectSubstructureHint') }}</div>
   </v-card>
 </template>
 
@@ -1845,8 +1845,8 @@ onBeforeUnmount(() => {
 }
 
 .factory-tool-button.is-active {
-  background: #0f172a;
-  color: #f8fafc;
+  background: #0f172a !important;
+  color: #ffffff !important;
 }
 
 .factory-tool-button.is-disabled {

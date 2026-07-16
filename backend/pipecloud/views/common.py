@@ -25,6 +25,7 @@ from spool_analysis.project_spool_info import (
 )
 
 from ..models import (
+    ArrivalMaterialRow,
     ArrivalOrderRow,
     DataSourceFile,
     FittingMaterialRow,
@@ -33,6 +34,7 @@ from ..models import (
     PipeMaterialRow,
     PlanRecord,
     Project,
+    ProjectSchedulePolicy,
     WeldingPlanRow,
     WeldLibraryRow,
     WeldPreScheduleRow,
@@ -54,7 +56,6 @@ STAGED_PLAN_ROOT = FILE_ROOT / 'staged_plans'
 LIBRARY_ROOT = DATA_ROOT / '库管理'
 ARRIVAL_ROOT = DATA_ROOT / '入库单'
 CUTTING_PIPE_LIBRARY = LIBRARY_ROOT / '防腐管子材料库.xlsx'
-CUTTING_PENDING_PIPE_LIBRARY = DATA_ROOT / '中间结果' / '待确认防腐管子材料库.xlsx'
 CUTTING_PRE_SCHEDULE_OUTPUT = DATA_ROOT / '中间结果' / '焊口预排产匹配结果.xlsx'
 ANTI_CORROSION_PLAN_ROOT = DATA_ROOT / '防腐委托单'
 CUTTING_PLAN_ROOT = DATA_ROOT / '下料排产单'
@@ -105,10 +106,12 @@ WELD_COLUMNS = {
     'weld_no_final': '最终焊口号',
     'library_seq': '库序号',
     'completed_flag': '材料焊接状态',
+    'material_anti_corrosion_status': '材料防腐状态',
 }
 WELD_COLUMN_ALIASES = {
     WELD_COLUMNS['segment_no']: ['预制组件', '管段号', '预制管段', '预制段'],
     WELD_COLUMNS['completed_flag']: ['材料焊接状态', '是否完成', '完成状态', '状态', '完工状态', '焊接状态'],
+    WELD_COLUMNS['material_anti_corrosion_status']: ['材料防腐状态', '防腐状态', '是否防腐完成', '防腐完成状态'],
     WELD_COLUMNS['weld_no_start']: ['初始焊口号', '起始焊口号', '焊口起始号', '开始焊口号'],
     WELD_COLUMNS['weld_no_final']: ['最终焊口号', '结束焊口号', '焊口结束号', '完成焊口号'],
     WELD_COLUMNS['pipeline']: ['管线号(必填)', '管线号'],
@@ -155,7 +158,7 @@ MODULES = [
         'key': 'arrival',
         'name': '到货管理',
         'description': '汇总入库单，维护管子材料库和管件法兰材料库。',
-        'actions': ['arrival-library'],
+        'actions': [],
         'files': [
             '入库单',
             '库管理/管子材料库.xlsx',
@@ -187,8 +190,8 @@ MODULES = [
     {
         'key': 'cutting',
         'name': '下料管理及排产',
-        'description': '提取材料已到货、已防腐且尚未下料的焊口，生成下料预排产结果。',
-        'actions': ['weld-pre-schedule'],
+        'description': '提取材料已到货、已防腐且尚未下料的焊口，生成下料预排产和下料排产单。',
+        'actions': ['weld-pre-schedule', 'cutting-schedule'],
         'files': [
             '中间结果/焊口预排产匹配结果.xlsx',
         ],
@@ -273,9 +276,9 @@ ACTIONS = {
         'script': PREFAB_ROOT / 'cutting' / 'weld_pre_schedule_matcher.py',
         'module': '下料管理及排产',
     },
-    'confirm-cutting-pre-schedule': {
-        'name': '确认同步材料库',
-        'script': PREFAB_ROOT / 'cutting' / 'confirm_pre_schedule.py',
+    'cutting-schedule': {
+        'name': '生成下料排产单',
+        'script': PREFAB_ROOT / 'cutting' / 'main.py',
         'module': '下料管理及排产',
     },
     'future-schedule': {
@@ -515,14 +518,6 @@ def _database_module_file_info(project, relative_name, data_root=DATA_ROOT):
             return _database_source_file_info(project, relative_name, 'pre-schedule', 'welding-pre-schedule', row_model=WeldPreScheduleRow)
         if relative_name == '中间结果/焊口预排产匹配结果.xlsx':
             return _database_source_file_info(project, relative_name, 'pre-schedule', 'weld-pre-schedule', row_model=WeldPreScheduleRow)
-        if relative_name == '中间结果/待确认管子材料库.xlsx':
-            return _database_source_file_info(project, relative_name, 'library', 'pending-pipe-library', row_model=PipeMaterialRow)
-        if relative_name == '中间结果/待确认管件法兰材料库.xlsx':
-            return _database_source_file_info(project, relative_name, 'library', 'pending-fitting-library', row_model=FittingMaterialRow)
-        if relative_name == '中间结果/待确认防腐管子材料库.xlsx':
-            return _database_source_file_info(project, relative_name, 'library', 'pending-anti-pipe-library', row_model=PipeMaterialRow)
-        if relative_name == '中间结果/待确认防腐管件法兰材料库.xlsx':
-            return _database_source_file_info(project, relative_name, 'library', 'pending-anti-fitting-library', row_model=FittingMaterialRow)
         if relative_name == '下料排产单':
             return _database_plan_record_info(project, relative_name, 'cutting')
         if relative_name == '焊接排产单':
@@ -732,7 +727,7 @@ def _resolve_parser_file(relative_path):
     target_path = (FILE_PARSER_ROOT / (relative_path or '')).resolve()
     target_path.relative_to(FILE_PARSER_ROOT.resolve())
     if not target_path.exists() or not target_path.is_file():
-        raise FileNotFoundError('待确认文件不存在')
+        raise FileNotFoundError('暂存文件不存在')
     return target_path
 
 
@@ -801,6 +796,7 @@ def _plan_folder_date(folder_path):
 
 
 def _plan_record_payload(record):
+    files = record.files or []
     return {
         'id': record.id,
         'planKey': record.plan_key,
@@ -809,9 +805,9 @@ def _plan_record_payload(record):
         'planFolder': record.plan_folder,
         'name': record.plan_folder,
         'path': record.relative_path,
-        'fileCount': record.file_count,
+        'fileCount': len(files) if files else record.file_count,
         'updatedAt': record.folder_updated_at,
-        'files': record.files or [],
+        'files': files,
         'summary': record.summary or {},
     }
 
@@ -1100,8 +1096,124 @@ def _dashboard_percentage(numerator, denominator):
     return round(float(min(numerator / denominator, Decimal('1')) * 100), 2)
 
 
+def _arrival_date_text(*values):
+    for value in values:
+        text = str(value or '').strip()
+        if not text:
+            continue
+        match = re.search(r'(\d{4})[-/.年]?(\d{1,2})[-/.月]?(\d{1,2})', text)
+        if match:
+            year, month, day = match.groups()
+            return f'{year}-{month.zfill(2)}-{day.zfill(2)}'
+        match = re.search(r'(\d{4})(\d{2})(\d{2})', text)
+        if match:
+            year, month, day = match.groups()
+            return f'{year}-{month}-{day}'
+        parsed = pd.to_datetime(text, errors='coerce')
+        if pd.notna(parsed):
+            return parsed.strftime('%Y-%m-%d')
+    return '未识别日期'
+
+
+def _arrival_material_type(row):
+    unit = str(row.get('unit') or '').strip()
+    name = str(row.get('name') or '').strip()
+    category = str(row.get('material_category') or '').strip()
+    pipe_categories = {'管材', '直管', '管子', '钢管'}
+    return 'pipe' if unit == '根' or name == '管子' or category in pipe_categories else 'other'
+
+
+def _arrival_material_qty(row):
+    actual = _dashboard_quantity(row.get('actual_arrival_qty'))
+    if actual > 0:
+        return actual
+    return _dashboard_quantity(row.get('shipment_qty'))
+
+
+def _collect_stock_materials(project, model, source_keys):
+    materials = {}
+    for row in model.objects.filter(project=project, source_file__source_key__in=source_keys).values(
+        'material_code',
+        'stock_qty',
+        'material_description',
+        'unit',
+    ):
+        code = str(row.get('material_code') or '').strip()
+        if not code:
+            continue
+        item = materials.setdefault(code, {
+            'actualQty': Decimal('0'),
+            'description': '',
+            'unit': '',
+        })
+        item['actualQty'] += _dashboard_quantity(row.get('stock_qty'))
+        item['description'] = item['description'] or str(row.get('material_description') or '').strip()
+        item['unit'] = str(row.get('unit') or '').strip() or item['unit']
+    return materials
+
+
+def _arrival_date_stats(project):
+    ensure_project_tables(project)
+    with using_project_tables(project):
+        source_dates = {
+            row['source_file_id']: _arrival_date_text(
+                row.get('arrival_time'),
+                row.get('shipment_date'),
+                row.get('source_file__display_name'),
+                row.get('source_file__file_updated_at'),
+            )
+            for row in ArrivalOrderRow.objects.filter(project=project).values(
+                'source_file_id',
+                'arrival_time',
+                'shipment_date',
+                'source_file__display_name',
+                'source_file__file_updated_at',
+            )
+        }
+        stats = {}
+        for row in ArrivalMaterialRow.objects.filter(project=project).values(
+            'source_file_id',
+            'source_file__display_name',
+            'source_file__file_updated_at',
+            'actual_arrival_qty',
+            'shipment_qty',
+            'actual_arrival_count',
+            'unit',
+            'name',
+            'material_category',
+        ):
+            arrival_date = source_dates.get(row['source_file_id']) or _arrival_date_text(
+                row.get('source_file__display_name'),
+                row.get('source_file__file_updated_at'),
+            )
+            material_type = _arrival_material_type(row)
+            item = stats.setdefault((arrival_date, material_type), {
+                'date': arrival_date,
+                'materialType': material_type,
+                'quantity': Decimal('0'),
+                'rowCount': 0,
+                'pipeCount': Decimal('0'),
+            })
+            item['quantity'] += _arrival_material_qty(row)
+            item['rowCount'] += 1
+            if material_type == 'pipe':
+                item['pipeCount'] += _dashboard_quantity(row.get('actual_arrival_count'))
+
+    rows = []
+    for item in stats.values():
+        rows.append({
+            'date': item['date'],
+            'materialType': item['materialType'],
+            'quantity': _dashboard_number(item['quantity']),
+            'rowCount': item['rowCount'],
+            'pipeCount': _dashboard_number(item['pipeCount']),
+        })
+    rows.sort(key=lambda item: (item['date'] == '未识别日期', item['date'], item['materialType'] != 'pipe'))
+    return rows
+
+
 def _arrival_material_dashboard_payload(project):
-    """Compare required weld-library quantities with actual material-library stock."""
+    """Compare required weld-library quantities with raw arrival quantities."""
     ensure_project_tables(project)
     grouped = {}
 
@@ -1121,39 +1233,14 @@ def _arrival_material_dashboard_payload(project):
         return grouped[key]
 
     with using_project_tables(project):
-        pipe_materials = {}
-        for row in PipeMaterialRow.objects.filter(
-            project=project,
-            source_file__source_key__in=['pipe-library', 'anti-pipe-library'],
-        ).values('material_code', 'stock_qty', 'material_description', 'unit'):
-            code = str(row.get('material_code') or '').strip()
-            if not code:
-                continue
-            item = pipe_materials.setdefault(code, {
-                'actualQty': Decimal('0'),
-                'description': '',
-                'unit': '米',
-            })
-            item['actualQty'] += _dashboard_quantity(row.get('stock_qty'))
-            item['description'] = item['description'] or str(row.get('material_description') or '').strip()
-            item['unit'] = str(row.get('unit') or '').strip() or item['unit']
-
-        fitting_materials = {}
-        for row in FittingMaterialRow.objects.filter(
-            project=project,
-            source_file__source_key__in=['fitting-library', 'anti-fitting-library'],
-        ).values('material_code', 'stock_qty', 'material_description', 'unit'):
-            code = str(row.get('material_code') or '').strip()
-            if not code:
-                continue
-            item = fitting_materials.setdefault(code, {
-                'actualQty': Decimal('0'),
-                'description': '',
-                'unit': '',
-            })
-            item['actualQty'] += _dashboard_quantity(row.get('stock_qty'))
-            item['description'] = item['description'] or str(row.get('material_description') or '').strip()
-            item['unit'] = str(row.get('unit') or '').strip() or item['unit']
+        pipe_materials = _collect_stock_materials(project, PipeMaterialRow, [
+            'pipe-library',
+            'anti-pipe-library',
+        ])
+        fitting_materials = _collect_stock_materials(project, FittingMaterialRow, [
+            'fitting-library',
+            'anti-fitting-library',
+        ])
 
         pipe_codes = set(pipe_materials)
         fitting_codes = set(fitting_materials)
@@ -1225,6 +1312,7 @@ def _arrival_material_dashboard_payload(project):
         'updatedAt': datetime.now().isoformat(timespec='seconds'),
         'summaries': summaries,
         'rows': rows,
+        'dateStats': _arrival_date_stats(project),
     }
 
 
@@ -1286,9 +1374,11 @@ def _anti_corrosion_dashboard_payload(project, data_root):
             .values(
                 'anti_corrosion_order_no',
                 'anti_corrosion_date',
+                'library_seq',
                 'unit',
                 'pipeline',
                 'segment_no',
+                'diameter',
                 'stage_payload',
                 'updated_at',
             )
@@ -1301,14 +1391,23 @@ def _anti_corrosion_dashboard_payload(project, data_root):
         item = grouped.setdefault(commission_no, {
             'commissionNo': commission_no,
             'commissionDate': str(payload.get('委托日期') or row.get('anti_corrosion_date') or '').strip(),
-            'segmentCount': 0,
+            'weldCount': 0,
+            'segmentKeys': set(),
             'totalArea': Decimal('0'),
+            'diameterTotal': Decimal('0'),
             'units': set(),
             'pipelines': set(),
             'updatedAt': row.get('updated_at').timestamp() if row.get('updated_at') else 0,
         })
-        item['segmentCount'] += 1
+        item['weldCount'] += 1
         item['totalArea'] += _dashboard_quantity(payload.get('防腐面积'))
+        item['diameterTotal'] += _dashboard_quantity(payload.get('寸径') or row.get('diameter'))
+        segment_key = tuple(
+            str(payload.get(column) or row.get(field) or '').strip()
+            for field, column in (('unit', '单元号'), ('pipeline', '管线号'), ('segment_no', '管段号'))
+        )
+        if any(segment_key):
+            item['segmentKeys'].add(segment_key)
         for key, target in (('unit', 'units'), ('pipeline', 'pipelines')):
             value = str(payload.get({'unit': '单元号', 'pipeline': '管线号'}[key]) or row.get(key) or '').strip()
             if value:
@@ -1320,8 +1419,10 @@ def _anti_corrosion_dashboard_payload(project, data_root):
         rows.append({
             'commissionNo': item['commissionNo'],
             'commissionDate': item['commissionDate'],
-            'segmentCount': item['segmentCount'],
+            'weldCount': item['weldCount'],
+            'segmentCount': len(item['segmentKeys']),
             'totalArea': _dashboard_number(item['totalArea']),
+            'diameterTotal': _dashboard_number(item['diameterTotal']),
             'unitCount': len(item['units']),
             'pipelineCount': len(item['pipelines']),
             'updatedAt': item['updatedAt'],
@@ -1339,6 +1440,15 @@ def _anti_corrosion_dashboard_payload(project, data_root):
     ]
 
     total_area = sum((_dashboard_quantity(row['totalArea']) for row in rows), Decimal('0'))
+    segment_keys = {
+        (
+            str(row.get('unit') or '').strip(),
+            str(row.get('pipeline') or '').strip(),
+            str(row.get('segment_no') or '').strip(),
+        )
+        for row in commission_rows
+        if any((str(row.get('unit') or '').strip(), str(row.get('pipeline') or '').strip(), str(row.get('segment_no') or '').strip()))
+    }
     today_records = [record for record in records if record.plan_date == today_date]
     return {
         'projectId': project.id,
@@ -1348,7 +1458,8 @@ def _anti_corrosion_dashboard_payload(project, data_root):
         'planCount': len(records),
         'todayPlanCount': len(today_records),
         'commissionCount': len(rows),
-        'segmentCount': len(commission_rows),
+        'weldCount': len(commission_rows),
+        'segmentCount': len(segment_keys),
         'totalArea': _dashboard_number(total_area),
         'preSchedule': pre_schedule,
         'rows': rows[:200],
@@ -1362,24 +1473,52 @@ def _cutting_dashboard_payload(project, data_root):
     today_date = _today_plan_date()
     pre_schedule = _pre_schedule_dashboard_counts(project, 'weld-pre-schedule')
 
+    fallback_by_date = {}
+    if any(not (record.summary or {}).get('weldCount') for record in records):
+        ensure_project_tables(project)
+        with using_project_tables(project):
+            plan_rows = list(
+                WeldingPlanRow.objects
+                .filter(project=project)
+                .exclude(cut_date='')
+                .values('cut_date', 'cut_order_no', 'weld_order_no', 'diameter')
+            )
+        for plan_row in plan_rows:
+            item = fallback_by_date.setdefault(str(plan_row.get('cut_date') or ''), {
+                'orderNumbers': [],
+                'relatedOrderNumbers': [],
+                'weldCount': 0,
+                'diameterTotal': Decimal('0'),
+            })
+            cut_order_no = str(plan_row.get('cut_order_no') or '').strip()
+            weld_order_no = str(plan_row.get('weld_order_no') or '').strip()
+            if cut_order_no and cut_order_no not in item['orderNumbers']:
+                item['orderNumbers'].append(cut_order_no)
+            if weld_order_no and weld_order_no not in item['relatedOrderNumbers']:
+                item['relatedOrderNumbers'].append(weld_order_no)
+            item['weldCount'] += 1
+            item['diameterTotal'] += _dashboard_quantity(plan_row.get('diameter'))
+
     rows = []
     for record in records:
         summary = record.summary or {}
-        order_numbers = _plan_summary_list(summary, 'orderNumbers')
-        related_order_numbers = _plan_summary_list(summary, 'relatedOrderNumbers')
+        fallback = fallback_by_date.get(record.plan_date, {})
+        order_numbers = _plan_summary_list(summary, 'orderNumbers') or fallback.get('orderNumbers', [])
+        related_order_numbers = _plan_summary_list(summary, 'relatedOrderNumbers') or fallback.get('relatedOrderNumbers', [])
         rows.append({
             'planDate': record.plan_date,
             'planFolder': record.plan_folder,
             'fileCount': record.file_count,
             'orderCount': int(summary.get('orderCount') or len(order_numbers) or 0),
-            'weldCount': int(_dashboard_quantity(summary.get('weldCount'))),
-            'diameterTotal': _plan_summary_number(summary, 'diameterTotal'),
+            'weldCount': int(_dashboard_quantity(summary.get('weldCount') or fallback.get('weldCount'))),
+            'diameterTotal': _plan_summary_number(summary, 'diameterTotal') or _dashboard_number(fallback.get('diameterTotal', 0)),
             'orderNumbers': order_numbers,
             'orderNumbersText': '、'.join(order_numbers),
             'relatedOrderNumbers': related_order_numbers,
             'relatedOrderNumbersText': '、'.join(related_order_numbers),
             'updatedAt': record.folder_updated_at,
         })
+    rows.sort(key=lambda item: (item['planDate'], item['updatedAt']), reverse=True)
 
     today_rows = [row for row in rows if row['planDate'] == today_date]
     return {
@@ -1641,6 +1780,25 @@ def _source_dataframe(source, sheet_models, sheet_name=None):
     return pd.DataFrame(rows, columns=columns), selected_sheet, sheets
 
 
+def _prefab_segment_count(dataframe):
+    """Count segments by unit, pipeline and segment number."""
+    segment_col = _resolve_column(dataframe.columns, WELD_COLUMNS['segment_no'])
+    if not segment_col:
+        return 0
+
+    key_columns = []
+    for column_name in (WELD_COLUMNS['unit'], WELD_COLUMNS['pipeline'], WELD_COLUMNS['segment_no']):
+        resolved = _resolve_column(dataframe.columns, column_name)
+        if resolved and resolved not in key_columns:
+            key_columns.append(resolved)
+
+    segment_keys = dataframe[key_columns].copy()
+    for column in key_columns:
+        segment_keys[column] = segment_keys[column].fillna('').astype(str).str.strip()
+    segment_keys = segment_keys[segment_keys[segment_col].ne('')]
+    return int(len(segment_keys.drop_duplicates(subset=key_columns)))
+
+
 def _update_project_weld_metrics(
     project,
     data_root,
@@ -1654,10 +1812,7 @@ def _update_project_weld_metrics(
         return False
     changed = False
     if update_segment_count:
-        segment_col = _resolve_column(dataframe.columns, WELD_COLUMNS['segment_no'])
-        segment_count = 0
-        if segment_col:
-            segment_count = int(dataframe[segment_col].fillna('').astype(str).str.strip().replace('', pd.NA).dropna().nunique())
+        segment_count = _prefab_segment_count(dataframe)
         next_value = str(segment_count)
         if project.pipe_segment != next_value:
             project.pipe_segment = next_value
@@ -1700,6 +1855,58 @@ def _sync_completed_plan_rows_to_weld_library(project, rows):
     library_completed_col = _resolve_column(library_df.columns, WELD_COLUMNS['completed_flag'])
     if not library_completed_col:
         library_completed_col = WELD_COLUMNS['completed_flag']
+        library_df[library_completed_col] = False
+
+    plan_df = plan_df.copy()
+    plan_df['_key'] = _weld_key_series(plan_df)
+    completion_map = (
+        plan_df.loc[plan_df['_key'].astype(str).str.len() > 0]
+        .drop_duplicates('_key', keep='last')
+        .set_index('_key')[plan_completed_col]
+        .map(_truthy_text)
+        .to_dict()
+    )
+    if not completion_map:
+        return 0
+
+    library_df = library_df.copy()
+    library_df['_key'] = _weld_key_series(library_df)
+    matched_mask = library_df['_key'].isin(completion_map)
+    changed_count = int(matched_mask.sum())
+    if changed_count <= 0:
+        return 0
+
+    library_df.loc[matched_mask, library_completed_col] = library_df.loc[matched_mask, '_key'].map(completion_map)
+    library_df = library_df.drop(columns=['_key'])
+    replace_source_rows(
+        project,
+        'library',
+        'weld-library',
+        source.display_name if source else WELD_LIBRARY_FILE_NAME,
+        source.relative_path if source else 'database://library/weld-library/预制焊口库.xlsx',
+        {selected_sheet or 'Sheet1': {'columns': list(library_df.columns), 'rows': library_df.to_dict(orient='records')}},
+        {'*': WeldLibraryRow},
+    )
+    return changed_count
+
+
+def _sync_anti_corrosion_completed_rows_to_weld_library(project, rows):
+    if not rows:
+        return 0
+
+    source = _latest_source(project, 'library', 'weld-library')
+    library_df, selected_sheet, _ = _source_dataframe(source, {'*': WeldLibraryRow})
+    if library_df.empty:
+        return 0
+
+    plan_df = pd.DataFrame(rows)
+    plan_completed_col = _resolve_column(plan_df.columns, WELD_COLUMNS['material_anti_corrosion_status'])
+    if not plan_completed_col:
+        return 0
+
+    library_completed_col = _resolve_column(library_df.columns, WELD_COLUMNS['material_anti_corrosion_status'])
+    if not library_completed_col:
+        library_completed_col = WELD_COLUMNS['material_anti_corrosion_status']
         library_df[library_completed_col] = False
 
     plan_df = plan_df.copy()
@@ -1807,20 +2014,98 @@ def _parse_library_save_payload(request):
 
     columns = payload.get('columns')
     rows = payload.get('rows')
+    sheet = payload.get('sheet') or ''
     if not isinstance(columns, list) or not columns or not all(isinstance(column, str) for column in columns):
         return None, '列定义无效'
     if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
         return None, '表格数据无效'
+    if not isinstance(sheet, str):
+        return None, '工作表名称无效'
 
     return {
+        'sheet': sheet.strip(),
         'columns': columns,
         'rows': rows,
     }, None
 
 
-def _welding_schedule_defaults():
+def _format_schedule_date(value):
+    text = str(value or '').strip()
+    if re.fullmatch(r'\d{8}', text):
+        return f'{text[:4]}-{text[4:6]}-{text[6:]}'
+    return text
+
+
+def _next_master_welding_date(project):
+    if project is None:
+        return ''
+    try:
+        ensure_project_tables(project)
+        with using_project_tables(project):
+            row = (
+                MasterScheduleRow.objects
+                .filter(project=project)
+                .exclude(weld_date='')
+                .filter(weld_order_no='')
+                .order_by('weld_date', 'source_sheet', 'library_seq')
+                .first()
+            )
+            return _format_schedule_date(row.weld_date) if row else ''
+    except Exception:
+        return ''
+
+
+def _next_master_cutting_date(project):
+    if project is None:
+        return ''
+    try:
+        ensure_project_tables(project)
+        with using_project_tables(project):
+            row = (
+                MasterScheduleRow.objects
+                .filter(project=project)
+                .exclude(cut_date='')
+                .filter(cut_order_no='')
+                .order_by('cut_date', 'source_sheet', 'library_seq')
+                .first()
+            )
+            return _format_schedule_date(row.cut_date) if row else ''
+    except Exception:
+        return ''
+
+
+def _schedule_policy_defaults(project):
+    if project is None:
+        return {}
+    try:
+        ensure_project_tables(project)
+        with using_project_tables(project):
+            policy = ProjectSchedulePolicy.objects.filter(project=project).first()
+            if not policy:
+                return {}
+            return {
+                'targetDiameter': float(policy.target_diameter),
+                'ordersPerDay': int(policy.orders_per_day),
+                'skipHolidays': bool(policy.skip_holidays),
+                'holidayDates': ', '.join(policy.holiday_dates or []),
+                'canceledWeekendDates': ', '.join(policy.canceled_weekend_dates or []),
+                'cuttingLeadDays': int(policy.cutting_lead_days),
+                'antiCorrosionLeadDays': int(policy.anti_corrosion_lead_days),
+            }
+    except Exception:
+        return {}
+
+
+def _welding_schedule_defaults(project=None):
     defaults = {
-        'weldDate': datetime.now().strftime('%Y-%m-%d'),
+        'weldDate': _next_master_welding_date(project) or datetime.now().strftime('%Y-%m-%d'),
+        'weldStartDate': _next_master_welding_date(project) or datetime.now().strftime('%Y-%m-%d'),
+        'dateMode': 'auto',
+        'manualWeldDates': '',
+        'maxDays': '',
+        'skipHolidays': True,
+        'holidayDates': '',
+        'canceledWeekendDates': '',
         'targetDiameter': 260,
         'ordersPerDay': 3,
     }
@@ -1834,12 +2119,25 @@ def _welding_schedule_defaults():
         defaults['ordersPerDay'] = EXTRACT.get('num_extractions', defaults['ordersPerDay'])
     except Exception:
         pass
+    defaults.update({
+        key: value
+        for key, value in _schedule_policy_defaults(project).items()
+        if value not in (None, '')
+    })
     return defaults
 
 
-def _future_schedule_defaults():
-    return {
-        **_welding_schedule_defaults(),
+def _cutting_schedule_defaults(project=None):
+    defaults = {
+        **_welding_schedule_defaults(project),
+        'weldStartDate': _next_master_cutting_date(project) or _welding_schedule_defaults(project).get('weldStartDate') or datetime.now().strftime('%Y-%m-%d'),
+    }
+    return defaults
+
+
+def _future_schedule_defaults(project=None):
+    defaults = {
+        **_welding_schedule_defaults(project),
         'weldStartDate': (datetime.now().date() + timedelta(days=1)).strftime('%Y-%m-%d'),
         'maxDays': '',
         'dateMode': 'auto',
@@ -1848,16 +2146,31 @@ def _future_schedule_defaults():
         'holidayDates': '',
         'canceledWeekendDates': '',
         'cuttingLeadDays': 1,
+        'antiCorrosionLeadDays': 1,
+        'commissionArea': 1500,
     }
+    defaults.update(_schedule_policy_defaults(project))
+    return defaults
 
 
-def _action_payload(action_key):
+def _action_payload(action_key, project=None):
     action = ACTIONS[action_key]
     payload = {**action, 'key': action_key, 'script': _relative_path(action['script'])}
     if action_key == 'auto-weld-schedule':
-        payload['defaults'] = _welding_schedule_defaults()
+        payload['defaults'] = _welding_schedule_defaults(project)
+    if action_key == 'cutting-schedule':
+        payload['defaults'] = _cutting_schedule_defaults(project)
     if action_key == 'future-schedule':
-        payload['defaults'] = _future_schedule_defaults()
+        payload['defaults'] = _future_schedule_defaults(project)
+    if action_key == 'prefab-weld-library':
+        payload['initializationFilters'] = [
+            {'key': 'prefabWeldArea', 'stage': '可预制焊口过滤', 'field': '焊口区域', 'operator': '等于', 'value': 'S', 'defaultEnabled': True},
+            {'key': 'prefabMaterialType', 'stage': '可预制焊口过滤', 'field': '材料类型', 'operator': '等于', 'value': 'CS', 'defaultEnabled': True},
+            {'key': 'autoJointType', 'stage': '自动焊口过滤', 'field': '连接类型', 'operator': '等于', 'value': 'BW', 'defaultEnabled': True},
+            {'key': 'autoWallThickness', 'stage': '自动焊口过滤', 'field': '壁厚', 'operator': '介于（含边界）', 'value': '6 ～ 25', 'defaultEnabled': True},
+            {'key': 'autoDiameter', 'stage': '自动焊口过滤', 'field': '寸径', 'operator': '介于（含边界）', 'value': '8 ～ 24', 'defaultEnabled': True},
+            {'key': 'autoSegmentNo', 'stage': '自动焊口过滤', 'field': '管段号', 'operator': '排除', 'value': '空值', 'defaultEnabled': True},
+        ]
     return payload
 
 
@@ -1865,7 +2178,7 @@ def _module_payload(module, data_root=DATA_ROOT, project=None):
     file_infos = [_database_module_file_info(project, file_name, data_root) for file_name in module['files']]
     return {
         **module,
-        'actions': [_action_payload(action_key) for action_key in module['actions']],
+        'actions': [_action_payload(action_key, project) for action_key in module['actions']],
         'files': file_infos,
         'readyCount': sum(1 for item in file_infos if item['exists']),
         'totalCount': len(file_infos),

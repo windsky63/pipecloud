@@ -4,24 +4,25 @@ import DataVTable from '../../components/DataVTable.vue'
 import InfoTooltip from '../../components/InfoTooltip.vue'
 import ScheduleCalendar from '../../components/ScheduleCalendar.vue'
 import ScheduleDashboardPanel from '../../components/ScheduleDashboardPanel.vue'
+import StagedPlanPreview from '../../components/StagedPlanPreview.vue'
 import { localizedActionName, localizedModuleDescription } from '../../services/navigationLabels'
-import { t } from '../../services/pipecloudState'
+import { dashboardVisibility, displayDataPath, setDashboardVisibility, t } from '../../services/pipecloudState'
 
-defineProps({
+const props = defineProps({
   activeModule: { type: Object, required: true },
   activeModuleTitle: { type: String, required: true },
   dashboard: { type: Object, required: true },
   dashboardLoading: { type: Boolean, default: false },
   dashboardError: { type: String, default: '' },
   preScheduleAction: { type: Object, default: null },
-  preScheduleOptions: { type: Object, required: true },
   commissionOptions: { type: Object, required: true },
+  selectionModeOptions: { type: Array, default: () => [] },
+  selectedPreScheduleCount: { type: Number, default: 0 },
   dateModeOptions: { type: Array, default: () => [] },
   scheduleCalendarStart: { type: String, default: '' },
   scheduleCalendarEnd: { type: String, default: '' },
   manualDateList: { type: Array, default: () => [] },
   holidayCalendarDateList: { type: Array, default: () => [] },
-  concentrationDimensionOptions: { type: Array, default: () => [] },
   overviewActions: { type: Array, default: () => [] },
   commissionMessage: { type: String, default: '' },
   commissionError: { type: String, default: '' },
@@ -52,6 +53,7 @@ const emit = defineEmits([
 ])
 
 const commissionStartDateMenu = ref(false)
+const dashboardCollapsed = ref(false)
 const manualCommissionDatesMenu = ref(false)
 const commissionHolidayDatesMenu = ref(false)
 
@@ -62,7 +64,7 @@ function updateStartDate(value) {
 </script>
 
 <template>
-  <v-card class="module-panel" :loading="dashboardLoading">
+  <v-card v-if="dashboardVisibility.antiCorrosion" class="module-panel" :loading="dashboardLoading">
     <ScheduleDashboardPanel
       mode="anti-corrosion"
       :title="t('antiCorrosionDashboardTitle')"
@@ -70,6 +72,10 @@ function updateStartDate(value) {
       :dashboard="dashboard"
       :error="dashboardError"
       :panel="false"
+      collapsible
+      :collapsed="dashboardCollapsed"
+      @hide="setDashboardVisibility('antiCorrosion', false)"
+      @toggle="dashboardCollapsed = !dashboardCollapsed"
     />
   </v-card>
 
@@ -80,7 +86,7 @@ function updateStartDate(value) {
           <h2>{{ t('antiCorrosionPreSchedule') }}</h2>
           <InfoTooltip :text="localizedModuleDescription(activeModule)" />
         </div>
-        <span>{{ preScheduleData.path || t('antiCorrosionPreScheduleDefaultPath') }}</span>
+        <span>{{ displayDataPath(preScheduleData.path, t('antiCorrosionPreScheduleDefaultPath')) }}</span>
       </div>
       <div class="module-actions">
         <v-btn
@@ -95,59 +101,6 @@ function updateStartDate(value) {
         </v-btn>
       </div>
     </div>
-
-    <v-expansion-panels class="pre-schedule-config future-schedule-config" variant="accordion">
-      <v-expansion-panel value="options">
-        <v-expansion-panel-title>
-          <div>
-            <strong>{{ t('antiCorrosionPreScheduleParams') }}</strong>
-          </div>
-        </v-expansion-panel-title>
-        <v-expansion-panel-text>
-          <div class="pre-schedule-config-grid">
-            <label class="future-schedule-field pre-schedule-control-field">
-              <span>{{ t('pipelineConcentrationDimension') }}</span>
-              <v-select
-                v-model="preScheduleOptions.concentrationDimension"
-                :items="concentrationDimensionOptions"
-                density="compact"
-                variant="outlined"
-                hide-details
-                :disabled="runningKey === preScheduleAction?.key"
-              />
-            </label>
-            <label class="future-schedule-field pre-schedule-control-field">
-              <span>{{ t('pipelineConcentrationThreshold') }}</span>
-              <v-text-field
-                v-model.number="preScheduleOptions.concentrationThresholdPercent"
-                type="number"
-                min="0"
-                max="100"
-                step="1"
-                suffix="%"
-                density="compact"
-                variant="outlined"
-                hide-details
-                :disabled="runningKey === preScheduleAction?.key"
-              />
-              <small>{{ t('pipelineConcentrationHint') }}</small>
-            </label>
-            <label class="future-schedule-field pre-schedule-switch-field">
-              <span>{{ t('onlyAutoWeld') }}</span>
-              <v-switch
-                v-model="preScheduleOptions.onlyAutoWeld"
-                color="primary"
-                density="compact"
-                hide-details
-                inset
-                :disabled="runningKey === preScheduleAction?.key"
-              />
-              <small>{{ preScheduleOptions.onlyAutoWeld ? t('onlyAutoWeldHint') : t('allUnfinishedHint') }}</small>
-            </label>
-          </div>
-        </v-expansion-panel-text>
-      </v-expansion-panel>
-    </v-expansion-panels>
 
     <v-alert
       v-if="preScheduleError"
@@ -183,15 +136,15 @@ function updateStartDate(value) {
       row-key="库序号"
       @selection-change="$emit('selection-change', $event)"
     />
-  </v-card>
+    <v-divider class="schedule-section-divider" />
 
-  <v-card class="module-panel commission-panel">
+    <section class="schedule-generation-section commission-panel">
     <div class="section-head">
       <div>
         <div class="section-title-with-tip">
           <h2>{{ t('antiCorrosionCommissionConfig') }}</h2>
+          <InfoTooltip :text="t('antiCorrosionCommissionConfigHint')" />
         </div>
-        <span>{{ t('antiCorrosionCommissionConfigHint') }}</span>
       </div>
       <div class="module-actions">
         <v-btn
@@ -218,6 +171,22 @@ function updateStartDate(value) {
         <v-expansion-panel-text>
           <div class="commission-config-grid">
             <label class="future-schedule-field pre-schedule-control-field">
+              <span>{{ t('antiCorrosionCommissionSelectionMode') }}</span>
+              <v-select
+                v-model="commissionOptions.selectionMode"
+                :items="selectionModeOptions"
+                density="compact"
+                variant="outlined"
+                hide-details
+                :disabled="runningKey === 'anti-corrosion-schedule'"
+              />
+              <small>
+                {{ commissionOptions.selectionMode === 'manual'
+                  ? t('manualAntiCorrosionCommissionHint', { count: selectedPreScheduleCount })
+                  : t('autoAntiCorrosionCommissionHint') }}
+              </small>
+            </label>
+            <label class="future-schedule-field pre-schedule-control-field">
               <span>{{ t('antiCorrosionCommissionArea') }}</span>
               <v-text-field
                 v-model.number="commissionOptions.commissionArea"
@@ -243,7 +212,7 @@ function updateStartDate(value) {
               />
               <small>{{ t('antiCorrosionCommissionDateModeHint') }}</small>
             </label>
-            <label class="future-schedule-field pre-schedule-control-field">
+            <label v-if="commissionOptions.dateMode !== 'manual'" class="future-schedule-field pre-schedule-control-field">
               <span>{{ t('antiCorrosionCommissionStartDate') }}</span>
               <v-menu
                 v-model="commissionStartDateMenu"
@@ -259,7 +228,7 @@ function updateStartDate(value) {
                     hide-details
                     readonly
                     append-inner-icon="mdi-calendar"
-                    :disabled="runningKey === 'anti-corrosion-schedule' || commissionOptions.dateMode === 'manual'"
+                    :disabled="runningKey === 'anti-corrosion-schedule'"
                     :placeholder="t('today')"
                   />
                 </template>
@@ -272,7 +241,7 @@ function updateStartDate(value) {
               </v-menu>
               <small>{{ t('antiCorrosionCommissionStartDateHint') }}</small>
             </label>
-            <label class="future-schedule-field pre-schedule-control-field is-wide">
+            <label v-if="commissionOptions.dateMode === 'manual'" class="future-schedule-field pre-schedule-control-field is-wide">
               <span>{{ t('antiCorrosionCommissionManualDates') }}</span>
               <v-menu
                 v-model="manualCommissionDatesMenu"
@@ -288,7 +257,7 @@ function updateStartDate(value) {
                     hide-details
                     readonly
                     append-inner-icon="mdi-calendar-multiselect"
-                    :disabled="runningKey === 'anti-corrosion-schedule' || commissionOptions.dateMode !== 'manual'"
+                    :disabled="runningKey === 'anti-corrosion-schedule'"
                   />
                 </template>
                 <ScheduleCalendar
@@ -302,7 +271,7 @@ function updateStartDate(value) {
               </v-menu>
               <small>{{ t('antiCorrosionCommissionManualDatesHint') }}</small>
             </label>
-            <label class="future-schedule-field pre-schedule-control-field">
+            <label v-if="commissionOptions.dateMode !== 'manual'" class="future-schedule-field pre-schedule-control-field">
               <span>{{ t('maxGeneratedDays') }}</span>
               <v-text-field
                 v-model="commissionOptions.maxDays"
@@ -311,7 +280,7 @@ function updateStartDate(value) {
                 density="compact"
                 variant="outlined"
                 hide-details
-                :disabled="runningKey === 'anti-corrosion-schedule' || commissionOptions.dateMode === 'manual'"
+                :disabled="runningKey === 'anti-corrosion-schedule'"
                 :placeholder="t('untilAllScheduled')"
               />
               <small>{{ t('antiCorrosionCommissionMaxDaysHint') }}</small>
@@ -328,7 +297,7 @@ function updateStartDate(value) {
               />
               <small>{{ t('skipHolidaysHint') }}</small>
             </label>
-            <label class="future-schedule-field pre-schedule-control-field is-wide">
+            <label v-if="commissionOptions.skipHolidays" class="future-schedule-field pre-schedule-control-field is-wide">
               <span>{{ t('holidayDates') }}</span>
               <v-menu
                 v-model="commissionHolidayDatesMenu"
@@ -344,7 +313,7 @@ function updateStartDate(value) {
                     hide-details
                     readonly
                     append-inner-icon="mdi-calendar-remove"
-                    :disabled="runningKey === 'anti-corrosion-schedule' || !commissionOptions.skipHolidays"
+                    :disabled="runningKey === 'anti-corrosion-schedule'"
                   />
                 </template>
                 <ScheduleCalendar
@@ -377,61 +346,21 @@ function updateStartDate(value) {
       class="status-alert"
     />
 
-    <div v-if="commissionPendingStage" class="commission-preview">
-      <div class="section-head">
-        <div>
-          <h3>{{ t('antiCorrosionCommissionPreview') }}</h3>
-          <span>{{ t('pendingStagedFiles', { count: commissionPendingStage.files?.length || 0 }) }}</span>
-        </div>
-        <div class="module-actions">
-          <v-btn
-            color="primary"
-            prepend-icon="mdi-content-save-outline"
-            :loading="commissionStageSaving"
-            :disabled="commissionPreviewLoading"
-            @click="$emit('save-commission-stage')"
-          >
-            {{ t('confirmSaveCommission') }}
-          </v-btn>
-        </div>
-      </div>
-
-      <v-alert
-        v-if="commissionPreviewError"
-        :text="commissionPreviewError"
-        type="error"
-        density="compact"
-        class="status-alert"
-      />
-
-      <div v-if="commissionPendingStage.files?.length" class="commission-file-list">
-        <button
-          v-for="file in commissionPendingStage.files"
-          :key="file.path"
-          :class="['commission-file-button', { 'is-active': commissionPreviewData.file?.path === file.path }]"
-          type="button"
-          @click="$emit('preview-commission-file', file)"
-        >
-          <v-icon icon="mdi-file-table-outline" size="18" />
-          <span>{{ file.displayName || file.name }}</span>
-          <small>{{ file.path }}</small>
-        </button>
-      </div>
-
-      <div class="library-meta">
-        <span>{{ commissionPreviewData.file?.displayName || commissionPreviewData.file?.name || t('unselected') }}</span>
-        <span>{{ t('totalRows') }}：{{ commissionPreviewData.total || 0 }}</span>
-        <span>{{ t('columnCount') }}：{{ commissionPreviewData.columns?.length || 0 }}</span>
-      </div>
-
-      <DataVTable
-        :records="commissionPreviewData.rows || []"
-        :columns="commissionPreviewColumns"
-        :height="360"
-        :empty-text="t('noAntiCorrosionCommissionPreview')"
-        filterable
-      />
-    </div>
+    <StagedPlanPreview
+      :stage="commissionPendingStage"
+      :preview="commissionPreviewData"
+      :columns="commissionPreviewColumns"
+      :title="t('antiCorrosionCommissionPreview')"
+      :save-label="t('confirmSaveCommission')"
+      :empty-text="t('noAntiCorrosionCommissionPreview')"
+      :loading="commissionPreviewLoading"
+      :error="commissionPreviewError"
+      :saving="commissionStageSaving"
+      @save="$emit('save-commission-stage')"
+      @preview-file="$emit('preview-commission-file', $event)"
+      @change-sheet="$emit('change-commission-preview-sheet', $event)"
+    />
+    </section>
   </v-card>
 </template>
 
@@ -457,20 +386,30 @@ function updateStartDate(value) {
 
 .pre-schedule-config-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(240px, 1fr));
   align-items: start;
-  gap: 14px;
+  gap: 12px;
 }
 
 .commission-config-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(220px, 360px));
+  grid-template-columns: repeat(2, minmax(240px, 1fr));
   align-items: start;
-  gap: 14px;
+  gap: 12px;
+  width: 100%;
 }
 
 .commission-panel {
-  margin-top: 16px;
+  min-width: 0;
+}
+
+.schedule-section-divider {
+  margin: 24px 0 20px;
+  border-color: var(--line);
+}
+
+.schedule-generation-section {
+  min-width: 0;
 }
 
 .commission-preview {
@@ -481,12 +420,52 @@ function updateStartDate(value) {
   border-top: 1px solid var(--line);
 }
 
+.commission-preview-browser {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.commission-preview-left,
+.commission-preview-right {
+  min-width: 0;
+}
+
+.commission-preview-left {
+  height: clamp(280px, 52vh, 480px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-right: 4px;
+}
+
+.commission-date-panels :deep(.v-expansion-panel) {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+}
+
+.commission-date-title {
+  display: grid;
+  gap: 2px;
+}
+
+.commission-date-title strong {
+  color: var(--strong);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.commission-date-title span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .commission-file-list {
   display: grid;
   gap: 8px;
-  max-height: 220px;
-  overflow: auto;
-  padding-right: 4px;
 }
 
 .commission-file-button {
@@ -503,6 +482,14 @@ function updateStartDate(value) {
   color: var(--text);
   text-align: left;
   cursor: pointer;
+}
+
+.commission-preview-empty {
+  padding: 18px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  text-align: center;
 }
 
 .commission-file-button:hover,
@@ -555,7 +542,11 @@ function updateStartDate(value) {
 }
 
 .future-schedule-field.is-wide {
-  grid-column: span 2;
+  grid-column: auto;
+}
+
+.commission-config-grid .future-schedule-field.is-wide {
+  grid-column: auto;
 }
 
 .pre-schedule-switch-field {
@@ -572,12 +563,13 @@ function updateStartDate(value) {
 }
 
 @media (max-width: 1120px) {
-  .pre-schedule-config-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .pre-schedule-config-grid,
+  .commission-config-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .commission-config-grid {
-    grid-template-columns: repeat(2, minmax(220px, 1fr));
+  .commission-preview-browser {
+    grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
   }
 }
 
@@ -589,6 +581,14 @@ function updateStartDate(value) {
 
   .future-schedule-field.is-wide {
     grid-column: auto;
+  }
+
+  .commission-preview-browser {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .commission-preview-left {
+    height: min(340px, 48vh);
   }
 }
 </style>

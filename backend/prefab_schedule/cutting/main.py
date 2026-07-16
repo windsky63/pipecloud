@@ -8,12 +8,10 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from common_utils import prepare_output_file
 from cutting.cutting_config import (
     CONSUMED_LENGTHS_COL,
     CUT_LENGTHS_COL,
     CUT_LOSSES_COL,
-    CUTTING_FILES,
     EXTRA_MATERIAL_QTY_FOR_P,
     FITTING_STOCK_QTY_COL,
     MATERIAL_CODE_COL,
@@ -22,20 +20,6 @@ from cutting.cutting_config import (
     PIPE_UNIQUE_CODE_COL,
     REMAINING_LENGTH_COL,
 )
-
-
-def _read_excel_or_empty(file_path):
-    file_path = Path(file_path)
-    if not file_path.exists() or file_path.stat().st_size == 0:
-        return pd.DataFrame()
-    try:
-        return pd.read_excel(file_path)
-    except ValueError:
-        return pd.DataFrame()
-
-
-def _is_empty_library(df):
-    return df is None or df.empty or len(df.columns) == 0
 
 
 def _parse_cut_lengths(value):
@@ -127,6 +111,16 @@ def _normalize_pipe_library(pipe_df):
         raise ValueError(f'管子材料库缺少列：{MATERIAL_CODE_COL}')
     if PIPE_UNIQUE_CODE_COL not in pipe_df.columns:
         pipe_df[PIPE_UNIQUE_CODE_COL] = range(1, len(pipe_df) + 1)
+    else:
+        normalized_pipe_no = pipe_df[PIPE_UNIQUE_CODE_COL].fillna('').astype(str).str.strip()
+        missing_mask = normalized_pipe_no.eq('')
+        if missing_mask.any():
+            normalized_pipe_no.loc[missing_mask] = [
+                str(index + 1)
+                for index in range(len(pipe_df))
+                if missing_mask.iloc[index]
+            ]
+        pipe_df[PIPE_UNIQUE_CODE_COL] = normalized_pipe_no
 
     pipe_df[MATERIAL_CODE_COL] = pipe_df[MATERIAL_CODE_COL].astype(str).str.strip()
     pipe_df[PIPE_STOCK_QTY_COL] = pd.to_numeric(pipe_df[PIPE_STOCK_QTY_COL], errors='coerce').fillna(0)
@@ -147,52 +141,6 @@ def _normalize_pipe_library(pipe_df):
     pipe_df[CONSUMED_LENGTHS_COL] = cut_states.apply(lambda item: _format_cut_lengths(item[2]))
     pipe_df[REMAINING_LENGTH_COL] = cut_states.apply(lambda item: item[3]).clip(lower=0)
     return pipe_df
-
-
-def ensure_anti_corrosion_pipe_library(
-    pipe_library_file=CUTTING_FILES['pipe_library'],
-    anti_corrosion_pipe_library_file=CUTTING_FILES['anti_corrosion_pipe_library'],
-    reset=False,
-    persist_initialized=True,
-):
-    """防腐管子库为空时，用管子材料库逐根复制初始化。"""
-    anti_file = Path(anti_corrosion_pipe_library_file)
-    anti_df = _read_excel_or_empty(anti_file)
-    if not reset and not _is_empty_library(anti_df):
-        return _normalize_pipe_library(anti_df), False
-
-    pipe_df = _read_excel_or_empty(pipe_library_file)
-    if _is_empty_library(pipe_df):
-        raise ValueError(f'管子材料库为空，无法初始化防腐管子材料库：{pipe_library_file}')
-
-    anti_df = _normalize_pipe_library(pipe_df)
-    if persist_initialized:
-        prepare_output_file(anti_file)
-        anti_df.to_excel(anti_file, index=False)
-    return anti_df, True
-
-
-def ensure_anti_corrosion_fitting_library(
-    fitting_library_file=CUTTING_FILES['fitting_library'],
-    anti_corrosion_fitting_library_file=CUTTING_FILES['anti_corrosion_fitting_library'],
-    reset=False,
-    persist_initialized=True,
-):
-    """防腐管件法兰库为空时，用管件法兰材料库初始化。"""
-    anti_file = Path(anti_corrosion_fitting_library_file)
-    anti_df = _read_excel_or_empty(anti_file)
-    if not reset and not _is_empty_library(anti_df):
-        return _normalize_fitting_library(anti_df), False
-
-    fitting_df = _read_excel_or_empty(fitting_library_file)
-    if _is_empty_library(fitting_df):
-        raise ValueError(f'管件法兰材料库为空，无法初始化防腐管件法兰材料库：{fitting_library_file}')
-
-    anti_df = _normalize_fitting_library(fitting_df)
-    if persist_initialized:
-        prepare_output_file(anti_file)
-        anti_df.to_excel(anti_file, index=False)
-    return anti_df, True
 
 
 def _normalize_fitting_library(fitting_df):

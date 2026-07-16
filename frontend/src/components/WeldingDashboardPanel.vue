@@ -131,11 +131,13 @@ function clampPercent(value) {
             v-for="item in viewItems"
             :key="item.value"
             :value="item.value"
-            :icon="item.icon"
+            icon
             variant="text"
             :aria-label="item.label"
-            :title="item.label"
-          />
+          >
+            <v-icon :icon="item.icon" />
+            <v-tooltip activator="parent" location="top">{{ item.label }}</v-tooltip>
+          </v-btn>
         </v-btn-toggle>
         <span
           v-if="!collapsed && (showRefresh || collapsible)"
@@ -146,27 +148,36 @@ function clampPercent(value) {
         <v-btn
           v-if="showRefresh"
           :loading="loading"
-          icon="mdi-refresh"
+          icon
           variant="text"
           :aria-label="t('refreshDashboard')"
-          :title="t('refreshDashboard')"
           @click="emit('refresh')"
-        />
+        >
+          <v-icon icon="mdi-refresh" />
+          <v-tooltip activator="parent" location="top">{{ t('refreshDashboard') }}</v-tooltip>
+        </v-btn>
         <v-btn
           v-if="collapsible"
-          icon="mdi-eye-off-outline"
+          icon
           variant="text"
           :aria-label="t('hideDashboard')"
-          :title="t('hideDashboard')"
           @click="emit('hide')"
-        />
+        >
+          <v-icon icon="mdi-eye-off-outline" />
+          <v-tooltip activator="parent" location="top">{{ t('hideDashboard') }}</v-tooltip>
+        </v-btn>
         <v-btn
           v-if="collapsible"
-          :icon="collapsed ? 'mdi-chevron-down' : 'mdi-chevron-up'"
+          icon
           variant="text"
           :aria-label="collapsed ? t('expandDashboard') : t('collapseDashboard')"
           @click="emit('toggle')"
-        />
+        >
+          <v-icon :icon="collapsed ? 'mdi-chevron-down' : 'mdi-chevron-up'" />
+          <v-tooltip activator="parent" location="top">
+            {{ collapsed ? t('expandDashboard') : t('collapseDashboard') }}
+          </v-tooltip>
+        </v-btn>
       </div>
     </div>
 
@@ -177,22 +188,22 @@ function clampPercent(value) {
 
       <template v-if="activeView === 'data'">
         <v-sheet class="welding-dashboard" color="transparent">
-          <div class="welding-stat-card is-primary">
+          <div class="welding-stat-card is-history-rate">
             <span>{{ t('historyCompletionRate') }}</span>
             <strong>{{ formatPercent(props.dashboard.historyCompletionRate) }}</strong>
             <small>{{ t('weldCountRatio', { completed: props.dashboard.historyCompletedRows || 0, total: props.dashboard.historyTotalRows || 0 }) }}</small>
           </div>
-          <div class="welding-stat-card">
+          <div class="welding-stat-card is-history-plan">
             <span>{{ t('historyPlanCount') }}</span>
             <strong>{{ props.dashboard.historyPlanCount || 0 }}</strong>
             <small>{{ t('totalAndTodayPlans', { total: props.dashboard.planCount || 0, today: props.dashboard.todayPlanCount || 0 }) }}</small>
           </div>
-          <div class="welding-stat-card">
+          <div class="welding-stat-card is-total-rate">
             <span>{{ t('totalCompletionRate') }}</span>
             <strong>{{ formatPercent(props.dashboard.completionRate) }}</strong>
             <small>{{ t('weldCountRatio', { completed: props.dashboard.completedRows || 0, total: props.dashboard.totalRows || 0 }) }}</small>
           </div>
-          <div class="welding-stat-card">
+          <div class="welding-stat-card is-today-rate">
             <span>{{ t('todayCompletionRate') }}</span>
             <strong>{{ formatPercent(props.dashboard.todayCompletionRate) }}</strong>
             <small>{{ t('weldCountRatio', { completed: props.dashboard.todayCompletedRows || 0, total: props.dashboard.todayTotalRows || 0 }) }}</small>
@@ -314,13 +325,21 @@ function clampPercent(value) {
   gap: 6px;
   min-height: 108px;
   padding: 14px 16px;
-  border: 1px solid var(--line);
+  border: 1px solid color-mix(in srgb, var(--card-accent, var(--primary)) 40%, var(--line));
   border-radius: 8px;
-  background: var(--panel-soft);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--card-accent, var(--primary)) 8%, var(--panel)), var(--panel-soft));
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--card-accent, var(--primary)) 8%, transparent);
+  transition: transform 160ms ease, box-shadow 160ms ease;
 }
 
-.welding-stat-card.is-primary {
-  border-color: color-mix(in srgb, var(--primary) 35%, var(--line));
+.welding-stat-card.is-history-rate { --card-accent: var(--primary); }
+.welding-stat-card.is-history-plan { --card-accent: #7c5ce0; }
+.welding-stat-card.is-total-rate { --card-accent: #0f9f6e; }
+.welding-stat-card.is-today-rate { --card-accent: #d98b18; }
+
+.welding-stat-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 26px color-mix(in srgb, var(--card-accent, var(--primary)) 13%, transparent);
 }
 
 .welding-stat-card span,

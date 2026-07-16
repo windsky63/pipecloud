@@ -28,6 +28,7 @@ from pipecloud.services.db_storage import (
     replace_source_with_workbook,
     standardize_workbook_payload,
     table_payload,
+    table_preview_payload,
     workbook_preview_payload,
 )
 
@@ -993,13 +994,18 @@ def confirm_initialization_file(request):
                 staged_path,
                 INITIALIZATION_MODELS,
             )
-        selected_sheet, sheets, total, columns, rows = table_payload(source, INITIALIZATION_MODELS, None)
+        selected_sheet, sheets, total, columns, rows = table_preview_payload(
+            source,
+            INITIALIZATION_MODELS,
+            None,
+            limit=20,
+        )
         preview = {
             'sheet': selected_sheet,
             'sheets': sheets,
             'total': total,
             'columns': columns,
-            'rows': rows[:20],
+            'rows': rows,
             'previewLimit': 20,
         }
     except Exception as error:

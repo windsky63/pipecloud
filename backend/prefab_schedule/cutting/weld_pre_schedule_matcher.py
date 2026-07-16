@@ -9,10 +9,8 @@ for path in [ROOT_DIR, CUTTING_DIR]:
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from common_utils import normalize_columns, prepare_output_file
 from cutting.cutting_config import (
     COLUMNS,
-    CUTTING_FILES,
     DEFAULT_PRIORITY,
     EXTRA_MATERIAL_QTY_FOR_P,
     MATCH_REASON_COL,
@@ -48,13 +46,6 @@ ORDINARY_POOL = '普通'
 ANTI_CORROSION_POOL = '防腐'
 INVENTORY_POOL_KEY = '库存类型'
 NO_PAINT_REQUIREMENT_VALUES = {'', '/', '\\', '-', '--', '无', '否', '不防腐', '无需防腐', 'N/A', 'NA', 'NONE', 'NULL'}
-
-
-def _read_excel_or_empty(file_path):
-    file_path = Path(file_path)
-    if not file_path.exists() or file_path.stat().st_size == 0:
-        return pd.DataFrame()
-    return normalize_columns(pd.read_excel(file_path))
 
 
 def _normalize_pipe_library_or_empty(dataframe):
@@ -102,6 +93,38 @@ def _copy_all_pipe_states(pipe_states):
     return {
         material_code: [_copy_pipe_state(state) for state in states]
         for material_code, states in pipe_states.items()
+    }
+
+
+def _material_codes_for_demands(demands):
+    return {
+        str(demand.get(MATERIAL_CODE_COL, '')).strip()
+        for demand in (demands or [])
+        if str(demand.get(MATERIAL_CODE_COL, '')).strip()
+    }
+
+
+def _group_material_codes(group_df):
+    pipe_codes = set()
+    fitting_codes = set()
+    for _, row in group_df.iterrows():
+        pipe_demands, fitting_demands = _build_weld_material_demands(row)
+        pipe_codes.update(_material_codes_for_demands(pipe_demands))
+        fitting_codes.update(_material_codes_for_demands(fitting_demands))
+    return pipe_codes, fitting_codes
+
+
+def _copy_pipe_states_for_codes(pipe_states, material_codes):
+    return {
+        material_code: list(pipe_states.get(material_code, []))
+        for material_code in material_codes
+    }
+
+
+def _copy_fitting_stock_for_codes(fitting_stock, material_codes):
+    return {
+        material_code: float(fitting_stock.get(material_code, 0))
+        for material_code in material_codes
     }
 
 
@@ -236,18 +259,28 @@ def _aggregate_fitting_demands(fitting_demands):
     if not fitting_demands:
         return []
 
-    demand_df = pd.DataFrame(fitting_demands)
-    group_cols = [MATERIAL_CODE_COL]
-    if INVENTORY_POOL_KEY in demand_df.columns:
-        group_cols.append(INVENTORY_POOL_KEY)
-    grouped = (
-        demand_df.groupby(group_cols, as_index=False)
-        .agg({
-            MATERIAL_UNIQUE_COL: _format_joined,
-            '需求数量': 'sum',
+    include_pool = any(INVENTORY_POOL_KEY in demand for demand in fitting_demands)
+    grouped = {}
+    for demand in fitting_demands:
+        material_code = str(demand.get(MATERIAL_CODE_COL, '')).strip()
+        pool_name = str(demand.get(INVENTORY_POOL_KEY, '')).strip() if include_pool else ''
+        key = (material_code, pool_name)
+        target = grouped.setdefault(key, {
+            MATERIAL_CODE_COL: material_code,
+            MATERIAL_UNIQUE_COL: [],
+            '需求数量': 0.0,
         })
-    )
-    return grouped.to_dict('records')
+        if include_pool:
+            target[INVENTORY_POOL_KEY] = pool_name
+        target[MATERIAL_UNIQUE_COL].append(demand.get(MATERIAL_UNIQUE_COL, ''))
+        target['需求数量'] += float(demand.get('需求数量', 0) or 0)
+
+    rows = []
+    for key in sorted(grouped):
+        row = grouped[key]
+        row[MATERIAL_UNIQUE_COL] = _format_joined(row[MATERIAL_UNIQUE_COL])
+        rows.append(row)
+    return rows
 
 
 def _build_pipe_states(pipe_df):
@@ -287,7 +320,7 @@ def _build_fitting_stock(fitting_df):
 def _copy_pipe_states_for_demands(pipe_states, pipe_demands):
     material_codes = {str(demand[MATERIAL_CODE_COL]).strip() for demand in pipe_demands}
     return {
-        material_code: [_copy_pipe_state(state) for state in pipe_states.get(material_code, [])]
+        material_code: list(pipe_states.get(material_code, []))
         for material_code in material_codes
     }
 
@@ -313,7 +346,7 @@ def _try_allocate_pipe_demands(row, seq, pipe_demands, pipe_states, precision=3)
             detail_rows.append(detail)
             return False, {}, detail_rows
 
-        feasible = []
+        best_match = None
         for pos, state in enumerate(candidates):
             before_remaining = round(float(state['remaining']), precision)
             consumed_length, allowance = cutting_main._calculate_consumed_length(
@@ -324,27 +357,36 @@ def _try_allocate_pipe_demands(row, seq, pipe_demands, pipe_states, precision=3)
                 has_prior_cuts=state['has_prior_cuts'],
             )
             if before_remaining >= consumed_length:
-                feasible.append((round(consumed_length, precision), round(before_remaining - consumed_length, precision), pos, allowance))
+                candidate_match = (
+                    round(consumed_length, precision),
+                    round(before_remaining - consumed_length, precision),
+                    pos,
+                    allowance,
+                )
+                if best_match is None or candidate_match[:2] < best_match[:2]:
+                    best_match = candidate_match
 
-        if not feasible:
+        if best_match is None:
             detail = _base_detail(row, seq, '管子', demand, SHORTAGE_STATUS, '加切割余量后剩余长度不足')
             detail.update({'需求数量': length, '匹配数量': 0, '缺料数量': length, MATCHED_RESOURCE_COL: ''})
             detail_rows.append(detail)
             return False, {}, detail_rows
 
-        consumed_length, after_remaining, best_pos, allowance = sorted(feasible, key=lambda item: (item[0], item[1]))[0]
-        candidates[best_pos]['remaining'] = after_remaining
-        candidates[best_pos]['has_prior_cuts'] = True
-        candidates[best_pos]['cut_list'].append(length)
-        candidates[best_pos]['loss_list'].append(allowance)
-        candidates[best_pos]['consumed_list'].append(consumed_length)
+        consumed_length, after_remaining, best_pos, allowance = best_match
+        selected_state = _copy_pipe_state(candidates[best_pos])
+        selected_state['remaining'] = after_remaining
+        selected_state['has_prior_cuts'] = True
+        selected_state['cut_list'].append(length)
+        selected_state['loss_list'].append(allowance)
+        selected_state['consumed_list'].append(consumed_length)
+        candidates[best_pos] = selected_state
 
         detail = _base_detail(row, seq, '管子', demand, MATCHED_STATUS, f'占用{consumed_length:g}米，余量{allowance:g}米')
         detail.update({
             '需求数量': length,
             '匹配数量': length,
             '缺料数量': 0,
-            MATCHED_RESOURCE_COL: candidates[best_pos]['pipe_no'],
+            MATCHED_RESOURCE_COL: selected_state['pipe_no'],
         })
         detail_rows.append(detail)
 
@@ -465,16 +507,23 @@ def _library_seq_sort_key(value):
 
 
 def _simulate_group_matches(group_df, pipe_states, fitting_stock, start_seq):
-    group_pipe_states = _copy_all_pipe_states(pipe_states)
-    group_fitting_stock = fitting_stock.copy()
+    prepared_rows = []
+    pipe_codes = set()
+    fitting_codes = set()
+    for row in group_df.to_dict('records'):
+        pipe_demands, fitting_demands = _build_weld_material_demands(row)
+        pipe_codes.update(_material_codes_for_demands(pipe_demands))
+        fitting_codes.update(_material_codes_for_demands(fitting_demands))
+        prepared_rows.append((row, pipe_demands, fitting_demands))
+    group_pipe_states = _copy_pipe_states_for_codes(pipe_states, pipe_codes)
+    group_fitting_stock = _copy_fitting_stock_for_codes(fitting_stock, fitting_codes)
     accepted_rows = []
     rejected_rows = []
     all_rows = []
     detail_rows = []
     match_seq = start_seq
 
-    for _, row in group_df.iterrows():
-        pipe_demands, fitting_demands = _build_weld_material_demands(row)
+    for row, pipe_demands, fitting_demands in prepared_rows:
         pipe_ok, next_pipe_states, pipe_details = _try_allocate_pipe_demands(row, match_seq, pipe_demands, group_pipe_states)
         fitting_ok = False
         next_fitting_stock = {}
@@ -483,7 +532,7 @@ def _simulate_group_matches(group_df, pipe_states, fitting_stock, start_seq):
         if pipe_ok:
             fitting_ok, next_fitting_stock, fitting_details = _try_allocate_fitting_demands(row, match_seq, fitting_demands, group_fitting_stock)
 
-        row_out = row.to_dict()
+        row_out = dict(row)
         row_detail = pipe_details + fitting_details
         detail_rows.extend(row_detail)
 
@@ -659,49 +708,3 @@ def _apply_fitting_stock_to_df(fitting_df, fitting_stock):
             updated_df.at[idx, FITTING_STOCK_QTY_COL] = row_stock - consume_qty
             consumed_qty -= consume_qty
     return updated_df
-
-
-def match_weld_pre_schedule(
-    weld_library_file=CUTTING_FILES['weld_library'],
-    pipe_library_file=CUTTING_FILES['pipe_library'],
-    fitting_library_file=CUTTING_FILES['fitting_library'],
-    anti_corrosion_pipe_library_file=CUTTING_FILES['anti_corrosion_pipe_library'],
-    anti_corrosion_fitting_library_file=CUTTING_FILES['anti_corrosion_fitting_library'],
-    output_file=CUTTING_FILES['weld_pre_schedule_output'],
-    pending_pipe_library_file=CUTTING_FILES['pending_pipe_library'],
-    pending_fitting_library_file=CUTTING_FILES['pending_fitting_library'],
-    pending_anti_corrosion_pipe_library_file=CUTTING_FILES['pending_anti_corrosion_pipe_library'],
-    pending_anti_corrosion_fitting_library_file=CUTTING_FILES['pending_anti_corrosion_fitting_library'],
-    only_auto_weld=None,
-    ignore_anti_corrosion_status=False,
-    concentration_dimension=None,
-    concentration_threshold_percent=None,
-):
-    weld_df = _read_excel_or_empty(weld_library_file)
-    if weld_df.empty:
-        raise ValueError(f'焊口库为空，无法匹配预排产焊口：{weld_library_file}')
-
-    all_df = _prepare_simple_cutting_pre_schedule_welds(weld_df)
-    all_df[MATCH_SEQ_COL] = range(1, len(all_df) + 1)
-    all_df[STATUS_COL] = MATCHED_STATUS
-    all_df[REASON_COL] = ''
-
-    prepare_output_file(output_file)
-    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-        all_df.to_excel(writer, sheet_name='预排产匹配结果', index=False)
-
-    return {
-        'candidate_count': len(all_df),
-        'pre_schedule_count': len(all_df),
-        'rejected_count': 0,
-        'detail_count': 0,
-        'output_file': Path(output_file),
-    }
-
-
-if __name__ == '__main__':
-    result = match_weld_pre_schedule()
-    print(f"未完成焊口数：{result['candidate_count']}")
-    print(f"可进入预排产焊口数：{result['pre_schedule_count']}")
-    print(f"不可预排产焊口数：{result['rejected_count']}")
-    print(f"焊口预排产匹配结果：{result['output_file']}")

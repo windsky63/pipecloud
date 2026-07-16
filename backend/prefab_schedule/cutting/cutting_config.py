@@ -27,16 +27,6 @@ PRE_SCHEDULE_ONLY_AUTO_WELD = _env_bool('PIPECLOUD_PRE_SCHEDULE_ONLY_AUTO_WELD',
 
 CUTTING_FILES = {
     'prefab_weld_input': INTERMEDIATE_DIR / '可预制焊口初步过滤结果.xlsx',
-    'weld_library': LIBRARY_DIR / '焊口库.xlsx',
-    'init_material_input': INTERMEDIATE_DIR / '初始化数据材料明细表.xlsx',
-    'pipe_library': LIBRARY_DIR / '管子材料库.xlsx',
-    'fitting_library': LIBRARY_DIR / '管件法兰材料库.xlsx',
-    'anti_corrosion_pipe_library': LIBRARY_DIR / '防腐管子材料库.xlsx',
-    'anti_corrosion_fitting_library': LIBRARY_DIR / '防腐管件法兰材料库.xlsx',
-    'pending_pipe_library': PRE_SCHEDULE_OUTPUT_DIR / '待确认管子材料库.xlsx',
-    'pending_fitting_library': PRE_SCHEDULE_OUTPUT_DIR / '待确认管件法兰材料库.xlsx',
-    'pending_anti_corrosion_pipe_library': PRE_SCHEDULE_OUTPUT_DIR / '待确认防腐管子材料库.xlsx',
-    'pending_anti_corrosion_fitting_library': PRE_SCHEDULE_OUTPUT_DIR / '待确认防腐管件法兰材料库.xlsx',
     'weld_pre_schedule_output': PRE_SCHEDULE_OUTPUT_DIR / '焊口预排产匹配结果.xlsx',
 }
 

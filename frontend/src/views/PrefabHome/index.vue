@@ -4,7 +4,9 @@ import { InputEditor } from '@visactor/vtable-editors'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRouter } from 'vue-router'
 import {
+  fetchAntiCorrosionDashboard,
   fetchArrivalDashboard,
+  fetchCuttingDashboard,
   fetchInitializationStats,
   fetchWeldingDashboard,
 } from '../../api/workflow'
@@ -22,10 +24,12 @@ import {
 import PageHeader from '../../components/PageHeader.vue'
 import ArrivalDashboardPanel from '../../components/ArrivalDashboardPanel.vue'
 import InitializationDashboardPanel from '../../components/InitializationDashboardPanel.vue'
+import ScheduleDashboardPanel from '../../components/ScheduleDashboardPanel.vue'
 import UnsavedChangesDialog from '../../components/UnsavedChangesDialog.vue'
 import WeldingDashboardPanel from '../../components/WeldingDashboardPanel.vue'
 import {
   errorMessage as workflowErrorMessage,
+  displayDataPath,
   homeComponentVisibility,
   loadSummary,
   loading as workflowLoading,
@@ -57,12 +61,16 @@ const loading = ref(false)
 const weldLoading = ref(false)
 const initializationDashboardLoading = ref(false)
 const weldingDashboardLoading = ref(false)
+const antiCorrosionDashboardLoading = ref(false)
+const cuttingDashboardLoading = ref(false)
 const arrivalDashboardLoading = ref(false)
 const saving = ref(false)
 const errorMessage = ref('')
 const weldErrorMessage = ref('')
 const initializationDashboardError = ref('')
 const weldingDashboardError = ref('')
+const antiCorrosionDashboardError = ref('')
+const cuttingDashboardError = ref('')
 const arrivalDashboardError = ref('')
 const searchText = ref('')
 const dirtyRowIds = ref(new Set())
@@ -83,9 +91,13 @@ const projectFormProcessSequence = ref(null)
 const unsavedChangesDialog = ref(null)
 const initializationDashboardCollapsed = ref(false)
 const weldingDashboardCollapsed = ref(false)
+const antiCorrosionDashboardCollapsed = ref(false)
+const cuttingDashboardCollapsed = ref(false)
 const arrivalDashboardCollapsed = ref(false)
 const initializationDashboard = ref(emptyInitializationDashboard())
 const weldingDashboard = ref(emptyWeldingDashboard())
+const antiCorrosionDashboard = ref(emptyAntiCorrosionDashboard())
+const cuttingDashboard = ref(emptyCuttingDashboard())
 const arrivalDashboard = ref(emptyArrivalDashboard())
 let projectTableInstance = null
 let weldTableInstance = null
@@ -123,6 +135,8 @@ const selectedProjectInitializationHint = computed(() => (
   selectedProject.value?.initializationHint || t('noInitializationDataHint')
 ))
 const showInitializationDashboard = computed(() => homeComponentVisibility.value.initializationDashboard)
+const showAntiCorrosionDashboard = computed(() => homeComponentVisibility.value.antiCorrosionDashboard)
+const showCuttingDashboard = computed(() => homeComponentVisibility.value.cuttingDashboard)
 const showWeldingDashboard = computed(() => homeComponentVisibility.value.weldingDashboard)
 const showArrivalDashboard = computed(() => homeComponentVisibility.value.arrivalDashboard)
 const showHomeWorkflow = computed(() => homeComponentVisibility.value.workflow)
@@ -160,6 +174,33 @@ function emptyWeldingDashboard() {
     recentPlans: [],
     cachePath: '',
     fromCache: false,
+  }
+}
+
+function emptyAntiCorrosionDashboard() {
+  return {
+    planCount: 0,
+    todayPlanCount: 0,
+    commissionCount: 0,
+    segmentCount: 0,
+    totalArea: 0,
+    preSchedule: { path: '', totalRows: 0, schedulableRows: 0, rejectedRows: 0, statusRows: [] },
+    rows: [],
+    recentPlans: [],
+  }
+}
+
+function emptyCuttingDashboard() {
+  return {
+    planCount: 0,
+    todayPlanCount: 0,
+    orderCount: 0,
+    todayOrderCount: 0,
+    weldCount: 0,
+    todayWeldCount: 0,
+    diameterTotal: 0,
+    preSchedule: { path: '', totalRows: 0, schedulableRows: 0, rejectedRows: 0, statusRows: [] },
+    rows: [],
   }
 }
 
@@ -629,6 +670,50 @@ async function loadWeldingDashboard(options = {}) {
   }
 }
 
+async function loadAntiCorrosionDashboard(options = {}) {
+  const projectId = selectedProjectId.value
+  if (!projectId) {
+    antiCorrosionDashboard.value = emptyAntiCorrosionDashboard()
+    antiCorrosionDashboardLoading.value = false
+    return
+  }
+  antiCorrosionDashboardLoading.value = true
+  antiCorrosionDashboardError.value = ''
+  try {
+    const payload = await fetchAntiCorrosionDashboard(selectedProjectParams(), options)
+    if (options.signal?.aborted || projectId !== selectedProjectId.value) return
+    antiCorrosionDashboard.value = payload
+  } catch (error) {
+    if (error?.name === 'AbortError' || projectId !== selectedProjectId.value) return
+    antiCorrosionDashboard.value = emptyAntiCorrosionDashboard()
+    antiCorrosionDashboardError.value = t('antiCorrosionDashboardReadFailed', { message: error.message })
+  } finally {
+    if (!options.signal?.aborted && projectId === selectedProjectId.value) antiCorrosionDashboardLoading.value = false
+  }
+}
+
+async function loadCuttingDashboard(options = {}) {
+  const projectId = selectedProjectId.value
+  if (!projectId) {
+    cuttingDashboard.value = emptyCuttingDashboard()
+    cuttingDashboardLoading.value = false
+    return
+  }
+  cuttingDashboardLoading.value = true
+  cuttingDashboardError.value = ''
+  try {
+    const payload = await fetchCuttingDashboard(selectedProjectParams(), options)
+    if (options.signal?.aborted || projectId !== selectedProjectId.value) return
+    cuttingDashboard.value = payload
+  } catch (error) {
+    if (error?.name === 'AbortError' || projectId !== selectedProjectId.value) return
+    cuttingDashboard.value = emptyCuttingDashboard()
+    cuttingDashboardError.value = t('cuttingDashboardReadFailed', { message: error.message })
+  } finally {
+    if (!options.signal?.aborted && projectId === selectedProjectId.value) cuttingDashboardLoading.value = false
+  }
+}
+
 async function loadArrivalDashboard(options = {}) {
   const projectId = selectedProjectId.value
   if (!projectId) {
@@ -671,6 +756,8 @@ async function loadHomeProjectData(page = 1) {
   await Promise.all([
     loadProjectConstraints(options),
     loadInitializationDashboard(options),
+    loadAntiCorrosionDashboard(options),
+    loadCuttingDashboard(options),
     loadArrivalDashboard(options),
     loadWeldingDashboard(options),
     loadProjectWelds(page, options),
@@ -939,6 +1026,38 @@ onBeforeUnmount(() => {
     @toggle="weldingDashboardCollapsed = !weldingDashboardCollapsed"
   />
 
+  <ScheduleDashboardPanel
+    v-if="showAntiCorrosionDashboard"
+    mode="anti-corrosion"
+    :title="t('antiCorrosionDashboardTitle')"
+    :description="t('antiCorrosionDashboardDescription')"
+    :dashboard="antiCorrosionDashboard"
+    :loading="antiCorrosionDashboardLoading"
+    :error="antiCorrosionDashboardError"
+    :collapsed="antiCorrosionDashboardCollapsed"
+    show-refresh
+    collapsible
+    @refresh="loadAntiCorrosionDashboard"
+    @hide="setHomeComponentVisibility('antiCorrosionDashboard', false)"
+    @toggle="antiCorrosionDashboardCollapsed = !antiCorrosionDashboardCollapsed"
+  />
+
+  <ScheduleDashboardPanel
+    v-if="showCuttingDashboard"
+    mode="cutting"
+    :title="t('cuttingDashboardTitle')"
+    :description="t('cuttingDashboardDescription')"
+    :dashboard="cuttingDashboard"
+    :loading="cuttingDashboardLoading"
+    :error="cuttingDashboardError"
+    :collapsed="cuttingDashboardCollapsed"
+    show-refresh
+    collapsible
+    @refresh="loadCuttingDashboard"
+    @hide="setHomeComponentVisibility('cuttingDashboard', false)"
+    @toggle="cuttingDashboardCollapsed = !cuttingDashboardCollapsed"
+  />
+
   <ArrivalDashboardPanel
     v-if="showArrivalDashboard"
     :title="t('arrivalDashboardTitle')"
@@ -1049,7 +1168,7 @@ onBeforeUnmount(() => {
       <div class="library-meta project-meta">
         <span>{{ t('project') }}：{{ selectedProject?.project_name || t('unselected') }}</span>
         <span>{{ t('weldRows') }}：{{ weldMeta.total }}</span>
-        <span>{{ t('dataPath') }}：{{ weldMeta.dataPath || '-' }}</span>
+        <span v-if="displayDataPath(weldMeta.dataPath)">{{ t('dataPath') }}：{{ displayDataPath(weldMeta.dataPath) }}</span>
       </div>
 
       <div class="project-file-actions weld-pagination">

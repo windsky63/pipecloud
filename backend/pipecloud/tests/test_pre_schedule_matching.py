@@ -16,8 +16,6 @@ from anti_corrosion.pre_schedule_matcher import (  # noqa: E402
 from anti_corrosion.main import (  # noqa: E402
     build_anti_corrosion_commission_file_sheets,
     build_anti_corrosion_commission_from_pre_schedule,
-    build_anti_corrosion_material_detail,
-    build_anti_corrosion_material_summary,
 )
 
 
@@ -49,6 +47,12 @@ def weld_row(seq, segment, quantity, paint='PA1', material_code='P001'):
     }
 
 
+def anti_corrosion_weld_row(seq, segment, quantity, paint='PA1', material_code='P001'):
+    row = weld_row(seq, segment, quantity, paint=paint, material_code=material_code)
+    row[cutting_matcher.COLUMNS['material_anti_corrosion_status']] = False
+    return row
+
+
 def pipe_library(length, material_code='P001', unit_area=2):
     return pd.DataFrame([{
         '材料代码': material_code,
@@ -59,6 +63,23 @@ def pipe_library(length, material_code='P001', unit_area=2):
 
 
 class CuttingPreScheduleInventoryRoutingTests(SimpleTestCase):
+    def test_pipe_match_uses_first_equal_candidate_without_mutating_input_states(self):
+        group_df = pd.DataFrame([weld_row('W1', 'S1', 2, paint='/', material_code='P001')])
+        pipe_df = cutting_matcher._normalize_pipe_library_or_empty(pd.DataFrame([
+            {'材料代码': 'P001', '管子序号': 'PIPE-1', '库存数量（米）': 5},
+            {'材料代码': 'P001', '管子序号': 'PIPE-2', '库存数量（米）': 5},
+        ]))
+        pipe_states = cutting_matcher._build_pipe_states(pipe_df)
+
+        result = cutting_matcher._simulate_group_matches(group_df, pipe_states, {}, 1)
+
+        self.assertEqual(
+            result['detail_rows'][0][cutting_matcher.MATCHED_RESOURCE_COL],
+            'PIPE-1',
+        )
+        self.assertEqual(pipe_states['P001'][0]['remaining'], 5)
+        self.assertEqual(pipe_states['P001'][0]['cut_list'], [])
+
     def test_prepare_uncompleted_welds_keeps_prefab_library_sequence(self):
         source = pd.DataFrame([
             weld_row('P1-W00000042', 'S1', 2, paint='/', material_code='P001'),
@@ -189,8 +210,8 @@ class AntiCorrosionPreScheduleTests(SimpleTestCase):
     def test_requires_material_arrival_status_and_keeps_library_sequence(self):
         columns = cutting_matcher.COLUMNS
         weld_df = pd.DataFrame([
-            weld_row('P1-W00000042', 'S-OK', 2),
-            {**weld_row('NOT-ARRIVED', 'S-NO', 2), columns['material_arrival_status']: False},
+            anti_corrosion_weld_row('P1-W00000042', 'S-OK', 2),
+            {**anti_corrosion_weld_row('NOT-ARRIVED', 'S-NO', 2), columns['material_arrival_status']: False},
         ])
 
         result = match_anti_corrosion_pre_schedule_dataframes(
@@ -205,9 +226,9 @@ class AntiCorrosionPreScheduleTests(SimpleTestCase):
 
     def test_arrived_whole_segment_does_not_rematch_material_stock(self):
         weld_df = pd.DataFrame([
-            weld_row(1, 'S-OK-1', 4),
-            weld_row(2, 'S-OK-1', 7),
-            weld_row(3, 'S-OK', 10),
+            anti_corrosion_weld_row(1, 'S-OK-1', 4),
+            anti_corrosion_weld_row(2, 'S-OK-1', 7),
+            anti_corrosion_weld_row(3, 'S-OK', 10),
         ])
 
         result = match_anti_corrosion_pre_schedule_dataframes(
@@ -219,7 +240,7 @@ class AntiCorrosionPreScheduleTests(SimpleTestCase):
         self.assertEqual(result['candidate_segment_count'], 2)
         self.assertEqual(result['pre_schedule_segment_count'], 2)
         self.assertEqual(result['rejected_segment_count'], 0)
-        self.assertTrue(result['detail_df'].empty)
+        self.assertNotIn('detail_df', result)
         status_by_segment = (
             result['result_df']
             .groupby('管段号')['预排产状态']
@@ -230,7 +251,7 @@ class AntiCorrosionPreScheduleTests(SimpleTestCase):
         self.assertEqual(status_by_segment['S-OK'], cutting_matcher.MATCHED_STATUS)
 
     def test_ignores_segment_without_anti_corrosion_material(self):
-        weld_df = pd.DataFrame([weld_row(1, 'S1', 2, paint='/')])
+        weld_df = pd.DataFrame([anti_corrosion_weld_row(1, 'S1', 2, paint='/')])
 
         result = match_anti_corrosion_pre_schedule_dataframes(
             weld_df,
@@ -244,8 +265,8 @@ class AntiCorrosionPreScheduleTests(SimpleTestCase):
     def test_only_auto_weld_filter_defaults_off_and_can_be_enabled(self):
         columns = cutting_matcher.COLUMNS
         weld_df = pd.DataFrame([
-            weld_row(1, 'S1', 2),
-            {**weld_row(2, 'S2', 2), columns['weld_method']: '自动焊'},
+            anti_corrosion_weld_row(1, 'S1', 2),
+            {**anti_corrosion_weld_row(2, 'S2', 2), columns['weld_method']: '自动焊'},
         ])
 
         default_result = match_anti_corrosion_pre_schedule_dataframes(
@@ -263,6 +284,22 @@ class AntiCorrosionPreScheduleTests(SimpleTestCase):
         self.assertEqual(default_result['candidate_segment_count'], 2)
         self.assertEqual(auto_result['candidate_segment_count'], 1)
         self.assertEqual(auto_result['result_df'].iloc[0][columns['library_seq']], '2')
+
+    def test_excludes_welds_whose_anti_corrosion_status_is_already_true(self):
+        columns = cutting_matcher.COLUMNS
+        weld_df = pd.DataFrame([
+            anti_corrosion_weld_row('PENDING', 'S-PENDING', 2),
+            weld_row('SATISFIED', 'S-SATISFIED', 2),
+        ])
+
+        result = match_anti_corrosion_pre_schedule_dataframes(
+            weld_df,
+            pipe_library(10),
+            pd.DataFrame(),
+        )
+
+        self.assertEqual(result['candidate_segment_count'], 1)
+        self.assertEqual(result['result_df'][columns['library_seq']].tolist(), ['PENDING'])
 
     def test_builds_daily_commission_from_pre_schedule_area_limit(self):
         source = pd.DataFrame([
@@ -326,51 +363,3 @@ class AntiCorrosionPreScheduleTests(SimpleTestCase):
 
         self.assertEqual(list(sheets.keys()), ['防腐委托单'])
         self.assertNotIn('委托单防腐面积', sheets['防腐委托单'].columns)
-
-    def test_builds_commission_material_summary_and_detail_for_plan_page(self):
-        commission_df = pd.DataFrame([
-            {'防腐委托单号': 'FFWT-20260707-001', '委托日期': '20260707', '预排产序号': 1, '库序号': 'W1', '防腐面积': 4},
-            {'防腐委托单号': 'FFWT-20260707-001', '委托日期': '20260707', '预排产序号': 2, '库序号': 'W2', '防腐面积': 6},
-        ])
-        detail_df = pd.DataFrame([
-            {
-                '预排产序号': 1,
-                '库序号': 'W1',
-                '材料类型': '防腐管子',
-                '材料代码': 'P001',
-                '材料唯一码': 'PIPE-A',
-                '需求数量': 2,
-                '匹配数量': 2,
-                '匹配库存标识': 'PIPE-001',
-                '匹配结果': cutting_matcher.MATCHED_STATUS,
-            },
-            {
-                '预排产序号': 2,
-                '库序号': 'W2',
-                '材料类型': '防腐管子',
-                '材料代码': 'P001',
-                '材料唯一码': 'PIPE-B',
-                '需求数量': 3,
-                '匹配数量': 3,
-                '匹配库存标识': 'PIPE-002',
-                '匹配结果': cutting_matcher.MATCHED_STATUS,
-            },
-            {
-                '预排产序号': 2,
-                '库序号': 'W2',
-                '材料类型': '防腐管件法兰',
-                '材料代码': 'F001',
-                '材料唯一码': 'FIT-A',
-                '需求数量': 2,
-                '匹配数量': 2,
-                '匹配库存标识': 'F001',
-                '匹配结果': cutting_matcher.MATCHED_STATUS,
-            },
-        ])
-
-        summary = build_anti_corrosion_material_summary(commission_df, detail_df)
-        detail = build_anti_corrosion_material_detail(commission_df, detail_df)
-
-        self.assertEqual(summary.loc[summary['材料代码'] == 'P001', '匹配数量'].iloc[0], 5)
-        self.assertEqual(detail.loc[detail['材料代码'] == 'P001', '管子序号'].tolist(), ['PIPE-001', 'PIPE-002'])
-        self.assertEqual(detail.loc[detail['材料代码'] == 'F001', '完成个数'].iloc[0], 0)

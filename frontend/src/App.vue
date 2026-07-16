@@ -256,6 +256,7 @@ onBeforeUnmount(() => {
 .run-log-toggle {
   position: fixed;
   z-index: 1200;
+  opacity: .8;
   width: 42px;
   height: 42px;
   min-width: 42px;

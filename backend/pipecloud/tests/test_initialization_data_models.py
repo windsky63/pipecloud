@@ -6,12 +6,14 @@ from pipecloud.models import (
     InitializationWeldExtraData,
     InitializationWeldRow,
     Project,
+    WeldCommonData,
 )
 from pipecloud.services.db_storage import (
     INITIALIZATION_MODELS,
     normalize_initialization_payload,
     replace_source_rows,
     table_payload,
+    table_preview_payload,
 )
 from pipecloud.services.prefab_database import build_unified_weld_library
 
@@ -60,6 +62,12 @@ class InitializationDataModelTests(TestCase):
         self.assertEqual(weld.segment_no, 'S1')
         self.assertEqual(weld.wall_thickness, '8')
         self.assertEqual(weld.weld_area, 'S')
+        self.assertIsNotNone(weld.common_data_id)
+        common = WeldCommonData.objects.get(project=self.project, library_seq=original_sequence)
+        self.assertEqual(weld.common_data, common)
+        self.assertEqual(common.wall_thickness, '8')
+        self.assertEqual(common.diameter, '10')
+        self.assertEqual(common.material_unique_1, 'M1')
         extra = InitializationWeldExtraData.objects.get(weld=weld)
         self.assertEqual(extra.library_seq, original_sequence)
         self.assertNotIn('管段号', extra.custom_fields)
@@ -94,6 +102,30 @@ class InitializationDataModelTests(TestCase):
 
         with self.assertRaisesRegex(ValueError, '缺少库序号'):
             build_unified_weld_library(prefab.drop(columns=['库序号']), pd.DataFrame())
+
+    def test_initialization_table_preview_limits_rows_but_keeps_total(self):
+        columns = ['单元号', '管线号', '最终焊口号', '寸径', '接头类型']
+        rows = [
+            {
+                '单元号': 'U1',
+                '管线号': 'L100',
+                '最终焊口号': f'W-{index:03d}',
+                '寸径': '10',
+                '接头类型': 'BW',
+            }
+            for index in range(25)
+        ]
+        source = self._replace({'Sheet1': {'columns': columns, 'rows': rows}})
+
+        _, _, total, preview_columns, preview_rows = table_preview_payload(
+            source,
+            INITIALIZATION_MODELS,
+            limit=20,
+        )
+
+        self.assertEqual(total, 25)
+        self.assertEqual(len(preview_rows), 20)
+        self.assertIn('库序号', preview_columns)
 
     def test_initialization_preview_splits_fixed_and_extra_fields(self):
         payload = {

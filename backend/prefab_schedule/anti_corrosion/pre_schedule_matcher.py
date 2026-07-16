@@ -9,8 +9,6 @@ for path in (ROOT_DIR, CUTTING_DIR):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from common_utils import prepare_output_file
-from anti_corrosion.anti_corrosion_config import ANTI_CORROSION_FILES
 from cutting import weld_pre_schedule_matcher as material_matcher
 
 
@@ -39,7 +37,6 @@ def _unit_area_by_material(dataframe):
         for _, row in work_df.drop_duplicates('_material_code', keep='first').iterrows()
         if str(row['_material_code'])
     }
-
 
 def _anti_corrosion_area_for_demands(pipe_demands, fitting_demands, pipe_unit_areas, fitting_unit_areas, precision=6):
     total = 0.0
@@ -126,6 +123,11 @@ def match_anti_corrosion_pre_schedule_dataframes(
     candidate_df = material_matcher._filter_truthy_statuses(candidate_df, [
         material_matcher.COLUMNS['material_arrival_status'],
     ])
+    anti_corrosion_status_col = material_matcher.COLUMNS['material_anti_corrosion_status']
+    if anti_corrosion_status_col in candidate_df.columns:
+        candidate_df = candidate_df.loc[
+            ~material_matcher._to_bool_series(candidate_df[anti_corrosion_status_col])
+        ].copy()
 
     segment_col = material_matcher.COLUMNS['segment_no']
     if segment_col not in candidate_df.columns:
@@ -166,52 +168,11 @@ def match_anti_corrosion_pre_schedule_dataframes(
         sequence = pipeline_result['next_sequence']
 
     result_df = pd.DataFrame(accepted_rows + rejected_rows)
-    detail_df = pd.DataFrame(columns=material_matcher.PRE_SCHEDULE_DETAIL_COLUMNS)
     return {
         'result_df': result_df,
-        'detail_df': detail_df,
         'candidate_segment_count': segment_count,
         'pre_schedule_segment_count': accepted_segment_count,
         'rejected_segment_count': segment_count - accepted_segment_count,
         'pre_schedule_weld_count': len(accepted_rows),
         'rejected_weld_count': len(rejected_rows),
     }
-
-
-def match_anti_corrosion_pre_schedule(
-    weld_library_file=ANTI_CORROSION_FILES['weld_library'],
-    pipe_library_file=ANTI_CORROSION_FILES['pipe_library'],
-    fitting_library_file=ANTI_CORROSION_FILES['fitting_library'],
-    output_file=ANTI_CORROSION_FILES['pre_schedule_output'],
-    only_auto_weld=False,
-    concentration_dimension=None,
-    concentration_threshold_percent=None,
-):
-    weld_df = material_matcher._read_excel_or_empty(weld_library_file)
-    if weld_df.empty:
-        raise ValueError(f'预制焊口库为空，无法生成防腐预排产：{weld_library_file}')
-    pipe_df = material_matcher._read_excel_or_empty(pipe_library_file)
-    fitting_df = material_matcher._read_excel_or_empty(fitting_library_file)
-    result = match_anti_corrosion_pre_schedule_dataframes(
-        weld_df,
-        pipe_df,
-        fitting_df,
-        only_auto_weld=only_auto_weld,
-        concentration_dimension=concentration_dimension,
-        concentration_threshold_percent=concentration_threshold_percent,
-    )
-
-    prepare_output_file(output_file)
-    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-        result['result_df'].to_excel(writer, sheet_name='预排产匹配结果', index=False)
-        result['detail_df'].to_excel(writer, sheet_name='材料匹配明细', index=False)
-    result['output_file'] = Path(output_file)
-    return result
-
-
-if __name__ == '__main__':
-    result = match_anti_corrosion_pre_schedule()
-    print(f"需防腐预制管段数：{result['candidate_segment_count']}")
-    print(f"可预排产管段数：{result['pre_schedule_segment_count']}")
-    print(f"不可预排产管段数：{result['rejected_segment_count']}")
-    print(f"防腐预排产匹配结果：{result['output_file']}")

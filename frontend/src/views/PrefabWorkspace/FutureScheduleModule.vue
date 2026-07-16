@@ -1,10 +1,13 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 import DataVTable from '../../components/DataVTable.vue'
 import InfoTooltip from '../../components/InfoTooltip.vue'
 import ScheduleCalendar from '../../components/ScheduleCalendar.vue'
+import ScheduleDashboardPanel from '../../components/ScheduleDashboardPanel.vue'
+import StagedPlanPreview from '../../components/StagedPlanPreview.vue'
+import WeldingDashboardPanel from '../../components/WeldingDashboardPanel.vue'
 import { localizedActionName, localizedModuleDescription } from '../../services/navigationLabels'
-import { t } from '../../services/pipecloudState'
+import { dashboardVisibility, setDashboardVisibility, t } from '../../services/pipecloudState'
 
 const props = defineProps({
   activeModule: { type: Object, required: true },
@@ -23,47 +26,43 @@ const props = defineProps({
   futureScheduleConfig: { type: Object, required: true },
   futureScheduleDefaults: { type: Object, default: () => ({}) },
   futureScheduleDateModeOptions: { type: Array, default: () => [] },
+  selectionModeOptions: { type: Array, default: () => [] },
+  manualSelectionLoading: { type: Boolean, default: false },
+  manualSelectionError: { type: String, default: '' },
+  manualSelectionRows: { type: Array, default: () => [] },
+  manualSelectionColumns: { type: Array, default: () => [] },
+  manualSelectionSelectedCount: { type: Number, default: 0 },
   scheduleCalendarStart: { type: String, required: true },
   scheduleCalendarEnd: { type: String, required: true },
   manualWeldDateList: { type: Array, default: () => [] },
   holidayCalendarDateList: { type: Array, default: () => [] },
-  loading: { type: Boolean, default: false },
+  antiCorrosionDashboard: { type: Object, default: () => ({}) },
+  antiCorrosionDashboardLoading: { type: Boolean, default: false },
+  antiCorrosionDashboardError: { type: String, default: '' },
+  cuttingDashboard: { type: Object, default: () => ({}) },
+  cuttingDashboardLoading: { type: Boolean, default: false },
+  cuttingDashboardError: { type: String, default: '' },
+  weldingDashboard: { type: Object, default: () => ({}) },
+  weldingDashboardLoading: { type: Boolean, default: false },
+  weldingDashboardError: { type: String, default: '' },
 })
 
 const emit = defineEmits([
   'execute-future-schedule',
-  'refresh-status',
   'update-weld-start-date',
   'update-manual-weld-date-list',
   'update-holiday-date-list',
+  'manual-selection-change',
   'preview-pending-file',
   'change-pending-preview-sheet',
   'save-pending-stage',
 ])
 
 const configPanels = ref(['config'])
+const dashboardCollapsed = ref({ antiCorrosion: false, cutting: false, welding: false })
 const weldStartDateMenu = ref(false)
 const manualWeldDatesMenu = ref(false)
 const holidayDatesMenu = ref(false)
-
-const futurePendingFiles = computed(() => {
-  return [...(props.futurePendingStage?.files || [])].sort((left, right) => {
-    const dateOrder = String(left.planDate || '').localeCompare(String(right.planDate || ''))
-    if (dateOrder) return dateOrder
-    const nameOrder = String(left.name || '').localeCompare(String(right.name || ''), 'zh-CN')
-    if (nameOrder) return nameOrder
-    return String(left.path || '').localeCompare(String(right.path || ''), 'zh-CN')
-  })
-})
-
-function formatPlanDate(value) {
-  const text = String(value || '').trim()
-  const match = text.match(/^(\d{4})(\d{2})(\d{2})$/)
-  if (match) {
-    return `${match[1]}-${match[2]}-${match[3]}`
-  }
-  return text || '-'
-}
 
 function updateWeldStartDate(value) {
   emit('update-weld-start-date', value)
@@ -72,6 +71,47 @@ function updateWeldStartDate(value) {
 </script>
 
 <template>
+  <div class="future-dashboard-stack">
+    <ScheduleDashboardPanel
+      v-if="dashboardVisibility.futureAntiCorrosion"
+      mode="anti-corrosion"
+      :title="t('antiCorrosionDashboardTitle')"
+      :description="t('antiCorrosionDashboardDescription')"
+      :dashboard="antiCorrosionDashboard"
+      :loading="antiCorrosionDashboardLoading"
+      :error="antiCorrosionDashboardError"
+      collapsible
+      :collapsed="dashboardCollapsed.antiCorrosion"
+      @hide="setDashboardVisibility('futureAntiCorrosion', false)"
+      @toggle="dashboardCollapsed.antiCorrosion = !dashboardCollapsed.antiCorrosion"
+    />
+    <ScheduleDashboardPanel
+      v-if="dashboardVisibility.futureCutting"
+      mode="cutting"
+      :title="t('cuttingDashboardTitle')"
+      :description="t('cuttingDashboardDescription')"
+      :dashboard="cuttingDashboard"
+      :loading="cuttingDashboardLoading"
+      :error="cuttingDashboardError"
+      collapsible
+      :collapsed="dashboardCollapsed.cutting"
+      @hide="setDashboardVisibility('futureCutting', false)"
+      @toggle="dashboardCollapsed.cutting = !dashboardCollapsed.cutting"
+    />
+    <WeldingDashboardPanel
+      v-if="dashboardVisibility.futureWelding"
+      :title="t('weldingDashboardTitle')"
+      :description="t('weldingDashboardDescription')"
+      :dashboard="weldingDashboard"
+      :loading="weldingDashboardLoading"
+      :error="weldingDashboardError"
+      collapsible
+      :collapsed="dashboardCollapsed.welding"
+      @hide="setDashboardVisibility('futureWelding', false)"
+      @toggle="dashboardCollapsed.welding = !dashboardCollapsed.welding"
+    />
+  </div>
+
   <v-card class="module-panel" :loading="futureScheduleLoading">
     <div class="section-head">
       <div>
@@ -80,23 +120,22 @@ function updateWeldStartDate(value) {
           <InfoTooltip :text="localizedModuleDescription(activeModule)" />
         </div>
       </div>
+      <div class="module-actions">
+        <v-btn
+          v-if="futureScheduleAction"
+          color="primary"
+          variant="tonal"
+          prepend-icon="mdi-calendar-sync"
+          :loading="futureScheduleLoading"
+          @click="$emit('execute-future-schedule')"
+        >
+          {{ localizedActionName(futureScheduleAction) }}
+        </v-btn>
+      </div>
     </div>
 
     <v-alert v-if="futureScheduleError" :text="futureScheduleError" type="error" density="compact" class="status-alert" />
     <v-alert v-if="futureScheduleMessage" :text="futureScheduleMessage" type="success" density="compact" class="status-alert" />
-    <div class="module-actions">
-      <v-btn
-        v-if="futureScheduleAction"
-        color="primary"
-        variant="tonal"
-        prepend-icon="mdi-calendar-sync"
-        :loading="futureScheduleLoading"
-        @click="$emit('execute-future-schedule')"
-      >
-        {{ localizedActionName(futureScheduleAction) }}
-      </v-btn>
-      <v-btn :loading="loading" prepend-icon="mdi-refresh" @click="$emit('refresh-status')">{{ t('refreshStatus') }}</v-btn>
-    </div>
 
     <v-expansion-panels v-model="configPanels" class="future-schedule-config" variant="accordion">
       <v-expansion-panel value="config">
@@ -105,6 +144,16 @@ function updateWeldStartDate(value) {
         </v-expansion-panel-title>
         <v-expansion-panel-text>
           <div class="future-schedule-config-grid">
+            <label class="future-schedule-field">
+              <span>{{ t('futureScheduleSelectionMode') }}</span>
+              <v-select
+                v-model="futureScheduleConfig.selectionMode"
+                :items="selectionModeOptions"
+                density="compact"
+                hide-details
+              />
+              <small>{{ futureScheduleConfig.selectionMode === 'manual' ? t('futureManualSelectionHint') : t('futureAutoSelectionHint') }}</small>
+            </label>
             <label class="future-schedule-field">
               <span>{{ t('dateGenerationMode') }}</span>
               <v-select
@@ -115,7 +164,7 @@ function updateWeldStartDate(value) {
               />
               <small>{{ t('dateGenerationModeHint') }}</small>
             </label>
-            <label class="future-schedule-field">
+            <label v-if="futureScheduleConfig.dateMode !== 'manual'" class="future-schedule-field">
               <span>{{ t('firstWeldDate') }}</span>
               <v-menu
                 v-model="weldStartDateMenu"
@@ -130,7 +179,6 @@ function updateWeldStartDate(value) {
                     hide-details
                     readonly
                     append-inner-icon="mdi-calendar"
-                    :disabled="futureScheduleConfig.dateMode === 'manual'"
                     :placeholder="futureScheduleDefaults.weldStartDate || t('defaultTomorrow')"
                   />
                 </template>
@@ -143,7 +191,7 @@ function updateWeldStartDate(value) {
               </v-menu>
               <small>{{ t('defaultValue', { value: futureScheduleDefaults.weldStartDate || t('tomorrow') }) }}</small>
             </label>
-            <label class="future-schedule-field is-wide">
+            <label v-if="futureScheduleConfig.dateMode === 'manual'" class="future-schedule-field is-wide">
               <span>{{ t('manualWeldDates') }}</span>
               <v-menu
                 v-model="manualWeldDatesMenu"
@@ -158,7 +206,6 @@ function updateWeldStartDate(value) {
                     hide-details
                     readonly
                     append-inner-icon="mdi-calendar-multiselect"
-                    :disabled="futureScheduleConfig.dateMode !== 'manual'"
                   />
                 </template>
                 <ScheduleCalendar
@@ -172,7 +219,7 @@ function updateWeldStartDate(value) {
               </v-menu>
               <small>{{ t('manualWeldDatesHint') }}</small>
             </label>
-            <label class="future-schedule-field">
+            <label v-if="futureScheduleConfig.dateMode !== 'manual'" class="future-schedule-field">
               <span>{{ t('maxGeneratedDays') }}</span>
               <v-text-field
                 v-model="futureScheduleConfig.maxDays"
@@ -180,7 +227,6 @@ function updateWeldStartDate(value) {
                 min="1"
                 density="compact"
                 hide-details
-                :disabled="futureScheduleConfig.dateMode === 'manual'"
                 :placeholder="futureScheduleDefaults.maxDays || t('untilAllScheduled')"
               />
               <small>{{ t('defaultValue', { value: futureScheduleDefaults.maxDays || t('untilAllScheduled') }) }}</small>
@@ -222,6 +268,31 @@ function updateWeldStartDate(value) {
               />
               <small>{{ t('defaultValue', { value: futureScheduleDefaults.cuttingLeadDays ?? 1 }) }}</small>
             </label>
+            <label class="future-schedule-field">
+              <span>{{ t('antiCorrosionLeadDays') }}</span>
+              <v-text-field
+                v-model="futureScheduleConfig.antiCorrosionLeadDays"
+                type="number"
+                min="0"
+                density="compact"
+                hide-details
+                :placeholder="String(futureScheduleDefaults.antiCorrosionLeadDays ?? 1)"
+              />
+              <small>{{ t('defaultValue', { value: futureScheduleDefaults.antiCorrosionLeadDays ?? 1 }) }}</small>
+            </label>
+            <label class="future-schedule-field">
+              <span>{{ t('antiCorrosionCommissionArea') }}</span>
+              <v-text-field
+                v-model.number="futureScheduleConfig.commissionArea"
+                type="number"
+                min="1"
+                step="1"
+                density="compact"
+                hide-details
+                :placeholder="String(futureScheduleDefaults.commissionArea || 1500)"
+              />
+              <small>{{ t('antiCorrosionCommissionAreaHint') }}</small>
+            </label>
             <label class="future-schedule-field future-schedule-switch-field">
               <span>{{ t('skipHolidays') }}</span>
               <v-switch
@@ -233,7 +304,7 @@ function updateWeldStartDate(value) {
               />
               <small>{{ t('skipHolidaysHint') }}</small>
             </label>
-            <label class="future-schedule-field is-wide">
+            <label v-if="futureScheduleConfig.skipHolidays" class="future-schedule-field is-wide">
               <span>{{ t('holidayDates') }}</span>
               <v-menu
                 v-model="holidayDatesMenu"
@@ -248,7 +319,6 @@ function updateWeldStartDate(value) {
                     hide-details
                     readonly
                     append-inner-icon="mdi-calendar-remove"
-                    :disabled="!futureScheduleConfig.skipHolidays"
                   />
                 </template>
                 <ScheduleCalendar
@@ -262,100 +332,70 @@ function updateWeldStartDate(value) {
               <small>{{ t('holidayDatesHint') }}</small>
             </label>
           </div>
+          <div v-if="futureScheduleConfig.selectionMode === 'manual'" class="future-manual-selection-panel">
+            <div class="future-manual-selection-head">
+              <div>
+                <strong>{{ t('futureManualSelectionTitle') }}</strong>
+                <span>{{ t('futureManualSelectionDescription') }}</span>
+              </div>
+              <v-chip color="primary" variant="tonal">
+                {{ t('selectedRows') }}：{{ manualSelectionSelectedCount }}
+              </v-chip>
+            </div>
+            <v-alert
+              v-if="manualSelectionError"
+              :text="manualSelectionError"
+              type="error"
+              density="compact"
+              class="status-alert"
+            />
+            <DataVTable
+              :records="manualSelectionRows"
+              :columns="manualSelectionColumns"
+              :height="420"
+              :empty-text="manualSelectionLoading ? t('loading') : t('noFutureSelectableWelds')"
+              filterable
+              selectable
+              row-key="库序号"
+              @selection-change="$emit('manual-selection-change', $event)"
+            />
+            <v-progress-linear
+              v-if="manualSelectionLoading"
+              indeterminate
+              color="primary"
+              height="2"
+            />
+          </div>
         </v-expansion-panel-text>
       </v-expansion-panel>
     </v-expansion-panels>
 
-    <div class="pending-stage-actions">
-      <div class="pending-stage-head">
-        <span>{{ t('pendingStagedFiles', { count: futurePendingStage?.files?.length || 0 }) }}</span>
-        <v-btn
-          color="primary"
-          prepend-icon="mdi-content-save-outline"
-          :loading="futureStageSaving"
-          :disabled="!futurePendingStage?.token || futureStageSaving"
-          @click="$emit('save-pending-stage')"
-        >
-          {{ t('saveToPlanFile') }}
-        </v-btn>
-      </div>
-      <div class="pending-stage-browser">
-        <div class="pending-stage-left">
-          <div class="pending-stage-scroll">
-            <div v-if="futurePendingFiles.length" class="pending-stage-files">
-              <button
-                v-for="file in futurePendingFiles"
-                :key="file.path"
-                :class="['pending-stage-file', { 'is-active': selectedFuturePendingFilePath === file.path }]"
-                type="button"
-                @click="$emit('preview-pending-file', file)"
-              >
-                <v-icon icon="mdi-file-table-outline" size="20" />
-                <div class="pending-stage-file-main">
-                  <strong>{{ file.displayName || file.name }}</strong>
-                  <span>{{ file.sizeText }} · {{ file.updatedText }}</span>
-                  <small>{{ file.path }}</small>
-                </div>
-                <span class="pending-stage-file-dates">
-                  <span>
-                    <small>{{ t('weldingDate') }}</small>
-                    <strong>{{ formatPlanDate(file.weldDate || file.planDate) }}</strong>
-                  </span>
-                  <span>
-                    <small>{{ t('cuttingDate') }}</small>
-                    <strong>{{ formatPlanDate(file.cutDate) }}</strong>
-                  </span>
-                </span>
-              </button>
-            </div>
-            <div v-else class="pending-stage-empty">{{ t('noPendingStagedPlans') }}</div>
-          </div>
-        </div>
-
-        <div class="pending-stage-preview">
-          <div class="pending-stage-preview-head">
-            <div>
-              <h3>{{ futurePendingPreview.file?.name || t('selectPendingPlanFile') }}</h3>
-              <span v-if="futurePendingPreview.file">{{ futurePendingPreview.file.path }}</span>
-            </div>
-          </div>
-          <v-alert
-            v-if="futurePendingPreviewError"
-            :text="futurePendingPreviewError"
-            type="error"
-            density="compact"
-            class="status-alert"
-          />
-          <div v-if="futurePendingPreview.sheets?.length" class="library-toolbar">
-            <v-tabs
-              :model-value="futurePendingPreview.sheet"
-              color="primary"
-              @update:model-value="$emit('change-pending-preview-sheet', $event)"
-            >
-              <v-tab v-for="sheet in futurePendingPreview.sheets" :key="sheet" :value="sheet">{{ sheet }}</v-tab>
-            </v-tabs>
-          </div>
-          <div v-if="futurePendingPreview.file" class="library-meta">
-            <span>{{ t('currentSheet') }}：{{ futurePendingPreview.sheet || t('unselected') }}</span>
-            <span>{{ t('totalRows') }}：{{ futurePendingPreview.total || 0 }}</span>
-            <span>{{ t('columnCount') }}：{{ futurePendingPreview.columns?.length || 0 }}</span>
-          </div>
-          <DataVTable
-            v-if="futurePendingPreview.file"
-            :records="futurePendingPreview.rows || []"
-            :columns="futurePendingPreviewColumns"
-            height="420"
-            :empty-text="futurePendingPreviewLoading ? t('loading') : t('currentSheetNoData')"
-          />
-          <div v-else class="pending-stage-empty">{{ t('selectPendingPlanFile') }}</div>
-        </div>
-      </div>
-    </div>
+    <StagedPlanPreview
+      :stage="futurePendingStage"
+      :preview="futurePendingPreview"
+      :columns="futurePendingPreviewColumns"
+      :title="t('totalSchedulingPlan')"
+      :save-label="t('saveToPlanFile')"
+      :empty-text="t('currentSheetNoData')"
+      :loading="futurePendingPreviewLoading"
+      :error="futurePendingPreviewError"
+      :saving="futureStageSaving"
+      group-by-type
+      @save="$emit('save-pending-stage')"
+      @preview-file="$emit('preview-pending-file', $event)"
+      @change-sheet="$emit('change-pending-preview-sheet', $event)"
+    />
 
   </v-card>
 </template>
 
 <style scoped>
+.future-dashboard-stack {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
 .future-schedule-config {
   margin: 4px 0 16px;
 }
@@ -363,11 +403,9 @@ function updateWeldStartDate(value) {
 .pending-stage-actions {
   display: grid;
   gap: 10px;
-  margin-bottom: 14px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel-soft);
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
   color: var(--muted);
   font-size: 13px;
 }
@@ -382,9 +420,9 @@ function updateWeldStartDate(value) {
 
 .pending-stage-browser {
   display: grid;
-  grid-template-columns: minmax(300px, 30%) minmax(0, 1fr);
-  gap: 12px;
-  align-items: stretch;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
 }
 
 .pending-stage-left,
@@ -393,7 +431,7 @@ function updateWeldStartDate(value) {
 }
 
 .pending-stage-left {
-  height: 560px;
+  height: clamp(280px, 52vh, 480px);
 }
 
 .pending-stage-scroll {
@@ -431,18 +469,36 @@ function updateWeldStartDate(value) {
   gap: 8px;
 }
 
+.pending-stage-date-files,
+.pending-stage-type-group {
+  display: grid;
+  gap: 8px;
+}
+
+.pending-stage-type-group.has-divider {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.pending-stage-type-title {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .pending-stage-file {
   appearance: none;
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) auto;
-  grid-template-rows: auto auto;
+  grid-template-columns: 20px minmax(0, 1fr);
+  grid-template-rows: auto;
   column-gap: 8px;
   row-gap: 5px;
   align-items: start;
   width: 100%;
   min-width: 0;
-  min-height: 76px;
-  padding: 12px;
+  min-height: 50px;
+  padding: 10px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--panel);
@@ -462,7 +518,7 @@ function updateWeldStartDate(value) {
 
 .pending-stage-file :deep(.v-icon) {
   grid-column: 1;
-  grid-row: 1 / span 2;
+  grid-row: 1;
   align-self: start;
   margin-top: 1px;
   color: #64748b;
@@ -476,42 +532,9 @@ function updateWeldStartDate(value) {
 .pending-stage-file-main {
   display: grid;
   grid-column: 2;
-  grid-row: 1 / span 2;
+  grid-row: 1;
   gap: 5px;
   min-width: 0;
-}
-
-.pending-stage-file-dates {
-  display: grid;
-  grid-column: 3;
-  grid-row: 1 / span 2;
-  gap: 5px;
-  align-self: center;
-  min-width: 112px;
-  padding-left: 10px;
-  border-left: 1px solid var(--line);
-  color: var(--muted);
-}
-
-.pending-stage-file-dates > span {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 6px;
-  align-items: baseline;
-}
-
-.pending-stage-file-dates small {
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.pending-stage-file-dates strong {
-  color: var(--strong);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  white-space: nowrap;
 }
 
 .pending-stage-file-main strong,
@@ -541,13 +564,17 @@ function updateWeldStartDate(value) {
 }
 
 .pending-stage-preview {
+  min-height: 0;
+}
+
+.pending-stage-group-title {
   display: grid;
-  gap: 10px;
-  min-height: 560px;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel);
+  gap: 2px;
+}
+
+.pending-stage-group-title span {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .pending-stage-preview-head {
@@ -607,7 +634,7 @@ function updateWeldStartDate(value) {
 
 .future-schedule-config-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(160px, 1fr));
+  grid-template-columns: repeat(2, minmax(240px, 1fr));
   gap: 12px;
 }
 
@@ -630,7 +657,7 @@ function updateWeldStartDate(value) {
 }
 
 .future-schedule-field.is-wide {
-  grid-column: span 2;
+  grid-column: auto;
 }
 
 .future-schedule-switch-field {
@@ -640,6 +667,39 @@ function updateWeldStartDate(value) {
 
 .future-schedule-switch-field > small {
   grid-column: 1 / -1;
+}
+
+.future-manual-selection-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.future-manual-selection-head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.future-manual-selection-head > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.future-manual-selection-head strong {
+  color: var(--strong);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.future-manual-selection-head span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 @media (max-width: 1100px) {

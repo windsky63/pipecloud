@@ -2,11 +2,13 @@
 import { ref } from 'vue'
 import DataVTable from '../../components/DataVTable.vue'
 import InfoTooltip from '../../components/InfoTooltip.vue'
+import ScheduleCalendar from '../../components/ScheduleCalendar.vue'
+import StagedPlanPreview from '../../components/StagedPlanPreview.vue'
 import WeldingDashboardPanel from '../../components/WeldingDashboardPanel.vue'
 import { localizedActionName, localizedModuleDescription } from '../../services/navigationLabels'
-import { t } from '../../services/pipecloudState'
+import { dashboardVisibility, displayDataPath, setDashboardVisibility, t } from '../../services/pipecloudState'
 
-defineProps({
+const props = defineProps({
   activeModule: { type: Object, required: true },
   activeModuleTitle: { type: String, required: true },
   weldingDashboardLoading: { type: Boolean, default: false },
@@ -16,8 +18,17 @@ defineProps({
   weldingScheduleError: { type: String, default: '' },
   weldingPendingStage: { type: Object, default: null },
   weldingStageSaving: { type: Boolean, default: false },
+  weldingPreviewLoading: { type: Boolean, default: false },
+  weldingPreviewError: { type: String, default: '' },
+  weldingPreviewData: { type: Object, default: () => ({ sheets: [], rows: [], columns: [], total: 0 }) },
+  weldingPreviewColumns: { type: Array, default: () => [] },
   weldingScheduleConfig: { type: Object, required: true },
   weldingScheduleDefaults: { type: Object, default: () => ({}) },
+  dateModeOptions: { type: Array, default: () => [] },
+  scheduleCalendarStart: { type: String, default: '' },
+  scheduleCalendarEnd: { type: String, default: '' },
+  manualDateList: { type: Array, default: () => [] },
+  holidayCalendarDateList: { type: Array, default: () => [] },
   weldingPreScheduleLoading: { type: Boolean, default: false },
   weldingPreScheduleError: { type: String, default: '' },
   weldingPreScheduleData: { type: Object, required: true },
@@ -29,22 +40,35 @@ defineProps({
 defineEmits([
   'execute-action',
   'refresh-dashboard',
-  'update-welding-date',
+  'update-welding-start-date',
+  'update-welding-manual-date-list',
+  'update-welding-holiday-date-list',
   'save-pending-stage',
+  'preview-welding-file',
+  'change-welding-preview-sheet',
   'change-welding-pre-schedule-sheet',
 ])
 
 const configPanels = ref(['config'])
+const dashboardCollapsed = ref(false)
+const weldStartDateMenu = ref(false)
+const manualWeldDatesMenu = ref(false)
+const holidayDatesMenu = ref(false)
+
 </script>
 
 <template>
-  <v-card class="module-panel" :loading="weldingDashboardLoading">
+  <v-card v-if="dashboardVisibility.welding" class="module-panel" :loading="weldingDashboardLoading">
     <WeldingDashboardPanel
       :title="t('weldingDashboardTitle')"
       :description="t('weldingDashboardDescription')"
       :dashboard="weldingDashboard"
       :error="weldingDashboardError"
       :panel="false"
+      collapsible
+      :collapsed="dashboardCollapsed"
+      @hide="setDashboardVisibility('welding', false)"
+      @toggle="dashboardCollapsed = !dashboardCollapsed"
     />
   </v-card>
 
@@ -55,7 +79,7 @@ const configPanels = ref(['config'])
           <h2>{{ t('weldingPreSchedule') }}</h2>
           <InfoTooltip :text="t('weldingPreScheduleDescription')" />
         </div>
-        <span>{{ weldingPreScheduleData.path || t('weldingPreScheduleDefaultPath') }}</span>
+        <span>{{ displayDataPath(weldingPreScheduleData.path, t('weldingPreScheduleDefaultPath')) }}</span>
       </div>
       <div class="module-actions">
         <v-btn
@@ -96,11 +120,12 @@ const configPanels = ref(['config'])
       :height="420"
       :empty-text="t('noWeldingPreScheduleResult')"
       filterable
+      selectable
       row-key="库序号"
     />
-  </v-card>
+    <v-divider class="schedule-section-divider" />
 
-  <v-card class="module-panel welding-actions-card">
+    <section class="schedule-generation-section welding-actions-card">
     <div class="section-head">
       <div>
         <div class="section-title-with-tip">
@@ -108,47 +133,23 @@ const configPanels = ref(['config'])
           <InfoTooltip :text="localizedModuleDescription(activeModule)" />
         </div>
       </div>
-    </div>
-
-    <div class="module-actions welding-dashboard-module-actions">
-      <v-btn
-        v-for="action in activeModule.actions.filter((item) => item.key !== 'welding-pre-schedule')"
-        :key="action.key"
-        color="primary"
-        variant="tonal"
-        :loading="runningKey === action.key"
-        :disabled="Boolean(runningKey)"
-        @click="$emit('execute-action', action.key)"
-      >
-        {{ localizedActionName(action) }}
-      </v-btn>
+      <div class="module-actions welding-dashboard-module-actions">
+        <v-btn
+          v-for="action in activeModule.actions.filter((item) => item.key !== 'welding-pre-schedule')"
+          :key="action.key"
+          color="primary"
+          variant="tonal"
+          :loading="runningKey === action.key"
+          :disabled="Boolean(runningKey)"
+          @click="$emit('execute-action', action.key)"
+        >
+          {{ localizedActionName(action) }}
+        </v-btn>
+      </div>
     </div>
 
     <v-alert v-if="weldingScheduleError" :text="weldingScheduleError" type="error" density="compact" class="status-alert" />
     <v-alert v-if="weldingScheduleMessage" :text="weldingScheduleMessage" type="success" density="compact" class="status-alert" />
-    <div v-if="weldingPendingStage" class="pending-stage-actions">
-      <div class="pending-stage-head">
-        <span>{{ t('pendingStagedFiles', { count: weldingPendingStage.files?.length || 0 }) }}</span>
-        <v-btn
-          color="primary"
-          prepend-icon="mdi-content-save-outline"
-          :loading="weldingStageSaving"
-          :disabled="weldingStageSaving"
-          @click="$emit('save-pending-stage')"
-        >
-          {{ t('saveToPlanFile') }}
-        </v-btn>
-      </div>
-      <div class="pending-stage-files">
-        <div v-for="file in weldingPendingStage.files" :key="file.path" class="pending-stage-file">
-          <strong>{{ file.displayName || file.name }}</strong>
-          <span>{{ file.planType }} / {{ file.planDate || '-' }}</span>
-          <small>{{ file.sizeText }} · {{ file.updatedText }}</small>
-          <small>{{ file.path }}</small>
-        </div>
-      </div>
-    </div>
-
     <v-expansion-panels v-model="configPanels" class="welding-schedule-config" variant="accordion">
       <v-expansion-panel value="config">
         <v-expansion-panel-title>
@@ -157,16 +158,73 @@ const configPanels = ref(['config'])
         <v-expansion-panel-text>
           <div class="welding-schedule-config-grid">
             <label class="welding-schedule-field">
-              <span>{{ t('planDate') }}</span>
-              <v-text-field
-                :model-value="weldingScheduleConfig.weldDate"
-                type="date"
+              <span>{{ t('dateGenerationMode') }}</span>
+              <v-select
+                v-model="weldingScheduleConfig.dateMode"
+                :items="dateModeOptions"
                 density="compact"
                 hide-details
-                :placeholder="weldingScheduleDefaults.weldDate || ''"
-                @update:model-value="$emit('update-welding-date', $event)"
               />
-              <small>{{ t('defaultValue', { value: weldingScheduleDefaults.weldDate || t('today') }) }}</small>
+              <small>{{ t('dateGenerationModeHint') }}</small>
+            </label>
+            <label v-if="weldingScheduleConfig.dateMode !== 'manual'" class="welding-schedule-field">
+              <span>{{ t('firstWeldDate') }}</span>
+              <v-menu v-model="weldStartDateMenu" :close-on-content-click="false" location="bottom">
+                <template #activator="{ props }">
+                  <v-text-field
+                    v-bind="props"
+                    :model-value="weldingScheduleConfig.weldStartDate"
+                    density="compact"
+                    hide-details
+                    readonly
+                    append-inner-icon="mdi-calendar"
+                    :placeholder="weldingScheduleDefaults.weldStartDate || weldingScheduleDefaults.weldDate || t('today')"
+                  />
+                </template>
+                <ScheduleCalendar
+                  :model-value="weldingScheduleConfig.weldStartDate"
+                  :min="scheduleCalendarStart"
+                  :max="scheduleCalendarEnd"
+                  @update:model-value="$emit('update-welding-start-date', $event); weldStartDateMenu = false"
+                />
+              </v-menu>
+              <small>{{ t('defaultValue', { value: weldingScheduleDefaults.weldStartDate || weldingScheduleDefaults.weldDate || t('today') }) }}</small>
+            </label>
+            <label v-if="weldingScheduleConfig.dateMode === 'manual'" class="welding-schedule-field is-wide">
+              <span>{{ t('manualWeldDates') }}</span>
+              <v-menu v-model="manualWeldDatesMenu" :close-on-content-click="false" location="bottom">
+                <template #activator="{ props }">
+                  <v-text-field
+                    v-bind="props"
+                    :model-value="t('openManualWeldCalendar')"
+                    density="compact"
+                    hide-details
+                    readonly
+                    append-inner-icon="mdi-calendar-multiselect"
+                  />
+                </template>
+                <ScheduleCalendar
+                  :model-value="manualDateList"
+                  multiple
+                  :min="scheduleCalendarStart"
+                  :max="scheduleCalendarEnd"
+                  :highlighted-dates="holidayCalendarDateList"
+                  @update:model-value="$emit('update-welding-manual-date-list', $event)"
+                />
+              </v-menu>
+              <small>{{ t('manualWeldDatesHint') }}</small>
+            </label>
+            <label v-if="weldingScheduleConfig.dateMode !== 'manual'" class="welding-schedule-field">
+              <span>{{ t('maxGeneratedDays') }}</span>
+              <v-text-field
+                v-model="weldingScheduleConfig.maxDays"
+                type="number"
+                min="1"
+                density="compact"
+                hide-details
+                :placeholder="weldingScheduleDefaults.maxDays || t('untilAllScheduled')"
+              />
+              <small>{{ t('defaultValue', { value: weldingScheduleDefaults.maxDays || t('untilAllScheduled') }) }}</small>
             </label>
             <label class="welding-schedule-field">
               <span>{{ t('targetDiameterPerOrder') }}</span>
@@ -193,11 +251,61 @@ const configPanels = ref(['config'])
               />
               <small>{{ t('defaultValue', { value: weldingScheduleDefaults.ordersPerDay || '-' }) }}</small>
             </label>
+            <label class="welding-schedule-field welding-schedule-switch-field">
+              <span>{{ t('skipHolidays') }}</span>
+              <v-switch
+                v-model="weldingScheduleConfig.skipHolidays"
+                color="primary"
+                density="compact"
+                hide-details
+                inset
+              />
+              <small>{{ t('skipHolidaysHint') }}</small>
+            </label>
+            <label v-if="weldingScheduleConfig.skipHolidays" class="welding-schedule-field is-wide">
+              <span>{{ t('holidayDates') }}</span>
+              <v-menu v-model="holidayDatesMenu" :close-on-content-click="false" location="bottom">
+                <template #activator="{ props }">
+                  <v-text-field
+                    v-bind="props"
+                    :model-value="t('openHolidayCalendar')"
+                    density="compact"
+                    hide-details
+                    readonly
+                    append-inner-icon="mdi-calendar-remove"
+                  />
+                </template>
+                <ScheduleCalendar
+                  :model-value="holidayCalendarDateList"
+                  multiple
+                  :min="scheduleCalendarStart"
+                  :max="scheduleCalendarEnd"
+                  @update:model-value="$emit('update-welding-holiday-date-list', $event)"
+                />
+              </v-menu>
+              <small>{{ t('holidayDatesHint') }}</small>
+            </label>
           </div>
         </v-expansion-panel-text>
       </v-expansion-panel>
     </v-expansion-panels>
 
+    <StagedPlanPreview
+      :stage="weldingPendingStage"
+      :preview="weldingPreviewData"
+      :columns="weldingPreviewColumns"
+      :title="t('weldingSchedulePreview')"
+      :save-label="t('saveToPlanFile')"
+      :empty-text="t('noWeldingSchedulePreview')"
+      :loading="weldingPreviewLoading"
+      :error="weldingPreviewError"
+      :saving="weldingStageSaving"
+      @save="$emit('save-pending-stage')"
+      @preview-file="$emit('preview-welding-file', $event)"
+      @change-sheet="$emit('change-welding-preview-sheet', $event)"
+    />
+
+    </section>
   </v-card>
 </template>
 
@@ -207,59 +315,92 @@ const configPanels = ref(['config'])
 }
 
 .welding-actions-card {
+  min-width: 0;
+}
+
+.schedule-section-divider {
+  margin: 24px 0 20px;
+  border-color: var(--line);
+}
+
+.schedule-generation-section {
+  min-width: 0;
+}
+
+.welding-preview {
+  display: grid;
+  gap: 12px;
   margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
 }
 
-.pending-stage-actions {
+.welding-preview-browser {
   display: grid;
-  gap: 10px;
-  margin-bottom: 14px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel-soft);
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 14px;
+  min-width: 0;
+}
+
+.welding-preview-left,
+.welding-preview-right {
+  min-width: 0;
+}
+
+.welding-preview-left {
+  height: clamp(280px, 52vh, 480px);
+  padding-right: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.welding-date-title {
+  display: grid;
+  gap: 3px;
+}
+
+.welding-date-title span {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
 }
 
-.pending-stage-head {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.pending-stage-files {
+.welding-file-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 8px;
 }
 
-.pending-stage-file {
+.welding-file-button {
   display: grid;
-  gap: 3px;
-  min-width: 0;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 2px 8px;
+  align-items: center;
+  width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--panel);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
 }
 
-.pending-stage-file strong,
-.pending-stage-file span,
-.pending-stage-file small {
+.welding-file-button span,
+.welding-file-button small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.pending-stage-file strong {
-  color: var(--strong);
+.welding-file-button small {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 11px;
 }
 
-.pending-stage-file small {
-  color: var(--muted);
+.welding-file-button.is-active {
+  border-color: var(--primary);
+  background: var(--panel-soft);
 }
 
 .welding-schedule-config :deep(.v-expansion-panel) {
@@ -279,7 +420,7 @@ const configPanels = ref(['config'])
 
 .welding-schedule-config-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(160px, 1fr));
+  grid-template-columns: repeat(2, minmax(240px, 1fr));
   gap: 12px;
 }
 
@@ -301,9 +442,31 @@ const configPanels = ref(['config'])
   line-height: 1.35;
 }
 
+.welding-schedule-field.is-wide {
+  grid-column: auto;
+}
+
+.welding-schedule-switch-field {
+  grid-template-columns: minmax(0, 1fr) 64px;
+  align-items: center;
+}
+
+.welding-schedule-switch-field > small {
+  grid-column: 1 / -1;
+}
+
 @media (max-width: 1100px) {
   .welding-schedule-config-grid {
     grid-template-columns: 1fr;
+  }
+
+  .welding-preview-browser {
+    grid-template-columns: 1fr;
+  }
+
+  .welding-preview-left {
+    height: auto;
+    max-height: 300px;
   }
 }
 </style>

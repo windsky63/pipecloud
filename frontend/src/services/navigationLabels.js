@@ -30,7 +30,7 @@ const actionNameKeys = {
   'welding-pre-schedule': 'actionWeldingPreSchedule',
   'auto-weld-schedule': 'actionAutoWeldSchedule',
   'weld-pre-schedule': 'actionWeldPreSchedule',
-  'confirm-cutting-pre-schedule': 'actionConfirmCuttingPreSchedule',
+  'cutting-schedule': 'actionCuttingSchedule',
   'future-schedule': 'actionFutureSchedule',
 }
 

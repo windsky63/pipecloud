@@ -1,7 +1,16 @@
 from .common import *
 from django.db import transaction
-from pipecloud.services.db_storage import replace_source_rows, table_payload
-from pipecloud.services.prefab_database import delete_plan_stage, derived_plan_file_payload, _plan_file_models
+from pipecloud.services.db_storage import replace_source_sheet_rows, table_payload
+from pipecloud.services.plan_completion import sync_project_plan_completion
+from pipecloud.services.prefab_database import (
+    delete_plan_stage,
+    derived_plan_file_payload,
+    cutting_primary_plan_payload_from_master,
+    reconcile_anti_corrosion_material_order_plan,
+    strip_cutting_plan_columns,
+    strip_welding_plan_columns,
+    _plan_file_models,
+)
 from pipecloud.services.project_tables import ensure_project_tables, using_project_tables
 
 
@@ -166,6 +175,10 @@ def plan_file_rows(request, plan_key):
         return HttpResponseBadRequest(json.dumps({'error': '文件名无效'}, ensure_ascii=False), content_type='application/json')
     sheet_name = request.GET.get('sheet') or None
     try:
+        if plan_key == 'anti-corrosion' and file_name == '防腐焊口单.xlsx':
+            derived_payload = derived_plan_file_payload(project, plan_key, plan_folder, file_name, sheet_name)
+            if derived_payload is not None:
+                return JsonResponse(derived_payload, json_dumps_params={'ensure_ascii': False})
         sheet_models = _plan_file_models(file_name)
         if sheet_models is None:
             derived_payload = derived_plan_file_payload(project, plan_key, plan_folder, file_name, sheet_name)
@@ -180,8 +193,31 @@ def plan_file_rows(request, plan_key):
                 source_key=f'{plan_key}:{plan_folder}:{file_name}',
             ).first()
         if source is None:
+            if plan_key == 'anti-corrosion' and file_name == '防腐材料单.xlsx':
+                derived_payload = derived_plan_file_payload(project, plan_key, plan_folder, file_name, sheet_name)
+                if derived_payload is not None:
+                    return JsonResponse(derived_payload, json_dumps_params={'ensure_ascii': False})
             raise ValueError(f'计划文件尚未同步到数据库：{plan_folder}/{file_name}')
         selected_sheet, sheets, total, columns, rows = table_payload(source, sheet_models, sheet_name)
+        if plan_key == 'cutting':
+            if file_name == '下料排产单.xlsx':
+                recovered = cutting_primary_plan_payload_from_master(project, plan_folder, sheet_name)
+                if recovered is not None:
+                    stored_sheets = set(sheets)
+                    sheets = list(dict.fromkeys([*recovered['sheets'], *sheets]))
+                    target_sheet = sheet_name if sheet_name in sheets else sheets[0]
+                    if target_sheet not in stored_sheets:
+                        selected_sheet = recovered['sheet']
+                        total = recovered['total']
+                        columns = recovered['columns']
+                        rows = recovered['rows']
+            columns, rows = strip_cutting_plan_columns(columns, rows, project)
+        if plan_key == 'welding' and file_name == '管段焊口表.xlsx':
+            columns, rows = strip_welding_plan_columns(project, columns, rows)
+        if plan_key == 'anti-corrosion' and file_name == '防腐焊口单.xlsx' and total == 0:
+            derived_payload = derived_plan_file_payload(project, plan_key, plan_folder, file_name, sheet_name)
+            if derived_payload is not None and derived_payload.get('total', 0) > 0:
+                return JsonResponse(derived_payload, json_dumps_params={'ensure_ascii': False})
     except Exception as error:
         return HttpResponseBadRequest(
             json.dumps({'error': f'读取计划数据库失败：{error}'}, ensure_ascii=False),
@@ -223,18 +259,25 @@ def save_plan_file_rows(request, plan_key):
         sheet_models = _plan_file_models(file_name)
         if sheet_models is None:
             raise ValueError(f'{file_name} 由管段焊口表自动生成，请修改管段焊口表')
-        sheet_name = payload['sheet'] or 'Sheet1'
-        source = replace_source_rows(
+        sheet_name = payload.get('sheet') or 'Sheet1'
+        source = replace_source_sheet_rows(
             project,
             'plan',
             plan_file['source_key'],
             file_name,
             f'database://plan/{plan_key}/{plan_file["plan_folder"]}/{file_name}',
-            {sheet_name: {'columns': payload['columns'], 'rows': payload['rows']}},
+            sheet_name,
+            {'columns': payload['columns'], 'rows': payload['rows']},
             sheet_models,
         )
         selected_sheet, _, total, _, _ = table_payload(source, sheet_models, sheet_name)
         synced_count = 0
+        if plan_key == 'anti-corrosion' and file_name == '防腐材料单.xlsx':
+            reconcile_anti_corrosion_material_order_plan(
+                project,
+                plan_file['plan_folder'],
+                payload['rows'],
+            )
         if plan_key == 'welding' and file_name.startswith(WELDING_PRIMARY_PLAN_FILE_NAME.removesuffix('.xlsx')):
             synced_count = _sync_completed_plan_rows_to_weld_library(project, payload['rows'])
             _update_project_weld_metrics(
@@ -244,6 +287,10 @@ def save_plan_file_rows(request, plan_key):
                 update_prefab_weld_count=False,
                 update_completion_rate=True,
             )
+        if plan_key == 'anti-corrosion' and file_name == '防腐焊口单.xlsx':
+            synced_count = _sync_anti_corrosion_completed_rows_to_weld_library(project, payload['rows'])
+        if plan_key in {'anti-corrosion', 'cutting', 'welding'}:
+            sync_project_plan_completion(project, plan_key, business_date=plan_file['plan_folder'])
         with using_project_tables(project):
             record = PlanRecord.objects.filter(project=project, plan_key=plan_key, plan_folder=plan_file['plan_folder']).first()
             if record:

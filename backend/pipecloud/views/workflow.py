@@ -1,3 +1,5 @@
+import threading
+
 from .common import *
 from pipecloud.services.db_storage import (
     ARRIVAL_MODELS,
@@ -12,8 +14,8 @@ from pipecloud.services.db_storage import (
 )
 from pipecloud.services.prefab_database import (
     commit_staged_plan_outputs,
-    confirm_pre_schedule_from_database,
     generate_anti_corrosion_schedule_from_database,
+    generate_cutting_schedule_from_database,
     generate_future_schedule_from_database,
     generate_welding_schedule_from_database,
     match_and_lock_materials_from_database,
@@ -22,11 +24,49 @@ from pipecloud.services.prefab_database import (
     match_anti_corrosion_pre_schedule_from_database,
     match_welding_pre_schedule_from_database,
     match_weld_pre_schedule_from_database,
+    release_material_locks_from_database,
     stage_plan_output_files,
     staged_plan_workbook_payload,
+    strip_cutting_plan_columns,
+    strip_welding_plan_columns,
     update_weld_material_arrival_status_from_database,
     _plan_file_models,
 )
+
+
+_INITIALIZATION_TASKS = {}
+_INITIALIZATION_TASKS_LOCK = threading.Lock()
+
+
+def _register_initialization_task(task_id):
+    if not task_id:
+        return None
+    with _INITIALIZATION_TASKS_LOCK:
+        event = threading.Event()
+        _INITIALIZATION_TASKS[task_id] = event
+        return event
+
+
+def _finish_initialization_task(task_id):
+    if not task_id:
+        return
+    with _INITIALIZATION_TASKS_LOCK:
+        _INITIALIZATION_TASKS.pop(task_id, None)
+
+
+@csrf_exempt
+@require_POST
+def cancel_initialization(request):
+    try:
+        payload = json.loads(request.body.decode('utf-8') or '{}')
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return HttpResponseBadRequest(json.dumps({'error': '请求内容不是有效 JSON'}, ensure_ascii=False), content_type='application/json')
+    task_id = str(payload.get('taskId') or '').strip()
+    with _INITIALIZATION_TASKS_LOCK:
+        event = _INITIALIZATION_TASKS.get(task_id)
+        if event:
+            event.set()
+    return JsonResponse({'ok': True, 'cancelled': bool(event), 'taskId': task_id})
 
 
 def _truthy_payload_value(value):
@@ -70,8 +110,31 @@ def _pre_schedule_action_options(payload, allow_only_auto_weld=True, allow_ignor
     return action_options
 
 
+def _selected_library_seq_options(payload):
+    selected_library_seqs = payload.get('selectedLibrarySeqs')
+    if selected_library_seqs is not None and not isinstance(selected_library_seqs, list):
+        raise ValueError('参数格式无效：selectedLibrarySeqs')
+    return [
+        str(value or '').strip()
+        for value in (selected_library_seqs or [])
+        if str(value or '').strip()
+    ]
+
+
 def _stage_plan_outputs(project, result, output_files):
     return stage_plan_output_files(project, output_files)
+
+
+PRE_SCHEDULE_RESULT_SHEET = '预排产匹配结果'
+
+
+def _pre_schedule_result_only_payload(source, requested_sheet=None):
+    selected_sheet, _, total, columns, rows = table_payload(
+        source,
+        PRE_SCHEDULE_MODELS,
+        PRE_SCHEDULE_RESULT_SHEET if requested_sheet != PRE_SCHEDULE_RESULT_SHEET else requested_sheet,
+    )
+    return selected_sheet, [PRE_SCHEDULE_RESULT_SHEET] if selected_sheet else [], total, columns, rows
 
 
 @require_GET
@@ -496,8 +559,10 @@ def cutting_pre_schedule_rows(request):
                 source_key='weld-pre-schedule',
             ).order_by('-file_updated_at', '-id').first()
             if source is None:
-                raise ValueError('数据库中没有焊口预排产匹配结果')
-        selected_sheet, sheets, total, columns, rows = table_payload(source, PRE_SCHEDULE_MODELS, sheet_name)
+                return JsonResponse({
+                    'path': '', 'sheet': '', 'sheets': [], 'total': 0, 'columns': [], 'rows': [],
+                }, json_dumps_params={'ensure_ascii': False})
+        selected_sheet, sheets, total, columns, rows = _pre_schedule_result_only_payload(source, sheet_name)
     except Exception as error:
         return HttpResponseBadRequest(
             json.dumps({'error': f'读取数据库焊口预排产匹配结果失败：{error}'}, ensure_ascii=False),
@@ -580,8 +645,8 @@ def _arrival_import_success_response(project, data_root, imported_files, backup_
             'stdout': (
                 f'已从数据库分流生成材料库：普通管子 {result["pipe_count"]} 条，'
                 f'普通管件法兰 {result["fitting_count"]} 条，'
-                f'待防腐管子 {result["anti_pipe_count"]} 条，'
-                f'待防腐管件法兰 {result["anti_fitting_count"]} 条'
+                f'防腐管子 {result["anti_pipe_count"]} 条，'
+                f'防腐管件法兰 {result["anti_fitting_count"]} 条'
             ),
             'stderr': '',
         },
@@ -605,8 +670,10 @@ def anti_corrosion_pre_schedule_rows(request):
                 source_key='anti-corrosion-pre-schedule',
             ).order_by('-file_updated_at', '-id').first()
             if source is None:
-                raise ValueError('数据库中没有防腐预排产匹配结果')
-        selected_sheet, sheets, total, columns, rows = table_payload(source, PRE_SCHEDULE_MODELS, sheet_name)
+                return JsonResponse({
+                    'path': '', 'sheet': '', 'sheets': [], 'total': 0, 'columns': [], 'rows': [],
+                }, json_dumps_params={'ensure_ascii': False})
+        selected_sheet, sheets, total, columns, rows = _pre_schedule_result_only_payload(source, sheet_name)
     except Exception as error:
         return HttpResponseBadRequest(
             json.dumps({'error': f'读取数据库防腐预排产匹配结果失败：{error}'}, ensure_ascii=False),
@@ -639,7 +706,14 @@ def material_locking_rows(request):
                 source_key='material-locking',
             ).order_by('-file_updated_at', '-id').first()
             if source is None:
-                raise ValueError('数据库中没有材料匹配锁定结果')
+                return JsonResponse({
+                    'path': '',
+                    'sheet': '',
+                    'sheets': [],
+                    'total': 0,
+                    'columns': [],
+                    'rows': [],
+                }, json_dumps_params={'ensure_ascii': False})
         selected_sheet, sheets, total, columns, rows = table_payload(source, PRE_SCHEDULE_MODELS, sheet_name)
     except Exception as error:
         return HttpResponseBadRequest(
@@ -654,6 +728,35 @@ def material_locking_rows(request):
         'total': total,
         'columns': columns,
         'rows': rows,
+    }, json_dumps_params={'ensure_ascii': False})
+
+
+@csrf_exempt
+@require_POST
+def release_material_locking(request):
+    project, data_root, error = _request_project_context(request, required=True)
+    if error:
+        return _project_bad_request(error)
+    try:
+        payload = json.loads(request.body.decode('utf-8')) if request.body else {}
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return HttpResponseBadRequest(json.dumps({'error': '请求内容不是有效 JSON'}, ensure_ascii=False), content_type='application/json')
+    if not isinstance(payload, dict):
+        return HttpResponseBadRequest(json.dumps({'error': '请求内容格式无效'}, ensure_ascii=False), content_type='application/json')
+    try:
+        selected_library_seqs = _selected_library_seq_options(payload)
+        result = release_material_locks_from_database(project, selected_library_seqs)
+    except Exception as error:
+        return HttpResponseBadRequest(
+            json.dumps({'error': f'释放材料失败：{error}'}, ensure_ascii=False),
+            content_type='application/json',
+        )
+    return JsonResponse({
+        'ok': True,
+        'projectId': project.id,
+        'dataRoot': _relative_path(data_root),
+        'result': result,
+        'summary': [_module_payload(module, data_root, project) for module in _modules_for_project(project)],
     }, json_dumps_params={'ensure_ascii': False})
 
 
@@ -673,8 +776,10 @@ def welding_pre_schedule_rows(request):
                 source_key='welding-pre-schedule',
             ).order_by('-file_updated_at', '-id').first()
             if source is None:
-                raise ValueError('数据库中没有焊接预排产结果')
-        selected_sheet, sheets, total, columns, rows = table_payload(source, PRE_SCHEDULE_MODELS, sheet_name)
+                return JsonResponse({
+                    'path': '', 'sheet': '', 'sheets': [], 'total': 0, 'columns': [], 'rows': [],
+                }, json_dumps_params={'ensure_ascii': False})
+        selected_sheet, sheets, total, columns, rows = _pre_schedule_result_only_payload(source, sheet_name)
     except Exception as error:
         return HttpResponseBadRequest(
             json.dumps({'error': f'读取数据库焊接预排产结果失败：{error}'}, ensure_ascii=False),
@@ -752,6 +857,8 @@ def generate_future_schedule(request):
         'holidayDates': str,
         'canceledWeekendDates': str,
         'cuttingLeadDays': int,
+        'antiCorrosionLeadDays': int,
+        'commissionArea': float,
     }
     for key, caster in option_specs.items():
         raw_value = payload.get(key)
@@ -769,8 +876,10 @@ def generate_future_schedule(request):
             return HttpResponseBadRequest(json.dumps({'error': f'参数必须大于 0：{key}'}, ensure_ascii=False), content_type='application/json')
         if key == 'dateMode' and value not in {'auto', 'manual'}:
             return HttpResponseBadRequest(json.dumps({'error': f'参数格式无效：{key}'}, ensure_ascii=False), content_type='application/json')
-        if key == 'cuttingLeadDays' and value < 0:
+        if key in {'cuttingLeadDays', 'antiCorrosionLeadDays'} and value < 0:
             return HttpResponseBadRequest(json.dumps({'error': f'参数不能小于 0：{key}'}, ensure_ascii=False), content_type='application/json')
+        if key == 'commissionArea' and value <= 0:
+            return HttpResponseBadRequest(json.dumps({'error': f'参数必须大于 0：{key}'}, ensure_ascii=False), content_type='application/json')
         schedule_options[key] = value
 
     if payload.get('skipHolidays') is not None:
@@ -780,6 +889,17 @@ def generate_future_schedule(request):
 
     if schedule_options.get('dateMode') == 'manual' and not str(schedule_options.get('manualWeldDates', '')).strip():
         return HttpResponseBadRequest(json.dumps({'error': '手动选择日期不能为空'}, ensure_ascii=False), content_type='application/json')
+
+    try:
+        selection_mode = str(payload.get('selectionMode') or 'auto').strip().lower()
+        if selection_mode not in {'auto', 'manual'}:
+            raise ValueError('参数格式无效：selectionMode')
+        schedule_options['selectionMode'] = selection_mode
+        schedule_options['selectedLibrarySeqs'] = _selected_library_seq_options(payload)
+        if selection_mode == 'manual' and not schedule_options['selectedLibrarySeqs']:
+            raise ValueError('手动选择模式下请至少选择一条材料已到货焊口')
+    except ValueError as error:
+        return HttpResponseBadRequest(json.dumps({'error': str(error)}, ensure_ascii=False), content_type='application/json')
 
     stage_only = _truthy_payload_value(payload.get('stageOnly'))
     try:
@@ -835,6 +955,28 @@ def run_action(request, action_key):
         return HttpResponseBadRequest(json.dumps({'error': '请求内容格式无效'}, ensure_ascii=False), content_type='application/json')
 
     action_options = {}
+    initialization_task_id = ''
+    initialization_cancel_event = None
+
+    if action_key == 'prefab-weld-library':
+        fill_material_units = payload.get('fillMaterialUnits', True)
+        if not isinstance(fill_material_units, bool):
+            return HttpResponseBadRequest(
+                json.dumps({'error': '参数格式无效：fillMaterialUnits'}, ensure_ascii=False),
+                content_type='application/json',
+            )
+        action_options['fillMaterialUnits'] = fill_material_units
+        initialization_filters = payload.get('initializationFilters', {})
+        if not isinstance(initialization_filters, dict) or any(
+            not isinstance(value, bool) for value in initialization_filters.values()
+        ):
+            return HttpResponseBadRequest(
+                json.dumps({'error': '参数格式无效：initializationFilters'}, ensure_ascii=False),
+                content_type='application/json',
+            )
+        action_options['initializationFilters'] = initialization_filters
+        initialization_task_id = str(payload.get('taskId') or '').strip()
+        initialization_cancel_event = _register_initialization_task(initialization_task_id)
 
     if action_key == 'anti-corrosion-pre-schedule':
         try:
@@ -847,12 +989,28 @@ def run_action(request, action_key):
                 content_type='application/json',
             )
 
+    if action_key == 'material-locking':
+        try:
+            action_options.update(_pre_schedule_action_options(payload))
+            selection_mode = str(payload.get('selectionMode') or 'auto').strip().lower()
+            if selection_mode not in {'auto', 'manual'}:
+                raise ValueError('参数格式无效：selectionMode')
+            action_options['selectionMode'] = selection_mode
+            action_options['selectedLibrarySeqs'] = _selected_library_seq_options(payload)
+            if selection_mode == 'manual' and not action_options['selectedLibrarySeqs']:
+                raise ValueError('手动选择模式下请至少选择一条预制焊口记录')
+        except ValueError as error:
+            return HttpResponseBadRequest(
+                json.dumps({'error': str(error)}, ensure_ascii=False),
+                content_type='application/json',
+            )
+
     if action_key == 'anti-corrosion-schedule':
         stage_only = _truthy_payload_value(payload.get('stageOnly'))
         action_options['stageOnly'] = stage_only
-        raw_commission_area = payload.get('commissionArea', 400)
+        raw_commission_area = payload.get('commissionArea', 1500)
         if raw_commission_area in (None, ''):
-            raw_commission_area = 400
+            raw_commission_area = 1500
         try:
             commission_area = float(raw_commission_area)
         except (TypeError, ValueError):
@@ -889,19 +1047,67 @@ def run_action(request, action_key):
             action_options['skipHolidays'] = payload.get('skipHolidays')
         if action_options.get('dateMode') == 'manual' and not str(action_options.get('manualWeldDates', '')).strip():
             return HttpResponseBadRequest(json.dumps({'error': '手动选择日期不能为空'}, ensure_ascii=False), content_type='application/json')
-        selected_library_seqs = payload.get('selectedLibrarySeqs')
-        if selected_library_seqs is not None and not isinstance(selected_library_seqs, list):
-            return HttpResponseBadRequest(json.dumps({'error': '参数格式无效：selectedLibrarySeqs'}, ensure_ascii=False), content_type='application/json')
-        selected_library_seqs = [
-            str(value or '').strip()
-            for value in (selected_library_seqs or [])
-            if str(value or '').strip()
-        ]
-        action_options['selectedLibrarySeqs'] = selected_library_seqs
+        try:
+            selection_mode = str(payload.get('selectionMode') or 'auto').strip().lower()
+            if selection_mode not in {'auto', 'manual'}:
+                raise ValueError('参数格式无效：selectionMode')
+            action_options['selectionMode'] = selection_mode
+            action_options['selectedLibrarySeqs'] = _selected_library_seq_options(payload)
+            if selection_mode == 'manual' and not action_options['selectedLibrarySeqs']:
+                raise ValueError('手动选择模式下请至少选择一条防腐预排产记录')
+        except ValueError as error:
+            return HttpResponseBadRequest(json.dumps({'error': str(error)}, ensure_ascii=False), content_type='application/json')
 
-    if action_key == 'auto-weld-schedule':
+    if action_key in {'auto-weld-schedule', 'cutting-schedule'}:
+        action_options['stageOnly'] = _truthy_payload_value(payload.get('stageOnly'))
+        schedule_date_option_specs = {
+            'weldStartDate': str,
+            'maxDays': int,
+            'dateMode': str,
+            'manualWeldDates': str,
+            'holidayDates': str,
+            'canceledWeekendDates': str,
+        }
+        for key, caster in schedule_date_option_specs.items():
+            raw_value = payload.get(key)
+            if raw_value is None or raw_value == '':
+                continue
+            try:
+                value = caster(raw_value)
+            except (TypeError, ValueError):
+                return HttpResponseBadRequest(json.dumps({'error': f'参数格式无效：{key}'}, ensure_ascii=False), content_type='application/json')
+            if key == 'dateMode':
+                value = value.strip().lower()
+                if value not in {'auto', 'manual'}:
+                    return HttpResponseBadRequest(json.dumps({'error': f'参数格式无效：{key}'}, ensure_ascii=False), content_type='application/json')
+            if key == 'maxDays' and value <= 0:
+                return HttpResponseBadRequest(json.dumps({'error': f'参数必须大于 0：{key}'}, ensure_ascii=False), content_type='application/json')
+            action_options[key] = value
+        if payload.get('skipHolidays') is not None:
+            if not isinstance(payload.get('skipHolidays'), bool):
+                return HttpResponseBadRequest(json.dumps({'error': '参数格式无效：skipHolidays'}, ensure_ascii=False), content_type='application/json')
+            action_options['skipHolidays'] = payload.get('skipHolidays')
+        if action_options.get('dateMode') == 'manual' and not str(action_options.get('manualWeldDates', '')).strip():
+            return HttpResponseBadRequest(json.dumps({'error': '手动选择日期不能为空'}, ensure_ascii=False), content_type='application/json')
+        if action_key == 'cutting-schedule':
+            try:
+                selection_mode = str(payload.get('selectionMode') or 'auto').strip().lower()
+                if selection_mode not in {'auto', 'manual'}:
+                    raise ValueError('参数格式无效：selectionMode')
+                action_options['selectionMode'] = selection_mode
+                action_options['selectedLibrarySeqs'] = _selected_library_seq_options(payload)
+                if selection_mode == 'manual' and not action_options['selectedLibrarySeqs']:
+                    raise ValueError('手动选择模式下请至少选择一条下料预排产记录')
+            except ValueError as error:
+                return HttpResponseBadRequest(
+                    json.dumps({'error': str(error)}, ensure_ascii=False),
+                    content_type='application/json',
+                )
+
+    if action_key in {'auto-weld-schedule', 'cutting-schedule'}:
         welding_option_specs = {
             'weldDate': str,
+            'cutDate': str,
             'targetDiameter': float,
             'ordersPerDay': int,
         }
@@ -913,7 +1119,7 @@ def run_action(request, action_key):
                 value = caster(raw_value)
             except (TypeError, ValueError):
                 return HttpResponseBadRequest(json.dumps({'error': f'参数格式无效：{key}'}, ensure_ascii=False), content_type='application/json')
-            if key == 'weldDate':
+            if key in {'weldDate', 'cutDate'}:
                 value = str(value).strip()
                 if not re.fullmatch(r'\d{4}-\d{2}-\d{2}|\d{8}', value):
                     return HttpResponseBadRequest(json.dumps({'error': f'参数格式无效：{key}'}, ensure_ascii=False), content_type='application/json')
@@ -923,7 +1129,12 @@ def run_action(request, action_key):
 
     try:
         if action_key == 'prefab-weld-library':
-            result = maintain_weld_library_from_database(project)
+            result = maintain_weld_library_from_database(
+                project,
+                fill_material_units=action_options.get('fillMaterialUnits', True),
+                initialization_filters=action_options.get('initializationFilters'),
+                cancellation_check=initialization_cancel_event.is_set if initialization_cancel_event else None,
+            )
             _update_project_weld_metrics(project, data_root)
             stdout = f'已从数据库生成预制焊口库：{result["weld_count"]} 条'
         elif action_key == 'arrival-library':
@@ -933,7 +1144,14 @@ def run_action(request, action_key):
                 f'管件法兰 {result["fitting_count"]} 条'
             )
         elif action_key == 'material-locking':
-            result = match_and_lock_materials_from_database(project)
+            result = match_and_lock_materials_from_database(
+                project,
+                only_auto_weld=action_options.get('onlyAutoWeld', False),
+                concentration_dimension=action_options.get('concentrationDimension'),
+                concentration_threshold_percent=action_options.get('concentrationThresholdPercent'),
+                selection_mode=action_options.get('selectionMode', 'auto'),
+                selected_library_seqs=action_options.get('selectedLibrarySeqs'),
+            )
             stdout = (
                 f'已完成材料匹配与锁定：已锁定 {result["locked_count"]} 条，'
                 f'不可锁定 {result["rejected_count"]} 条'
@@ -960,6 +1178,7 @@ def run_action(request, action_key):
                 project,
                 commission_area=action_options.get('commissionArea'),
                 selected_library_seqs=action_options.get('selectedLibrarySeqs'),
+                selection_mode=action_options.get('selectionMode', 'auto'),
                 persist=not action_options.get('stageOnly'),
                 dateMode=action_options.get('dateMode'),
                 weldStartDate=action_options.get('weldStartDate'),
@@ -979,28 +1198,55 @@ def run_action(request, action_key):
                 project,
             )
             stdout = f'已从数据库生成下料预排产：可排 {result["pre_schedule_count"]} 条'
+        elif action_key == 'cutting-schedule':
+            result = generate_cutting_schedule_from_database(
+                project,
+                cut_date=action_options.get('cutDate') or action_options.get('weldDate'),
+                target_diameter=action_options.get('targetDiameter'),
+                orders_per_day=action_options.get('ordersPerDay'),
+                persist=not action_options.get('stageOnly'),
+                dateMode=action_options.get('dateMode'),
+                weldStartDate=action_options.get('weldStartDate'),
+                manualWeldDates=action_options.get('manualWeldDates'),
+                maxDays=action_options.get('maxDays'),
+                skipHolidays=action_options.get('skipHolidays'),
+                holidayDates=action_options.get('holidayDates'),
+                canceledWeekendDates=action_options.get('canceledWeekendDates'),
+                selection_mode=action_options.get('selectionMode', 'auto'),
+                selected_library_seqs=action_options.get('selectedLibrarySeqs'),
+            )
+            stdout = (
+                f'已生成下料排产单预览：{result["order_count"]} 张排产单，{result["weld_count"]} 道焊口'
+                if action_options.get('stageOnly')
+                else f'已从数据库生成下料排产单：{result["order_count"]} 张排产单，{result["weld_count"]} 道焊口'
+            )
         elif action_key == 'welding-pre-schedule':
             result = match_welding_pre_schedule_from_database(project)
             stdout = f'已从数据库生成焊接预排产：可排 {result["pre_schedule_count"]} 条'
-        elif action_key == 'confirm-cutting-pre-schedule':
-            result = confirm_pre_schedule_from_database(project)
-            stdout = (
-                f'已确认数据库材料库：普通管子 {result["ordinary_pipe_count"]} 条，'
-                f'普通管件法兰 {result["ordinary_fitting_count"]} 条，'
-                f'防腐管子 {result["anti_pipe_count"]} 条，'
-                f'防腐管件法兰 {result["anti_fitting_count"]} 条'
-            )
         elif action_key == 'auto-weld-schedule':
             result = generate_welding_schedule_from_database(
                 project,
                 weld_date=action_options.get('weldDate'),
                 target_diameter=action_options.get('targetDiameter'),
                 orders_per_day=action_options.get('ordersPerDay'),
+                persist=not action_options.get('stageOnly'),
+                dateMode=action_options.get('dateMode'),
+                weldStartDate=action_options.get('weldStartDate'),
+                manualWeldDates=action_options.get('manualWeldDates'),
+                maxDays=action_options.get('maxDays'),
+                skipHolidays=action_options.get('skipHolidays'),
+                holidayDates=action_options.get('holidayDates'),
+                canceledWeekendDates=action_options.get('canceledWeekendDates'),
             )
-            stdout = f'已从数据库生成焊接排产：{result["order_count"]} 张排产单，{result["weld_count"]} 道焊口'
+            stdout = (
+                f'已生成焊接排产预览：{result["order_count"]} 张排产单，{result["weld_count"]} 道焊口'
+                if action_options.get('stageOnly')
+                else f'已从数据库生成焊接排产：{result["order_count"]} 张排产单，{result["weld_count"]} 道焊口'
+            )
         else:
             return HttpResponseBadRequest(json.dumps({'error': f'动作尚未支持数据库执行：{action_key}'}, ensure_ascii=False), content_type='application/json')
     except Exception as error:
+        _finish_initialization_task(initialization_task_id)
         error_text = f'{action["name"]}失败：{error}'
         return HttpResponseBadRequest(
             json.dumps({
@@ -1022,6 +1268,7 @@ def run_action(request, action_key):
             content_type='application/json',
         )
 
+    _finish_initialization_task(initialization_task_id)
     staged_files = []
     stage_token = ''
     if action_options.get('stageOnly'):
@@ -1120,6 +1367,11 @@ def staged_plan_file_rows(request):
             rows = payload['rows']
         else:
             selected_sheet, sheets, total, columns, rows = table_payload(source, sheet_models, sheet_name)
+        parsed_source = str(source.source_key or '').split(':', 3)
+        if len(parsed_source) >= 2 and parsed_source[1] == 'cutting':
+            columns, rows = strip_cutting_plan_columns(columns, rows, project)
+        if len(parsed_source) >= 2 and parsed_source[1] == 'welding' and file_name == '管段焊口表.xlsx':
+            columns, rows = strip_welding_plan_columns(project, columns, rows)
     except Exception as error:
         return HttpResponseBadRequest(
             json.dumps({'error': str(error)}, ensure_ascii=False),

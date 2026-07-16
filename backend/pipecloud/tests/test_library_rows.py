@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 from django.test import RequestFactory, SimpleTestCase
 
-from pipecloud.models import WeldLibraryRow
+from pipecloud.models import FittingMaterialRow, PipeMaterialRow, WeldLibraryRow
 from pipecloud.services.db_storage import model_field_labels
 
 
@@ -12,6 +12,34 @@ library_views = import_module('pipecloud.views.libraries')
 
 
 class LibraryRowsTests(SimpleTestCase):
+    def test_save_payload_keeps_selected_sheet(self):
+        request = RequestFactory().post(
+            '/api/pipecloud/plans/anti-corrosion/file/save/',
+            data=json.dumps({
+                'sheet': '防腐材料单',
+                'columns': ['材料代码'],
+                'rows': [{'材料代码': 'P001'}],
+            }),
+            content_type='application/json',
+        )
+
+        payload, error = library_views._parse_library_save_payload(request)
+
+        self.assertIsNone(error)
+        self.assertEqual(payload['sheet'], '防腐材料单')
+
+    def test_pipe_material_uses_pipe_number_as_business_primary_key(self):
+        self.assertEqual(
+            library_views._model_primary_key_columns(PipeMaterialRow),
+            ['管子序号'],
+        )
+
+    def test_fitting_material_uses_material_code_as_business_primary_key(self):
+        self.assertEqual(
+            library_views._model_primary_key_columns(FittingMaterialRow),
+            ['材料代码'],
+        )
+
     def test_library_list_tolerates_single_library_info_failure(self):
         request = RequestFactory().get('/api/libraries/')
         project = Mock()

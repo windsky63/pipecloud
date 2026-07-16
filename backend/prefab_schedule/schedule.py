@@ -295,7 +295,13 @@ def _build_welding_plan_for_sheet(sheet_name, weld_df, cut_date, weld_date):
 
     for side in (1, 2):
         mark_col = COLUMNS[f'material_no_{side}']
-        out[f'单位{side}'] = out[mark_col].map(_material_units_for_side) if mark_col in out.columns else ''
+        unit_col = f'单位{side}'
+        if unit_col not in out.columns:
+            continue
+        generated = out[mark_col].map(_material_units_for_side) if mark_col in out.columns else ''
+        empty_mask = out[unit_col].fillna('').astype(str).str.strip().eq('')
+        if hasattr(generated, 'loc'):
+            out.loc[empty_mask, unit_col] = generated.loc[empty_mask]
     return out
 
 

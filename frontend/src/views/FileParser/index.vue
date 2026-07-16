@@ -176,7 +176,7 @@ const projectStatusItems = computed(() => {
     {
       key: 'initialization',
       icon: 'mdi-database-check-outline',
-      title: '焊口初始化数据',
+      title: t('weldInitializationData'),
       color: project.hasInitializationData ? 'success' : 'warning',
       status: project.hasInitializationData ? t('ready') : t('notFound'),
       detail: project.weldFile?.name || project.initializationHint || t('notFound'),
@@ -184,19 +184,19 @@ const projectStatusItems = computed(() => {
     {
       key: 'prefab',
       icon: 'mdi-source-branch-check',
-      title: '预制焊口库',
+      title: t('prefabWeldLibrary'),
       color: project.prefabWeldFile ? 'success' : 'warning',
       status: project.prefabWeldFile ? t('ready') : t('notFound'),
-      detail: project.prefabWeldFile?.name || '生成预制焊口库后可用于管道校验',
+      detail: project.prefabWeldFile?.name || t('prefabWeldLibraryValidationHint'),
     },
     {
       key: 'idf-model',
       icon: 'mdi-cube-scan',
-      title: 'IDF模型文件',
+      title: t('idfModelFile'),
       color: idf?.exists ? 'success' : (idf?.status && idf.status !== 'missing' ? 'info' : 'warning'),
       status: idf?.exists ? t('ready') : parserStatusText(idf?.status),
-      detail: idf?.modelFile?.name || idf?.message || '解析并预览 IDF 后，由用户确认是否保存',
-      meta: idf ? `${idf.inputFileCount || 0} IDF / ${idf.resultCount || 0} 结果${idf.percent ? ` / ${idf.percent}%` : ''}` : '',
+      detail: idf?.modelFile?.name || idf?.message || t('idfSaveAfterPreviewHint'),
+      meta: idf ? `${idf.inputFileCount || 0} IDF / ${idf.resultCount || 0} ${t('results')}${idf.percent ? ` / ${idf.percent}%` : ''}` : '',
     },
   ]
 })
@@ -429,7 +429,7 @@ async function cancelCurrentParserJob() {
 
 async function confirmImport(importMode) {
   if (!canImportSpreadsheet.value) {
-    notify('warning', '解析生成的表格仅供下载，不允许导入数据库。')
+    notify('warning', t('parsedTableDownloadOnly'))
     return
   }
   if (!result.value?.artifactId && !result.value?.stagedPath) {
@@ -492,13 +492,13 @@ async function confirmImport(importMode) {
 
 async function saveIdfModel() {
   if (!parserJob.value?.jobId || !isIdfResult.value) {
-    notify('warning', '没有可保存的 IDF 模型。')
+    notify('warning', t('noIdfModelToSave'))
     return
   }
   const confirmed = await unsavedChangesDialog.value?.open({
-    title: '保存 IDF 模型',
-    text: '确认将当前已预览的 IDF 模型保存到项目数据库吗？',
-    confirmText: '确认保存',
+    title: t('saveIdfModel'),
+    text: t('confirmSaveIdfModel'),
+    confirmText: t('confirmSave'),
     color: 'primary',
   })
   if (!confirmed) return
@@ -514,7 +514,7 @@ async function saveIdfModel() {
     await loadCurrentProject()
     notify('success', payload.message)
   } catch (error) {
-    parseError.value = `保存 IDF 模型失败：${error.message}`
+    parseError.value = t('saveIdfModelFailed', { message: error.message })
   } finally {
     savingModel.value = false
   }
@@ -865,7 +865,7 @@ watch(() => route.query.tab, (tab) => {
           :disabled="parserActionsLocked || parserJob?.modelSaved || result?.modelSaved || !parserJob?.modelAvailable"
           @click="saveIdfModel"
         >
-          {{ parserJob?.modelSaved || result?.modelSaved ? '模型已保存' : '保存 IDF 模型' }}
+          {{ parserJob?.modelSaved || result?.modelSaved ? t('modelSaved') : t('saveIdfModel') }}
         </v-btn>
 
         <v-btn
@@ -975,8 +975,8 @@ watch(() => route.query.tab, (tab) => {
         <template v-if="hasSplitInitializationPreview">
           <div class="parser-preview-subsection">
             <div class="parser-preview-subsection-title">
-              <strong>固定字段</strong>
-              <span>{{ fixedPreviewColumns.length }} 列</span>
+              <strong>{{ t('fixedFields') }}</strong>
+              <span>{{ t('columnQuantity', { count: fixedPreviewColumns.length }) }}</span>
             </div>
             <DataVTable
               :records="fixedPreviewRows"
@@ -986,8 +986,8 @@ watch(() => route.query.tab, (tab) => {
           </div>
           <div class="parser-preview-subsection">
             <div class="parser-preview-subsection-title">
-              <strong>额外字段</strong>
-              <span>{{ extraPreviewColumns.length }} 列</span>
+              <strong>{{ t('extraFields') }}</strong>
+              <span>{{ t('columnQuantity', { count: extraPreviewColumns.length }) }}</span>
             </div>
             <DataVTable
               v-if="extraPreviewColumns.length"
@@ -1000,7 +1000,7 @@ watch(() => route.query.tab, (tab) => {
               type="info"
               variant="tonal"
               density="compact"
-              text="当前文件没有固定模型之外的额外字段。"
+              :text="t('noExtraFields')"
             />
           </div>
         </template>

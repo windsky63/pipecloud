@@ -30,8 +30,11 @@ const planTabs = [
 ]
 
 const WELDING_PRIMARY_FILE_NAME = '管段焊口表.xlsx'
-const CUTTING_PRIMARY_FILE_NAME = '切管明细表.xlsx'
+const CUTTING_PRIMARY_FILE_NAME = '下料排产单.xlsx'
+const CUTTING_DETAIL_FILE_NAME = '切管明细表.xlsx'
 const CUTTING_SUMMARY_FILE_NAME = '切管汇总表.xlsx'
+const ANTI_CORROSION_MATERIAL_FILE_NAME = '防腐材料单.xlsx'
+const ANTI_CORROSION_WELD_FILE_NAME = '防腐焊口单.xlsx'
 
 const loading = ref(false)
 const fileLoading = ref(false)
@@ -42,6 +45,8 @@ const saveMessage = ref('')
 const selectedDate = ref('')
 const calendarMonth = ref('')
 const ganttDate = ref('')
+const ganttMonthMenu = ref(false)
+const ganttDateMenu = ref(false)
 const selectedPlan = ref(null)
 const selectedFile = ref(null)
 const selectedSheet = ref('')
@@ -103,8 +108,9 @@ const todayPlans = computed(() => activeSource.value?.todayPlans || [])
 const futurePlans = computed(() => activeSource.value?.futurePlans || [])
 const historyPlans = computed(() => activeSource.value?.historyPlans || [])
 const isWeldingPlan = computed(() => activePlanKey.value === 'welding')
+const isAntiCorrosionPlan = computed(() => activePlanKey.value === 'anti-corrosion')
 const selectedPlanFiles = computed(() => sortedPlanFiles(selectedPlan.value?.files || []))
-const usesGroupedPlanFiles = computed(() => ['welding', 'cutting'].includes(activePlanKey.value))
+const usesGroupedPlanFiles = computed(() => ['anti-corrosion', 'welding', 'cutting'].includes(activePlanKey.value))
 const primaryPlanFile = computed(() => selectedPlanFiles.value.find((file) => isPrimaryPlanFile(file)) || null)
 const auxiliaryPlanFiles = computed(() => selectedPlanFiles.value.filter((file) => !isPrimaryPlanFile(file)))
 const editableColumns = computed(() => fileData.value.columns || [])
@@ -260,6 +266,10 @@ function todayIso() {
   return formatDateIso(new Date())
 }
 
+function todayCompact() {
+  return formatCompactDate(new Date())
+}
+
 function compactDateToIso(date) {
   if (!/^\d{8}$/.test(String(date))) return ''
   return `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`
@@ -324,10 +334,12 @@ function planTooltipRows(plan) {
   if (summary.weldCount !== undefined) {
     rows.push({ label: t('weldCount'), value: summary.weldCount })
   }
+  if (plan?.planKey === 'anti-corrosion' && summary.commissionArea !== undefined) {
+    rows.push({ label: t('commissionCoatingArea'), value: `${summary.commissionArea} ${t('squareMeterUnit')}` })
+  }
   if (summary.diameterTotal !== undefined) {
     rows.push({ label: t('planDiameterTotal'), value: summary.diameterTotal })
   }
-  rows.push({ label: t('planFileCount'), value: plan?.fileCount || 0 })
   return rows
 }
 
@@ -438,6 +450,32 @@ function moveGanttDate(offset) {
   const current = parseIsoDate(ganttModelValue.value) || new Date()
   current.setDate(current.getDate() + offset)
   ganttDate.value = formatDateIso(current)
+}
+
+function normalizePickerDate(value) {
+  const candidate = Array.isArray(value) ? value[0] : value
+  if (candidate instanceof Date) return formatDateIso(candidate)
+  const text = String(candidate || '').slice(0, 10)
+  return parseIsoDate(text) ? text : ''
+}
+
+function selectGanttMonth(value) {
+  const month = String(value || '').slice(0, 7)
+  if (!/^\d{4}-\d{2}$/.test(month)) return
+  const current = parseIsoDate(ganttModelValue.value) || new Date()
+  const target = parseIsoDate(`${month}-01`)
+  if (!target) return
+  const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate()
+  target.setDate(Math.min(current.getDate(), lastDay))
+  ganttDate.value = formatDateIso(target)
+  ganttMonthMenu.value = false
+}
+
+function selectGanttDate(value) {
+  const selected = normalizePickerDate(value)
+  if (!selected) return
+  ganttDate.value = selected
+  ganttDateMenu.value = false
 }
 
 function movePlanTablePeriod(offset) {
@@ -721,21 +759,19 @@ function isWeldingPrimaryFile(file) {
   return file?.name === WELDING_PRIMARY_FILE_NAME || String(file?.name || '').startsWith('管段焊口表')
 }
 
-function planFileDisplayName(file, plan = selectedPlan.value) {
+function planFileDisplayName(file) {
   const name = String(file?.name || '')
-  if (!name || !['welding', 'cutting'].includes(activePlanKey.value)) return name
-  const date = compactDateToIso(plan?.planDate || plan?.planFolder) || String(plan?.planDate || plan?.planFolder || '')
-  if (!date) return name
-  const compactDate = date.replaceAll('-', '')
-  if (name.includes(date) || name.includes(compactDate)) return name
-  const extensionIndex = name.lastIndexOf('.')
-  if (extensionIndex <= 0) return `${name}-${date}`
-  return `${name.slice(0, extensionIndex)}-${date}${name.slice(extensionIndex)}`
+  return name
 }
 
 function isCuttingPrimaryFile(file) {
   const name = String(file?.name || '')
-  return name === CUTTING_PRIMARY_FILE_NAME || name.includes('切管明细表')
+  return name === CUTTING_PRIMARY_FILE_NAME || name.includes('下料排产单')
+}
+
+function isCuttingDetailFile(file) {
+  const name = String(file?.name || '')
+  return name === CUTTING_DETAIL_FILE_NAME || name.includes('切管明细表')
 }
 
 function isCuttingSummaryFile(file) {
@@ -743,9 +779,20 @@ function isCuttingSummaryFile(file) {
   return name === CUTTING_SUMMARY_FILE_NAME || name.includes('切管汇总表')
 }
 
+function isAntiCorrosionMaterialFile(file) {
+  const name = String(file?.name || '')
+  return name === ANTI_CORROSION_MATERIAL_FILE_NAME || name.includes('防腐材料单')
+}
+
+function isAntiCorrosionWeldFile(file) {
+  const name = String(file?.name || '')
+  return name === ANTI_CORROSION_WELD_FILE_NAME || name.includes('防腐焊口单')
+}
+
 function isPrimaryPlanFile(file) {
   if (isWeldingPlan.value) return isWeldingPrimaryFile(file)
   if (activePlanKey.value === 'cutting') return isCuttingPrimaryFile(file)
+  if (isAntiCorrosionPlan.value) return isAntiCorrosionMaterialFile(file)
   return false
 }
 
@@ -753,8 +800,8 @@ function sortedPlanFiles(files) {
   const list = [...files]
   if (!usesGroupedPlanFiles.value) return list
   return list.sort((left, right) => {
-    const leftPrimary = isPrimaryPlanFile(left) ? 0 : isCuttingSummaryFile(left) ? 1 : 2
-    const rightPrimary = isPrimaryPlanFile(right) ? 0 : isCuttingSummaryFile(right) ? 1 : 2
+    const leftPrimary = isPrimaryPlanFile(left) ? 0 : isCuttingDetailFile(left) || isCuttingSummaryFile(left) || isAntiCorrosionWeldFile(left) ? 1 : 2
+    const rightPrimary = isPrimaryPlanFile(right) ? 0 : isCuttingDetailFile(right) || isCuttingSummaryFile(right) || isAntiCorrosionWeldFile(right) ? 1 : 2
     if (leftPrimary !== rightPrimary) return leftPrimary - rightPrimary
     return String(left.name || '').localeCompare(String(right.name || ''), 'zh-Hans-CN')
   })
@@ -764,6 +811,17 @@ function defaultPlanFile(plan) {
   const files = sortedPlanFiles(plan?.files || [])
   if (!usesGroupedPlanFiles.value) return files[0] || null
   return files.find((file) => isPrimaryPlanFile(file)) || files[0] || null
+}
+
+function defaultPlanForDate(source, date) {
+  const compactDate = String(date || '').replaceAll('-', '')
+  const plans = [
+    ...(source?.todayPlans || []),
+    ...(source?.futurePlans || []),
+    ...(source?.historyPlans || []),
+  ]
+  if (!compactDate) return plans[0] || null
+  return plans.find((plan) => String(plan.planDate || plan.planFolder || '').replaceAll('-', '') === compactDate) || plans[0] || null
 }
 
 function togglePlanSection(sectionKey) {
@@ -777,11 +835,12 @@ async function loadPlan(date = selectedDate.value) {
   ensurePlanRoute()
   const requestId = ++planLoadRequestId
   const requestKey = isGanttView.value ? 'all' : activePlanKey.value
+  const requestedDate = date || todayCompact()
   loading.value = true
   errorMessage.value = ''
   try {
     const params = selectedProjectParams()
-    if (date) params.set('date', date)
+    if (requestedDate) params.set('date', requestedDate)
     const payload = await fetchPlanRows(requestKey, params)
     if (requestId !== planLoadRequestId) return
     planData.value = payload
@@ -792,9 +851,9 @@ async function loadPlan(date = selectedDate.value) {
     resetPlanSelection()
     if (!isGanttView.value) {
       const source = payload.sources?.[0]
-      const initialPlan = source?.todayPlans?.[0]
+      const initialPlan = defaultPlanForDate(source, requestedDate)
       if (initialPlan) {
-        await selectPlan(initialPlan, { openDefaultFile: true })
+        await selectPlan(initialPlan)
       }
     }
   } catch (error) {
@@ -820,7 +879,7 @@ async function selectPlan(plan, options = {}) {
   selectedPlan.value = plan
   selectedDate.value = plan.planDate || selectedDate.value
   resetFileData()
-  if (options.openDefaultFile) {
+  if (options.openDefaultFile !== false) {
     const file = defaultPlanFile(plan)
     if (file) {
       await loadFile(file)
@@ -831,7 +890,24 @@ async function selectPlan(plan, options = {}) {
 async function loadFile(file, sheet = '') {
   if (!file || !selectedPlan.value || isGanttView.value) return
   const requestId = ++fileLoadRequestId
+  const requestedSheet = typeof sheet === 'string' ? sheet : ''
+  const isSameFile = selectedFile.value?.path === file.path
   selectedFile.value = file
+  selectedSheet.value = requestedSheet
+  if (!isSameFile) {
+    fileData.value = {
+      name: file.name,
+      path: file.path,
+      sheet: requestedSheet,
+      sheets: [],
+      total: 0,
+      columns: [],
+      rows: [],
+    }
+    editableRows.value = []
+  }
+  isDirty.value = false
+  saveMessage.value = ''
   fileLoading.value = true
   fileError.value = ''
   try {
@@ -840,7 +916,7 @@ async function loadFile(file, sheet = '') {
       planFolder: selectedPlan.value.planFolder || selectedPlan.value.name,
       file: file.name,
     })
-    if (sheet) params.set('sheet', sheet)
+    if (requestedSheet) params.set('sheet', requestedSheet)
     const payload = await fetchPlanFileRows(activePlanKey.value, params)
     if (requestId !== fileLoadRequestId) return
     fileData.value = payload
@@ -861,6 +937,7 @@ async function loadFile(file, sheet = '') {
     }
     editableRows.value = []
     isDirty.value = false
+    selectedSheet.value = ''
     fileError.value = t('planFileContentReadFailed', { message: error.message })
   } finally {
     if (requestId === fileLoadRequestId) {
@@ -870,6 +947,9 @@ async function loadFile(file, sheet = '') {
 }
 
 async function changeSheet(sheet) {
+  if (typeof sheet !== 'string' || !sheet || sheet === selectedSheet.value || !fileData.value.sheets.includes(sheet)) {
+    return
+  }
   if (isDirty.value && !(await confirmDiscardUnsaved(t('unsavedSheetSwitchConfirm')))) {
     return
   }
@@ -896,26 +976,118 @@ function cloneRows(rows) {
   return rows.map((row) => ({ ...row }))
 }
 
-function ensureCompletionColumn() {
-  const candidates = ['材料焊接状态', '是否完成', '完成状态', '完工状态', '状态']
+function ensureEditableColumn(candidates, fallback) {
   const existingColumn = candidates.find((column) => editableColumns.value.includes(column))
   if (existingColumn) return existingColumn
   fileData.value = {
     ...fileData.value,
-    columns: [...fileData.value.columns, '材料焊接状态'],
+    columns: [...fileData.value.columns, fallback],
   }
-  return '材料焊接状态'
+  return fallback
 }
 
-function markTodayPlanCompleted() {
-  if (!canEditSelectedFile.value) return
-  const completionColumn = ensureCompletionColumn()
+function ensureCompletionColumn() {
+  if (activePlanKey.value === 'anti-corrosion' && !isAntiCorrosionMaterialFile(selectedFile.value || fileData.value)) {
+    const antiCandidates = ['材料防腐状态', '防腐状态', '是否防腐完成', '防腐完成状态']
+    return ensureEditableColumn(antiCandidates, '材料防腐状态')
+  }
+  if (activePlanKey.value === 'cutting') {
+    const cuttingCandidates = ['材料下料状态', '下料状态', '是否下料完成', '下料完成状态', '是否完成']
+    return ensureEditableColumn(cuttingCandidates, '材料下料状态')
+  }
+  const candidates = ['材料焊接状态', '是否完成', '完成状态', '完工状态', '状态']
+  return ensureEditableColumn(candidates, '材料焊接状态')
+}
+
+function markAntiCorrosionMaterialCompleted() {
+  const commissionAreaColumn = '委托面积'
+  const completedAreaColumn = ensureEditableColumn(['已完成面积'], '已完成面积')
   editableRows.value = editableRows.value.map((row) => ({
     ...row,
-    [completionColumn]: '已完成',
+    [completedAreaColumn]: row[commissionAreaColumn] ?? row[completedAreaColumn] ?? '',
+  }))
+}
+
+function completedRowsPayload(columns, rows, candidates, fallback, value) {
+  const completionColumn = candidates.find((column) => columns.includes(column)) || fallback
+  const nextColumns = columns.includes(completionColumn) ? [...columns] : [...columns, completionColumn]
+  return {
+    columns: nextColumns,
+    rows: rows.map((row) => ({
+      ...row,
+      [completionColumn]: value,
+    })),
+  }
+}
+
+async function completeAllCuttingSheets() {
+  if (!selectedFile.value || !selectedPlan.value || !fileData.value.sheets.length) return
+  const file = selectedFile.value
+  const currentSheet = selectedSheet.value
+  const sheets = [...fileData.value.sheets]
+  const candidates = ['材料下料状态', '下料状态', '是否下料完成', '下料完成状态', '是否完成']
+  saving.value = true
+  fileError.value = ''
+  saveMessage.value = ''
+  try {
+    for (const sheet of sheets) {
+      let columns
+      let rows
+      if (sheet === currentSheet) {
+        columns = [...editableColumns.value]
+        rows = cloneRows(editableRows.value)
+      } else {
+        const fetchParams = selectedProjectParams({
+          date: selectedPlan.value.planDate || selectedDate.value,
+          planFolder: selectedPlan.value.planFolder || selectedPlan.value.name,
+          file: file.name,
+          sheet,
+        })
+        const sheetPayload = await fetchPlanFileRows(activePlanKey.value, fetchParams)
+        columns = sheetPayload.columns || []
+        rows = sheetPayload.rows || []
+      }
+      const completed = completedRowsPayload(columns, rows, candidates, '材料下料状态', true)
+      const saveParams = selectedProjectParams({
+        date: selectedPlan.value.planDate || selectedDate.value,
+        planFolder: selectedPlan.value.planFolder || selectedPlan.value.name,
+        file: file.name,
+      })
+      await savePlanFileRows(activePlanKey.value, saveParams, {
+        sheet,
+        columns: completed.columns,
+        rows: completed.rows,
+      })
+    }
+    await loadFile(file, currentSheet)
+    saveMessage.value = t('cuttingAllSheetsCompleted', { count: sheets.length })
+  } catch (error) {
+    fileError.value = t('planFileSaveFailed', { message: error.message })
+  } finally {
+    saving.value = false
+  }
+}
+
+async function markTodayPlanCompleted() {
+  if (!canEditSelectedFile.value) return
+  if (activePlanKey.value === 'cutting' && isCuttingPrimaryFile(selectedFile.value || fileData.value)) {
+    await completeAllCuttingSheets()
+    return
+  }
+  if (activePlanKey.value === 'anti-corrosion' && isAntiCorrosionMaterialFile(selectedFile.value || fileData.value)) {
+    markAntiCorrosionMaterialCompleted()
+    isDirty.value = true
+    saveMessage.value = t('todayPlanMarkedComplete')
+    return
+  }
+  const completionColumn = ensureCompletionColumn()
+  const completionValue = ['anti-corrosion', 'cutting'].includes(activePlanKey.value) ? true : '已完成'
+  editableRows.value = editableRows.value.map((row) => ({
+    ...row,
+    [completionColumn]: completionValue,
   }))
   isDirty.value = true
-    saveMessage.value = t('todayPlanMarkedComplete')
+  saveMessage.value = t('todayPlanMarkedComplete')
 }
 
 async function exportCurrentPlanFile() {
@@ -1337,18 +1509,21 @@ onBeforeUnmount(() => {
             {{ t('export') }}
           </v-btn>
           <v-btn
+            v-if="canEditSelectedFile"
             color="primary"
             prepend-icon="mdi-content-save-outline"
             :loading="saving"
-            :disabled="!canEditSelectedFile || !isDirty"
+            :disabled="!isDirty"
             @click="saveCurrentFile"
           >
             {{ t('saveToPlanFile') }}
           </v-btn>
           <v-btn
+            v-if="canEditSelectedFile"
             color="success"
             prepend-icon="mdi-check-all"
-            :disabled="!canEditSelectedFile || !editableRows.length || saving"
+            :loading="saving"
+            :disabled="!editableRows.length || saving"
             @click="markTodayPlanCompleted"
           >
             {{ t('completeTodayPlan') }}
@@ -1374,17 +1549,43 @@ onBeforeUnmount(() => {
           <strong>{{ planTablePeriodTitle }}</strong>
           <v-btn icon="mdi-chevron-right" variant="text" size="small" @click="movePlanTablePeriod(1)" />
         </div>
+        <v-tabs v-model="planTableViewTab" class="plan-table-tabs" color="primary" density="compact">
+          <v-tab value="calendar">{{ t('dateTable') }}</v-tab>
+          <v-tab value="gantt">{{ t('ganttChart') }}</v-tab>
+        </v-tabs>
+        <div v-if="planTableViewTab === 'gantt'" class="gantt-period-controls">
+          <v-menu v-model="ganttMonthMenu" :close-on-content-click="false">
+            <template #activator="{ props }">
+              <v-btn v-bind="props" prepend-icon="mdi-calendar-month-outline" size="small" variant="outlined">
+                {{ t('ganttMonth') }}：{{ ganttModelValue.slice(0, 7) }}
+              </v-btn>
+            </template>
+            <v-card class="pa-3" min-width="280">
+              <v-text-field
+                :model-value="ganttModelValue.slice(0, 7)"
+                :label="t('ganttMonth')"
+                type="month"
+                density="compact"
+                hide-details
+                @update:model-value="selectGanttMonth"
+              />
+            </v-card>
+          </v-menu>
+          <v-menu v-model="ganttDateMenu" :close-on-content-click="false">
+            <template #activator="{ props }">
+              <v-btn v-bind="props" prepend-icon="mdi-calendar-today-outline" size="small" variant="outlined">
+                {{ t('ganttDate') }}：{{ ganttModelValue }}
+              </v-btn>
+            </template>
+            <v-date-picker :model-value="ganttModelValue" @update:model-value="selectGanttDate" />
+          </v-menu>
+        </div>
         <div class="calendar-plan-legend">
           <v-chip color="success" variant="flat" size="small">防腐</v-chip>
           <v-chip color="primary" variant="flat" size="small">下料</v-chip>
           <v-chip color="warning" variant="flat" size="small">焊接</v-chip>
         </div>
       </div>
-
-      <v-tabs v-model="planTableViewTab" class="plan-table-tabs" color="primary">
-        <v-tab value="calendar">{{ t('dateTable') }}</v-tab>
-        <v-tab value="gantt">{{ t('ganttChart') }}</v-tab>
-      </v-tabs>
 
       <div v-if="pendingPlanDateMoves.length" class="plan-pending-moves">
         <span>{{ t('pendingPlanDateMoves', { count: pendingPlanDateMoves.length }) }}</span>

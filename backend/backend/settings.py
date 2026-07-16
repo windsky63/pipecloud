@@ -28,6 +28,17 @@ DEBUG = os.getenv('DJANGO_DEBUG', 'true').lower() in {'1', 'true', 'yes', 'on'}
 
 ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'testserver']
 
+# Comma-separated origins, including the scheme and port. Trust the local Vite
+# development server by default while keeping CSRF validation enabled.
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        'DJANGO_CSRF_TRUSTED_ORIGINS',
+        'http://localhost:5173,http://127.0.0.1:5173',
+    ).split(',')
+    if origin.strip()
+]
+
 
 # Application definition
 
@@ -47,6 +58,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'pipecloud.middleware.OperationLogMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -74,11 +86,11 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
-MYSQL_DATABASE = 'pipecloud'
-MYSQL_USER = 'root'
-MYSQL_PASSWORD = '123456'
-MYSQL_HOST = '127.0.0.1'
-MYSQL_PORT = '3306'
+MYSQL_DATABASE = os.getenv('MYSQL_DATABASE', 'pipecloud')
+MYSQL_USER = os.getenv('MYSQL_USER', 'root')
+MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD', '')
+MYSQL_HOST = os.getenv('MYSQL_HOST', '127.0.0.1')
+MYSQL_PORT = os.getenv('MYSQL_PORT', '3306')
 
 DATABASES = {
     'default': {
@@ -130,6 +142,57 @@ PLAN_ROLLOVER_HOUR = int(os.getenv('PIPECLOUD_PLAN_ROLLOVER_HOUR', '21'))
 PLAN_ROLLOVER_MINUTE = int(os.getenv('PIPECLOUD_PLAN_ROLLOVER_MINUTE', '0'))
 PLAN_ROLLOVER_MISFIRE_GRACE_SECONDS = int(
     os.getenv('PIPECLOUD_PLAN_ROLLOVER_MISFIRE_GRACE_SECONDS', '3600')
+)
+
+SCHEDULED_MAINTENANCE_JOBS = [
+    {
+        'key': 'sync-anti-corrosion-completion',
+        'kind': 'completion-sync',
+        'command': 'sync_anti_corrosion_completion',
+        'name': '同步防腐计划中防腐完成情况',
+        'hour': int(os.getenv('PIPECLOUD_ANTI_CORROSION_COMPLETION_SYNC_HOUR', '21')),
+        'minute': int(os.getenv('PIPECLOUD_ANTI_CORROSION_COMPLETION_SYNC_MINUTE', '0')),
+        'enabled': os.getenv('PIPECLOUD_ANTI_CORROSION_COMPLETION_SYNC_ENABLED', 'true').lower() != 'false',
+    },
+    {
+        'key': 'sync-cutting-completion',
+        'kind': 'completion-sync',
+        'command': 'sync_cutting_completion',
+        'name': '同步下料计划中下料完成情况',
+        'hour': int(os.getenv('PIPECLOUD_CUTTING_COMPLETION_SYNC_HOUR', '21')),
+        'minute': int(os.getenv('PIPECLOUD_CUTTING_COMPLETION_SYNC_MINUTE', '5')),
+        'enabled': os.getenv('PIPECLOUD_CUTTING_COMPLETION_SYNC_ENABLED', 'true').lower() != 'false',
+    },
+    {
+        'key': 'sync-welding-completion',
+        'kind': 'completion-sync',
+        'command': 'sync_welding_completion',
+        'name': '同步焊接计划中焊接完成情况',
+        'hour': int(os.getenv('PIPECLOUD_WELDING_COMPLETION_SYNC_HOUR', '21')),
+        'minute': int(os.getenv('PIPECLOUD_WELDING_COMPLETION_SYNC_MINUTE', '10')),
+        'enabled': os.getenv('PIPECLOUD_WELDING_COMPLETION_SYNC_ENABLED', 'true').lower() != 'false',
+    },
+    {
+        'key': 'rollover-cutting-plan',
+        'kind': 'plan-rollover',
+        'command': 'rollover_cutting_plan',
+        'name': '滚动未完成下料计划',
+        'hour': int(os.getenv('PIPECLOUD_CUTTING_PLAN_ROLLOVER_HOUR', '21')),
+        'minute': int(os.getenv('PIPECLOUD_CUTTING_PLAN_ROLLOVER_MINUTE', '20')),
+        'enabled': os.getenv('PIPECLOUD_CUTTING_PLAN_ROLLOVER_ENABLED', 'true').lower() != 'false',
+    },
+    {
+        'key': 'rollover-welding-plan',
+        'kind': 'plan-rollover',
+        'command': 'rollover_welding_plan',
+        'name': '滚动未完成焊接计划',
+        'hour': int(os.getenv('PIPECLOUD_WELDING_PLAN_ROLLOVER_HOUR', '21')),
+        'minute': int(os.getenv('PIPECLOUD_WELDING_PLAN_ROLLOVER_MINUTE', '30')),
+        'enabled': os.getenv('PIPECLOUD_WELDING_PLAN_ROLLOVER_ENABLED', 'true').lower() != 'false',
+    },
+]
+PLAN_COMPLETION_SYNC_MISFIRE_GRACE_SECONDS = int(
+    os.getenv('PIPECLOUD_PLAN_COMPLETION_SYNC_MISFIRE_GRACE_SECONDS', str(PLAN_ROLLOVER_MISFIRE_GRACE_SECONDS))
 )
 
 

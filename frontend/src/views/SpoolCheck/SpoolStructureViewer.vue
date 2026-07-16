@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { createPipeComponentRenderer, normalizePipeComponent } from '../../services/pipeComponentRenderer'
+import { t } from '../../services/pipecloudState'
 
 const props = defineProps({
   spool: { type: Object, default: null },
@@ -205,7 +206,7 @@ onBeforeUnmount(() => {
     <div v-if="!hasModel" class="spool-structure-empty">
       <v-icon icon="mdi-cube-off-outline" size="42" />
       <strong>暂无可渲染结构</strong>
-      <span>请确认当前管段焊口包含材料唯一码、材料数量、外径或寸径等连接数据。</span>
+      <span>{{ t('spoolStructureDataHint') }}</span>
     </div>
   </div>
 </template>

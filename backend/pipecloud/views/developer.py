@@ -1,6 +1,7 @@
 import json
 
 from django.apps import apps
+from django.conf import settings
 from django.db import transaction
 from django.http import HttpResponseBadRequest, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -8,6 +9,39 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
 
 from pipecloud.services.plan_rollover import execute_all_project_rollovers
+from pipecloud.services.plan_completion import execute_all_completion_syncs
+from pipecloud.models import OperationLog, ScheduledTaskRun
+
+
+@ensure_csrf_cookie
+@require_http_methods(['GET'])
+def operation_logs(request):
+    try:
+        limit = min(max(int(request.GET.get('limit', 500)), 1), 2000)
+    except (TypeError, ValueError):
+        limit = 500
+    rows = OperationLog.objects.all()[:limit]
+    return JsonResponse({
+        'ok': True,
+        'total': OperationLog.objects.count(),
+        'logs': [
+            {
+                'id': row.pk,
+                'createdAt': row.created_at.isoformat(timespec='seconds'),
+                'userName': row.user_name,
+                'action': row.action,
+                'method': row.method,
+                'path': row.path,
+                'projectId': row.project_id_value,
+                'projectName': row.project_name,
+                'statusCode': row.status_code,
+                'succeeded': row.succeeded,
+                'detail': row.detail,
+                'ipAddress': row.ip_address or '',
+            }
+            for row in rows
+        ],
+    }, json_dumps_params={'ensure_ascii': False})
 
 
 def _pipecloud_models():
@@ -27,6 +61,25 @@ def _database_table_payload(model):
     }
 
 
+def _scheduled_task_log_payload(task_run, job_names):
+    stats = task_run.stats or {}
+    return {
+        'id': task_run.pk,
+        'taskName': task_run.task_name,
+        'taskDisplayName': job_names.get(task_run.task_name, task_run.task_name),
+        'projectId': task_run.project_id,
+        'projectName': task_run.project.project_name,
+        'businessDate': task_run.business_date.isoformat(),
+        'status': task_run.status,
+        'planKey': stats.get('planKey', ''),
+        'planName': stats.get('planName', ''),
+        'stats': stats,
+        'error': task_run.error_message,
+        'startedAt': task_run.started_at.isoformat() if task_run.started_at else '',
+        'finishedAt': task_run.finished_at.isoformat() if task_run.finished_at else '',
+    }
+
+
 @ensure_csrf_cookie
 @require_http_methods(['GET', 'POST'])
 def run_plan_rollover(request):
@@ -36,6 +89,78 @@ def run_plan_rollover(request):
     results = execute_all_project_rollovers()
     failed = sum(1 for result in results if result.get('error'))
     skipped = sum(1 for result in results if result.get('skipped') or result.get('alreadyExecuted'))
+    succeeded = len(results) - failed - skipped
+    return JsonResponse({
+        'ok': failed == 0,
+        'results': results,
+        'summary': {
+            'succeeded': succeeded,
+            'skipped': skipped,
+            'failed': failed,
+        },
+    }, json_dumps_params={'ensure_ascii': False})
+
+
+@ensure_csrf_cookie
+@require_http_methods(['GET', 'POST'])
+def scheduled_tasks(request):
+    if request.method == 'GET':
+        jobs = []
+        job_names = {}
+        for config in settings.SCHEDULED_MAINTENANCE_JOBS:
+            job_names[config.get('command') or ''] = config.get('name') or config.get('key', '')
+            jobs.append({
+                'key': config.get('key'),
+                'kind': config.get('kind', ''),
+                'name': config.get('name') or config.get('key', ''),
+                'command': config.get('command') or '',
+                'enabled': bool(config.get('enabled', True)),
+                'hour': int(config.get('hour', 0)),
+                'minute': int(config.get('minute', 0)),
+                'timezone': settings.TIME_ZONE,
+            })
+        logs = [
+            _scheduled_task_log_payload(task_run, job_names)
+            for task_run in ScheduledTaskRun.objects.select_related('project').order_by(
+                '-business_date', '-started_at', '-id',
+            )[:500]
+        ]
+        return JsonResponse({
+            'ok': True,
+            'jobs': jobs,
+            'logs': logs,
+            'misfireGraceSeconds': settings.PLAN_COMPLETION_SYNC_MISFIRE_GRACE_SECONDS,
+        }, json_dumps_params={'ensure_ascii': False})
+
+    try:
+        payload = json.loads(request.body.decode('utf-8') or '{}')
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return HttpResponseBadRequest(json.dumps({'error': '请求数据无效'}, ensure_ascii=False), content_type='application/json')
+    job_key = str(payload.get('key') or payload.get('jobKey') or '').strip()
+    job_config = next(
+        (config for config in settings.SCHEDULED_MAINTENANCE_JOBS if config.get('key') == job_key),
+        None,
+    )
+    if job_config is None:
+        return HttpResponseBadRequest(json.dumps({'error': '未知定时任务'}, ensure_ascii=False), content_type='application/json')
+
+    if job_config.get('kind') == 'completion-sync':
+        plan_key = {
+            'sync-anti-corrosion-completion': 'anti-corrosion',
+            'sync-cutting-completion': 'cutting',
+            'sync-welding-completion': 'welding',
+        }.get(job_key, '')
+        results = execute_all_completion_syncs(plan_key, force=bool(payload.get('force')))
+    elif job_config.get('kind') == 'plan-rollover':
+        plan_key = {
+            'rollover-cutting-plan': 'cutting',
+            'rollover-welding-plan': 'welding',
+        }.get(job_key, '')
+        results = execute_all_project_rollovers(plan_key=plan_key, force=bool(payload.get('force')))
+    else:
+        return HttpResponseBadRequest(json.dumps({'error': '未知定时任务类型'}, ensure_ascii=False), content_type='application/json')
+    failed = sum(1 for result in results if result.get('error'))
+    skipped = sum(1 for result in results if result.get('alreadyExecuted'))
     succeeded = len(results) - failed - skipped
     return JsonResponse({
         'ok': failed == 0,

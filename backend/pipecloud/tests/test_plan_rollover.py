@@ -77,7 +77,7 @@ class PackRolloverRowsTests(SimpleTestCase):
         weld_no = prefab_database.COLUMNS['weld_no_final']
         frame = plan_frame([{diameter: 260, weld_no: 'W1'}], '20260630')
 
-        sheets = _prepare_plan_sheets([frame], '20260701')
+        sheets = _prepare_plan_sheets([frame], 'welding', '20260701')
 
         self.assertEqual(sheets['1'].iloc[0][prefab_database.future_schedule.WELD_DATE_COL], '20260701')
         self.assertIn('20260701-1', sheets['1'].iloc[0][prefab_database.future_schedule.WELD_ORDER_NO_COL])
@@ -102,7 +102,7 @@ class ProjectRolloverTests(SimpleTestCase):
         ], '20260701')
         empty = pd.DataFrame()
 
-        def load_side_effect(_project, plan_date):
+        def load_side_effect(_project, _plan_key, plan_date):
             frames = {
                 '20260630': today,
                 '20260701': next_plan,

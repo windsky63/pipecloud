@@ -1,14 +1,13 @@
 ﻿<script setup>
 import { computed, onMounted, ref } from 'vue'
-import DataVTable from '../../components/DataVTable.vue'
 import InfoTooltip from '../../components/InfoTooltip.vue'
 import SystemSettingsHeader from './SystemSettingsHeader.vue'
 import {
   isNavigationRouteVisible,
   developerMode,
+  dashboardVisibility,
+  dashboardVisibilityKeys,
   errorMessage,
-  formatSize,
-  formatTime,
   homeComponentVisibility,
   homeComponentVisibilityKeys,
   loadSummary,
@@ -19,6 +18,7 @@ import {
   navigationVisibilityKeys,
   setShowRunLog,
   setDeveloperMode,
+  setDashboardVisibility,
   setLanguage,
   setHomeComponentVisibility,
   setNavigationRouteVisibility,
@@ -37,21 +37,6 @@ import { libraries, loadLibraries } from '../../services/weldLibraryState'
 
 const expandedNavigationNodes = ref(new Set())
 
-const moduleTableColumns = computed(() => [
-  { field: 'name', title: t('module'), width: 180 },
-  { field: 'description', title: t('description'), width: 420 },
-  { field: 'actionCount', title: t('actionCount'), width: 100 },
-  { field: 'readyText', title: t('filesReady'), width: 120 },
-])
-
-const moduleFileTableColumns = computed(() => [
-  { field: 'statusText', title: t('status'), width: 96 },
-  { field: 'name', title: t('fileOrDirectory'), width: 260 },
-  { field: 'path', title: t('backendPath'), width: 420 },
-  { field: 'quantityText', title: t('quantityOrSize'), width: 126 },
-  { field: 'updatedText', title: t('updatedAt'), width: 190 },
-])
-
 const localizedThemeOptions = computed(() => {
   return uiThemeOptions.map((option) => ({
     ...option,
@@ -63,24 +48,6 @@ const localizedLanguageOptions = computed(() => {
   return languageOptions.map((option) => ({
     ...option,
     title: option.title,
-  }))
-})
-
-const moduleTableRows = computed(() => {
-  return summary.value.modules.map((row) => ({
-    ...row,
-    name: localizedModuleTitle(row),
-    actionCount: row.actions.length,
-    readyText: `${row.readyCount}/${row.totalCount}`,
-  }))
-})
-
-const moduleFileStatusGroups = computed(() => {
-  return summary.value.modules.map((module) => ({
-    key: module.key,
-    title: localizedModuleTitle(module),
-    readyText: `${module.readyCount}/${module.totalCount} ${t('filesReady')}`,
-    rows: buildModuleFileRows(module.files || []),
   }))
 })
 
@@ -131,12 +98,25 @@ const lockedNavigationItems = computed(() => [
 
 const homeComponentItems = computed(() => [
   { key: 'initializationDashboard', title: t('initializationDashboardTitle'), icon: 'mdi-chart-donut' },
+  { key: 'antiCorrosionDashboard', title: t('antiCorrosionDashboardTitle'), icon: 'mdi-shield-check-outline' },
+  { key: 'cuttingDashboard', title: t('cuttingDashboardTitle'), icon: 'mdi-saw-blade' },
   { key: 'weldingDashboard', title: t('weldingDashboardTitle'), icon: 'mdi-chart-line' },
   { key: 'arrivalDashboard', title: t('arrivalDashboardTitle'), icon: 'mdi-truck-check-outline' },
   { key: 'workflow', title: t('workflow'), icon: 'mdi-source-branch-sync' },
   { key: 'projectData', title: t('projectData'), icon: 'mdi-table-cog' },
   { key: 'projectWeldInfo', title: t('projectWeldInfo'), icon: 'mdi-table-search' },
 ].filter((item) => homeComponentVisibilityKeys.includes(item.key)))
+
+const dashboardItems = computed(() => [
+  { key: 'initialization', title: t('initializationDashboardTitle'), page: t('initialization') },
+  { key: 'arrival', title: t('arrivalDashboardTitle'), page: t('arrival') },
+  { key: 'antiCorrosion', title: t('antiCorrosionDashboardTitle'), page: t('antiCorrosion') },
+  { key: 'cutting', title: t('cuttingDashboardTitle'), page: t('cutting') },
+  { key: 'welding', title: t('weldingDashboardTitle'), page: t('welding') },
+  { key: 'futureAntiCorrosion', title: t('antiCorrosionDashboardTitle'), page: t('totalSchedulingPlan') },
+  { key: 'futureCutting', title: t('cuttingDashboardTitle'), page: t('totalSchedulingPlan') },
+  { key: 'futureWelding', title: t('weldingDashboardTitle'), page: t('totalSchedulingPlan') },
+].filter((item) => dashboardVisibilityKeys.includes(item.key)))
 
 function isNavigationItemVisible(item) {
   return Boolean(navigationVisibility.value[item.key]) && isNavigationRouteVisible(item.routeKey)
@@ -145,15 +125,6 @@ function isNavigationItemVisible(item) {
 function setNavigationItemVisibility(item, value) {
   setNavigationVisibility(item.key, value)
   setNavigationRouteVisibility(item.routeKey, value)
-}
-
-function buildModuleFileRows(files) {
-  return files.map((row) => ({
-    ...row,
-    statusText: row.exists ? t('ready') : t('missing'),
-    quantityText: row.type === '目录' ? t('itemCount', { count: row.count }) : formatSize(row.size),
-    updatedText: formatTime(row.updatedAt),
-  }))
 }
 
 function isNavigationNodeExpanded(item) {
@@ -193,31 +164,6 @@ onMounted(() => {
   <v-alert v-if="errorMessage" :text="errorMessage" type="error" density="compact" class="status-alert" />
 
   <div class="settings-page-layout">
-    <v-card class="module-panel settings-section">
-      <div class="section-head">
-        <div class="section-title-with-tip">
-          <h2>{{ t('interfaceAndDirectory') }}</h2>
-          <InfoTooltip :text="t('interfaceDescription')" />
-        </div>
-      </div>
-      <v-table density="compact" class="settings-table">
-        <tbody>
-          <tr>
-            <th>{{ t('apiPrefix') }}</th>
-            <td>/api/pipecloud</td>
-          </tr>
-          <tr>
-            <th>{{ t('backendRoot') }}</th>
-            <td>{{ summary.root || 'backend/prefab_schedule' }}</td>
-          </tr>
-          <tr>
-            <th>{{ t('dataDirectory') }}</th>
-            <td>{{ summary.dataRoot || 'backend/file/projects' }}</td>
-          </tr>
-        </tbody>
-      </v-table>
-    </v-card>
-
     <v-card class="module-panel settings-section">
       <div class="section-head">
         <div class="section-title-with-tip">
@@ -277,6 +223,41 @@ onMounted(() => {
                 :label="developerMode ? t('enabled') : t('disabled')"
                 @update:model-value="setDeveloperMode"
               />
+            </td>
+          </tr>
+        </tbody>
+      </v-table>
+    </v-card>
+
+    <v-card class="module-panel settings-section">
+      <div class="section-head">
+        <div class="section-title-with-tip">
+          <h2>{{ t('dashboardOptions') }}</h2>
+          <InfoTooltip :text="t('dashboardOptionsDescription')" />
+        </div>
+      </div>
+      <v-table density="compact" class="settings-table">
+        <tbody>
+          <tr class="settings-row-spaced">
+            <th>{{ t('dashboardVisibility') }}</th>
+            <td>
+              <div class="home-component-settings">
+                <div v-for="item in dashboardItems" :key="item.key" class="navigation-tree-row">
+                  <div class="navigation-tree-main">
+                    <v-icon icon="mdi-view-dashboard-outline" size="18" />
+                    <span>{{ item.page }} / {{ item.title }}</span>
+                  </div>
+                  <v-switch
+                    :model-value="dashboardVisibility[item.key]"
+                    class="navigation-compact-switch"
+                    color="primary"
+                    density="compact"
+                    hide-details
+                    inset
+                    @update:model-value="(value) => setDashboardVisibility(item.key, value)"
+                  />
+                </div>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -430,61 +411,8 @@ onMounted(() => {
       </v-table>
     </v-card>
 
-    <v-card class="module-panel settings-section">
-      <div class="section-head">
-        <h2>{{ t('connectedModules') }}</h2>
-        <span>{{ summary.modules.length }} {{ t('moduleCount') }}</span>
-      </div>
-      <DataVTable :records="moduleTableRows" :columns="moduleTableColumns" :height="360" />
-    </v-card>
-
-    <v-card class="module-panel settings-section">
-      <div class="section-head">
-        <div class="section-title-with-tip">
-          <h2>{{ t('moduleFileStatus') }}</h2>
-          <InfoTooltip :text="t('moduleFileStatusTip')" />
-        </div>
-      </div>
-      <div class="module-file-status-list">
-        <section
-          v-for="group in moduleFileStatusGroups"
-          :key="group.key"
-          class="module-file-status-group"
-        >
-          <div class="section-head compact-section-head">
-            <h3>{{ group.title }}</h3>
-            <v-chip color="secondary" variant="tonal">{{ group.readyText }}</v-chip>
-          </div>
-          <DataVTable
-            :records="group.rows"
-            :columns="moduleFileTableColumns"
-            :height="Math.max(180, Math.min(360, group.rows.length * 46 + 46))"
-          />
-        </section>
-      </div>
-    </v-card>
   </div>
 </template>
 
 <style scoped>
-.module-file-status-list {
-  display: grid;
-  gap: 18px;
-}
-
-.module-file-status-group {
-  display: grid;
-  gap: 8px;
-  min-width: 0;
-}
-
-.compact-section-head {
-  margin-bottom: 0;
-}
-
-.compact-section-head h3 {
-  color: var(--strong);
-  font-size: 15px;
-  font-weight: 800;
-}
 </style>

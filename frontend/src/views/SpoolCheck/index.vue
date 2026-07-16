@@ -52,19 +52,8 @@ const spoolStats = computed(() => ({
     : 1,
   spoolCount: filteredSpools.value.length,
   welds: filteredSpools.value.reduce((total, spool) => total + Number(spool.weldCount || 0), 0),
-  materials: filteredSpools.value.reduce((total, spool) => total + Number(spool.materialCount || 0), 0),
   issues: filteredSpools.value.reduce((total, spool) => total + Number(spool.issueCount || 0), 0),
 }))
-
-const materialColumns = computed(() => [
-  { field: 'materialCode', title: t('materialCode'), width: 220 },
-  { field: 'category', title: t('category'), width: 110 },
-  { field: 'description', title: t('description'), width: 360 },
-  { field: 'requiredText', title: t('required'), width: 120 },
-  { field: 'stockText', title: t('stock'), width: 120 },
-  { field: 'statusText', title: t('status'), width: 120 },
-  { field: 'weldNosText', title: t('relatedWelds'), width: 220 },
-])
 
 const weldColumns = computed(() => [
   { field: 'finalWeldNo', title: t('weldNo'), width: 110 },
@@ -77,17 +66,6 @@ const weldColumns = computed(() => [
   { field: 'materialCode1', title: `${t('materialCode')}1`, width: 220 },
   { field: 'materialCode2', title: `${t('materialCode')}2`, width: 220 },
 ])
-
-const materialRows = computed(() => {
-  return (selectedSpool.value?.materials || []).map((material) => ({
-    ...material,
-    description: material.description || material.name || '-',
-    requiredText: `${formatNumber(material.requiredQty)} ${material.unit || ''}`.trim(),
-    stockText: `${formatNumber(material.stockQty)} ${material.unit || ''}`.trim(),
-    statusText: material.inStock ? t('stockSatisfied') : t('shortage', { value: formatNumber(material.shortageQty) }),
-    weldNosText: (material.weldNos || []).join(' / '),
-  }))
-})
 
 const weldRows = computed(() => {
   return (selectedSpool.value?.welds || []).map((weld) => ({
@@ -416,7 +394,6 @@ onBeforeUnmount(() => {
 
       <v-tabs v-model="activeTab" density="compact" color="primary" class="spool-tabs">
         <v-tab value="structure">{{ t('structure') }}</v-tab>
-        <v-tab value="materials">{{ t('materials') }}</v-tab>
         <v-tab value="welds">{{ t('welds') }}</v-tab>
         <v-tab value="documentation">{{ t('documentation') }}</v-tab>
       </v-tabs>
@@ -424,16 +401,6 @@ onBeforeUnmount(() => {
       <v-window v-model="activeTab">
         <v-window-item value="structure">
           <SpoolStructureViewer :spool="selectedSpool" />
-        </v-window-item>
-
-        <v-window-item value="materials">
-          <DataVTable
-            class="spool-vtable"
-            :records="materialRows"
-            :columns="materialColumns"
-            :height="560"
-            :empty-text="t('noSpoolMaterials')"
-          />
         </v-window-item>
 
         <v-window-item value="welds">

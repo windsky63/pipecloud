@@ -182,7 +182,7 @@ def _spool_info_payload(
         model_match_count = 0
         if include_details and include_model:
             components, model_issues, model_match_count = _spool_idf_components(spool_df, idf_model_payload)
-        issues = _spool_issues(welds, materials) if include_details else []
+        issues = _spool_issues(welds) if include_details else []
         issues.extend(model_issues)
         weld_count = len(spool_df.index)
         material_count = len(materials) if include_details else _spool_material_code_count(spool_df)
@@ -422,26 +422,12 @@ def _base_material_payload(code, inventory):
     }
 
 
-def _spool_issues(welds, materials):
+def _spool_issues(welds):
     issues = []
     for weld in welds:
         if not weld.get('finalWeldNo'):
             issues.append({'level': 'warning', 'message': '存在未编号焊口'})
             break
-    missing_materials = [item['materialCode'] for item in materials if item['category'] == '未知']
-    if missing_materials:
-        issues.append({
-            'level': 'warning',
-            'message': f'材料库未找到 {len(missing_materials)} 个材料代码',
-            'items': missing_materials[:20],
-        })
-    shortage_materials = [item for item in materials if not item['inStock']]
-    if shortage_materials:
-        issues.append({
-            'level': 'error',
-            'message': f'存在 {len(shortage_materials)} 个材料库存不足',
-            'items': [item['materialCode'] for item in shortage_materials[:20]],
-        })
     return issues
 
 

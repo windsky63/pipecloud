@@ -34,5 +34,13 @@ defineProps({
 .info-tooltip-button {
   color: var(--muted);
   vertical-align: middle;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.info-tooltip-button :deep(.v-btn__overlay),
+.info-tooltip-button :deep(.v-btn__underlay) {
+  background: transparent !important;
+  opacity: 0 !important;
 }
 </style>
