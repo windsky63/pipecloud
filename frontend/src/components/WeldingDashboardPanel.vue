@@ -55,8 +55,8 @@ const tableColumns = computed(() => [
   { field: 'planDate', title: t('planDate'), width: 120 },
   { field: 'planFolder', title: t('scheduleFolder'), width: 160 },
   { field: 'fileName', title: t('primaryFile'), width: 180 },
-  { field: 'completedRows', title: t('completedWelds'), width: 110 },
-  { field: 'totalRows', title: t('plannedWelds'), width: 110 },
+  { field: 'completedDiameterText', title: t('completedDiameter'), width: 120 },
+  { field: 'totalDiameterText', title: t('plannedDiameter'), width: 120 },
   { field: 'completionRateText', title: t('completionRate'), width: 110 },
   { field: 'updatedText', title: t('updatedAt'), width: 180 },
 ])
@@ -65,6 +65,8 @@ const recentPlanRows = computed(() => {
   return (props.dashboard.recentPlans || []).map((row) => ({
     ...row,
     completionRateText: formatPercent(row.completionRate),
+    completedDiameterText: formatNumber(row.completedDiameter),
+    totalDiameterText: formatNumber(row.totalDiameter),
     updatedText: formatTime(row.updatedAt),
   }))
 })
@@ -73,20 +75,20 @@ const summaryChartRows = computed(() => [
   {
     label: t('historyPlan'),
     rate: Number(props.dashboard.historyCompletionRate) || 0,
-    completed: props.dashboard.historyCompletedRows || 0,
-    total: props.dashboard.historyTotalRows || 0,
+    completed: props.dashboard.historyCompletedDiameter || 0,
+    total: props.dashboard.historyTotalDiameter || 0,
   },
   {
-    label: t('allPlans'),
+    label: t('prefabWeldLibrary'),
     rate: Number(props.dashboard.completionRate) || 0,
-    completed: props.dashboard.completedRows || 0,
-    total: props.dashboard.totalRows || 0,
+    completed: props.dashboard.completedDiameter || 0,
+    total: props.dashboard.totalDiameter || 0,
   },
   {
     label: t('todayPlan'),
     rate: Number(props.dashboard.todayCompletionRate) || 0,
-    completed: props.dashboard.todayCompletedRows || 0,
-    total: props.dashboard.todayTotalRows || 0,
+    completed: props.dashboard.todayCompletedDiameter || 0,
+    total: props.dashboard.todayTotalDiameter || 0,
   },
 ])
 
@@ -94,6 +96,12 @@ function formatPercent(value) {
   const number = Number(value)
   if (!Number.isFinite(number)) return '0%'
   return `${number.toFixed(number % 1 === 0 ? 0 : 2)}%`
+}
+
+function formatNumber(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return '0'
+  return number.toLocaleString(undefined, { maximumFractionDigits: 3 })
 }
 
 function clampPercent(value) {
@@ -184,14 +192,12 @@ function clampPercent(value) {
     <slot name="actions" />
 
     <template v-if="!collapsed">
-      <v-alert v-if="error" :text="error" type="error" density="compact" class="status-alert" />
-
       <template v-if="activeView === 'data'">
         <v-sheet class="welding-dashboard" color="transparent">
           <div class="welding-stat-card is-history-rate">
             <span>{{ t('historyCompletionRate') }}</span>
             <strong>{{ formatPercent(props.dashboard.historyCompletionRate) }}</strong>
-            <small>{{ t('weldCountRatio', { completed: props.dashboard.historyCompletedRows || 0, total: props.dashboard.historyTotalRows || 0 }) }}</small>
+            <small>{{ t('diameterRatio', { completed: formatNumber(props.dashboard.historyCompletedDiameter), total: formatNumber(props.dashboard.historyTotalDiameter) }) }}</small>
           </div>
           <div class="welding-stat-card is-history-plan">
             <span>{{ t('historyPlanCount') }}</span>
@@ -201,12 +207,12 @@ function clampPercent(value) {
           <div class="welding-stat-card is-total-rate">
             <span>{{ t('totalCompletionRate') }}</span>
             <strong>{{ formatPercent(props.dashboard.completionRate) }}</strong>
-            <small>{{ t('weldCountRatio', { completed: props.dashboard.completedRows || 0, total: props.dashboard.totalRows || 0 }) }}</small>
+            <small>{{ t('diameterRatio', { completed: formatNumber(props.dashboard.completedDiameter), total: formatNumber(props.dashboard.totalDiameter) }) }}</small>
           </div>
           <div class="welding-stat-card is-today-rate">
             <span>{{ t('todayCompletionRate') }}</span>
             <strong>{{ formatPercent(props.dashboard.todayCompletionRate) }}</strong>
-            <small>{{ t('weldCountRatio', { completed: props.dashboard.todayCompletedRows || 0, total: props.dashboard.todayTotalRows || 0 }) }}</small>
+            <small>{{ t('diameterRatio', { completed: formatNumber(props.dashboard.todayCompletedDiameter), total: formatNumber(props.dashboard.todayTotalDiameter) }) }}</small>
           </div>
         </v-sheet>
       </template>
@@ -235,7 +241,7 @@ function clampPercent(value) {
           >
             <div class="welding-chart-label">
               <strong>{{ row.label }}</strong>
-              <span>{{ t('weldCountRatio', { completed: row.completed, total: row.total }) }}</span>
+              <span>{{ t('diameterRatio', { completed: formatNumber(row.completed), total: formatNumber(row.total) }) }}</span>
             </div>
             <div class="welding-chart-track">
               <div class="welding-chart-fill" :style="{ width: `${clampPercent(row.rate)}%` }" />

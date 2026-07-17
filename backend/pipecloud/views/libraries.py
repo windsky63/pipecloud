@@ -11,6 +11,7 @@ from pipecloud.services.db_storage import (
     table_payload,
 )
 from pipecloud.services.prefab_database import (
+    MATERIAL_LIBRARY_EXCLUDED_COLUMNS,
     PLAN_STAGE_EXCLUDED_COLUMNS,
     CUTTING_DERIVED_FILE_NAMES,
     MASTER_DERIVED_FILE_NAME,
@@ -33,7 +34,7 @@ BUSINESS_PRIMARY_FIELD_NAMES_BY_MODEL = {
     FittingMaterialRow: {'material_code'},
 }
 BUSINESS_PRIMARY_COLUMN = '库序号'
-LIBRARY_HIDDEN_COLUMNS = {}
+LIBRARY_HIDDEN_COLUMNS = MATERIAL_LIBRARY_EXCLUDED_COLUMNS
 MASTER_STAGE_LABELS = {
     'anti-corrosion': '防腐',
     'cutting': '下料',

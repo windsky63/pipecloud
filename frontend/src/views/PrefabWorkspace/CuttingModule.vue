@@ -234,13 +234,6 @@ onBeforeUnmount(() => {
                   {{ t('selectedRows') }}：{{ manualSelectionSelectedCount }}
                 </v-chip>
               </div>
-              <v-alert
-                v-if="manualSelectionError"
-                :text="manualSelectionError"
-                type="error"
-                density="compact"
-                class="status-alert"
-              />
               <DataVTable
                 :records="manualSelectionRows"
                 :columns="manualSelectionColumns"
@@ -261,8 +254,6 @@ onBeforeUnmount(() => {
           </v-expansion-panel-text>
         </v-expansion-panel>
       </v-expansion-panels>
-
-      <v-alert v-if="preScheduleError" :text="preScheduleError" type="error" density="compact" class="status-alert" />
 
       <v-sheet class="pre-schedule-result-section" color="transparent">
         <div v-if="showResultHeader" class="section-head compact-section-head">
@@ -320,8 +311,6 @@ onBeforeUnmount(() => {
           </div>
           <v-chip color="secondary" variant="tonal">{{ t('pipeCount', { count: cuttingData.total }) }}</v-chip>
         </div>
-
-        <v-alert v-if="cuttingError" :text="cuttingError" type="error" density="compact" class="status-alert" />
 
         <div class="cutting-summary">
           <div>
@@ -550,9 +539,6 @@ onBeforeUnmount(() => {
           </v-expansion-panel-text>
         </v-expansion-panel>
       </v-expansion-panels>
-
-      <v-alert v-if="cuttingScheduleError" :text="cuttingScheduleError" type="error" density="compact" class="status-alert" />
-      <v-alert v-if="cuttingScheduleMessage" :text="cuttingScheduleMessage" type="success" density="compact" class="status-alert" />
 
       <StagedPlanPreview
         :stage="cuttingPendingStage"

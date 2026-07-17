@@ -25,12 +25,14 @@ import {
   setNavigationVisibility,
   setSidebarCollapsed,
   setUiTheme,
+  setUiMessagePosition,
   showRunLog,
   sidebarCollapsed,
   summary,
   t,
   uiTheme,
   uiThemeOptions,
+  uiMessagePosition,
 } from '../../services/pipecloudState'
 import { localizedLibraryTitle, localizedModuleTitle } from '../../services/navigationLabels'
 import { libraries, loadLibraries } from '../../services/weldLibraryState'
@@ -209,6 +211,22 @@ onMounted(() => {
                 hide-details
                 :label="showRunLog ? t('show') : t('hide')"
                 @update:model-value="setShowRunLog"
+              />
+            </td>
+          </tr>
+          <tr>
+            <th>{{ t('messagePosition') }}</th>
+            <td>
+              <v-select
+                :model-value="uiMessagePosition"
+                :items="[
+                  { title: t('messagePositionTop'), value: 'top' },
+                  { title: t('messagePositionBottom'), value: 'bottom' },
+                ]"
+                density="compact"
+                hide-details
+                class="settings-select"
+                @update:model-value="setUiMessagePosition"
               />
             </td>
           </tr>

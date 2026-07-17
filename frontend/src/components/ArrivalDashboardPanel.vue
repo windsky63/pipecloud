@@ -129,8 +129,6 @@ function formatPercent(value) {
     </div>
 
     <template v-if="!collapsed">
-      <v-alert v-if="error" :text="error" type="error" density="compact" class="status-alert" />
-
       <div v-if="activeView === 'data'" class="arrival-summary-grid">
         <section v-for="card in categoryCards" :key="card.key" class="arrival-summary-card" :class="`is-${card.key}`">
           <div class="arrival-summary-title">

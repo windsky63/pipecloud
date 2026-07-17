@@ -1,4 +1,4 @@
-import { postJson, requestJson } from './http'
+import { API_PREFIX, postJson, requestJson } from './http'
 import { uploadFilesRequest } from './uploads'
 
 export function fetchSummary(params, options = {}) {
@@ -43,6 +43,23 @@ export function commitStagedPlan(params, stageToken) {
     },
     body: JSON.stringify({ stageToken }),
   })
+}
+
+export function discardStagedPlans(params, stageTokens, options = {}) {
+  return requestJson(`/schedule/stage/discard/?${params}`, {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    body: JSON.stringify({ stageTokens }),
+  })
+}
+
+export function beaconDiscardStagedPlans(params, stageTokens) {
+  if (typeof navigator === 'undefined' || !stageTokens?.length) return false
+  return navigator.sendBeacon(
+    `${API_PREFIX}/schedule/stage/discard/?${params}`,
+    new Blob([JSON.stringify({ stageTokens })], { type: 'application/json' }),
+  )
 }
 
 export function fetchStagedPlanFileRows(params, stageToken, filePath, sourceKey, sheet, options = {}) {

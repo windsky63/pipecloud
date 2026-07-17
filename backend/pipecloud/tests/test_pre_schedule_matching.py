@@ -174,10 +174,68 @@ class CuttingPreScheduleInventoryRoutingTests(SimpleTestCase):
         )
 
         self.assertEqual(len(result['accepted_rows']), 2)
-        ordinary_remaining = result['pipe_states_by_pool'][cutting_matcher.ORDINARY_POOL]['P001'][0]['remaining']
-        anti_remaining = result['pipe_states_by_pool'][cutting_matcher.ANTI_CORROSION_POOL]['P001'][0]['remaining']
+        ordinary_remaining = result['pipe_state_updates_by_pool'][cutting_matcher.ORDINARY_POOL]['P001'][0]['remaining']
+        anti_remaining = result['pipe_state_updates_by_pool'][cutting_matcher.ANTI_CORROSION_POOL]['P001'][0]['remaining']
         self.assertLess(ordinary_remaining, 5)
         self.assertEqual(ordinary_remaining, anti_remaining)
+
+    def test_inventory_simulation_stages_only_demanded_codes_without_mutating_inputs(self):
+        group_df = pd.DataFrame([weld_row(1, 'S1', 2, paint='/')])
+        ordinary_df = cutting_matcher._normalize_pipe_library_or_empty(pipe_library(5))
+        original_states = cutting_matcher._build_pipe_states(ordinary_df)
+        untouched_state = original_states['P001'][0]['remaining']
+
+        result = cutting_matcher._simulate_group_matches_by_inventory(
+            group_df,
+            {
+                cutting_matcher.ORDINARY_POOL: original_states,
+                cutting_matcher.ANTI_CORROSION_POOL: {},
+            },
+            {
+                cutting_matcher.ORDINARY_POOL: {'UNRELATED': 99},
+                cutting_matcher.ANTI_CORROSION_POOL: {'ANTI-UNRELATED': 88},
+            },
+            1,
+        )
+
+        self.assertEqual(original_states['P001'][0]['remaining'], untouched_state)
+        self.assertEqual(
+            set(result['pipe_state_updates_by_pool'][cutting_matcher.ORDINARY_POOL]),
+            {'P001'},
+        )
+        self.assertEqual(result['pipe_state_updates_by_pool'][cutting_matcher.ANTI_CORROSION_POOL], {})
+        self.assertEqual(result['fitting_stock_updates_by_pool'][cutting_matcher.ORDINARY_POOL], {})
+        self.assertEqual(result['fitting_stock_updates_by_pool'][cutting_matcher.ANTI_CORROSION_POOL], {})
+
+    def test_failed_mixed_weld_discards_successful_side_allocation(self):
+        row = weld_row(1, 'S1', 2, paint='/')
+        columns = cutting_matcher.COLUMNS
+        row.update({
+            columns['material_no_2']: 'E',
+            columns['material_code_2']: 'F-MISSING',
+            columns['material_unique_2']: 'F-1',
+            columns['qty_2']: 1,
+            columns['paint_2']: 'PA1',
+        })
+        ordinary_df = cutting_matcher._normalize_pipe_library_or_empty(pipe_library(5))
+        original_states = cutting_matcher._build_pipe_states(ordinary_df)
+
+        result = cutting_matcher._simulate_group_matches_by_inventory(
+            pd.DataFrame([row]),
+            {
+                cutting_matcher.ORDINARY_POOL: original_states,
+                cutting_matcher.ANTI_CORROSION_POOL: {},
+            },
+            {
+                cutting_matcher.ORDINARY_POOL: {},
+                cutting_matcher.ANTI_CORROSION_POOL: {},
+            },
+            1,
+        )
+
+        self.assertEqual(len(result['rejected_rows']), 1)
+        self.assertEqual(result['pipe_state_updates_by_pool'][cutting_matcher.ORDINARY_POOL], {})
+        self.assertEqual(original_states['P001'][0]['remaining'], 5)
 
     def test_pipeline_concentration_rejects_whole_pipeline_below_weld_threshold(self):
         group_df = pd.DataFrame([

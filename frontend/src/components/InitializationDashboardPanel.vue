@@ -48,15 +48,15 @@ const activeView = ref('data')
 const viewItems = computed(() => [
   { value: 'data', label: t('dashboardDataView'), icon: 'mdi-view-dashboard-outline' },
   { value: 'table', label: t('dashboardTableView'), icon: 'mdi-table' },
-  { value: 'source', label: t('unitWeldTypeComparison'), icon: 'mdi-chart-bar' },
+  { value: 'source', label: t('unitDiameterComparison'), icon: 'mdi-chart-bar' },
 ])
 
 const unitTableColumns = computed(() => [
   { field: 'unit', title: t('unitNo'), width: 140 },
-  { field: 'totalWeldCount', title: t('fieldWeldCount'), width: 120 },
-  { field: 'prefabWeldCount', title: t('prefabWeldCount'), width: 130 },
+  { field: 'totalDiameterText', title: t('fieldWeldDiameter'), width: 120 },
+  { field: 'prefabDiameterText', title: t('prefabWeldDiameter'), width: 130 },
   { field: 'prefabRateText', title: t('prefabRate'), width: 130 },
-  { field: 'autoWeldCount', title: t('autoWeldCount'), width: 120 },
+  { field: 'autoDiameterText', title: t('autoWeldDiameter'), width: 120 },
   { field: 'autoRateText', title: t('autoWeldRate'), width: 130 },
 ])
 
@@ -65,22 +65,31 @@ const unitRows = computed(() => {
     ...row,
     prefabRateText: formatPercent(row.prefabRate),
     autoRateText: formatPercent(row.autoRate),
+    totalDiameterText: formatNumber(row.totalDiameter),
+    prefabDiameterText: formatNumber(row.prefabDiameter),
+    autoDiameterText: formatNumber(row.autoDiameter),
   }))
 })
 
-const maxUnitWeldCount = computed(() => Math.max(
+const maxUnitDiameter = computed(() => Math.max(
   1,
-  ...unitRows.value.flatMap((row) => [row.totalWeldCount || 0, row.prefabWeldCount || 0, row.autoWeldCount || 0]),
+  ...unitRows.value.flatMap((row) => [row.totalDiameter || 0, row.prefabDiameter || 0, row.autoDiameter || 0]),
 ))
 
 function unitBarWidth(value) {
-  return `${Math.max(0, Number(value) || 0) / maxUnitWeldCount.value * 100}%`
+  return `${Math.max(0, Number(value) || 0) / maxUnitDiameter.value * 100}%`
 }
 
 function formatPercent(value) {
   const number = Number(value)
   if (!Number.isFinite(number)) return '0%'
   return `${number.toFixed(number % 1 === 0 ? 0 : 2)}%`
+}
+
+function formatNumber(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return '0'
+  return number.toLocaleString(undefined, { maximumFractionDigits: 3 })
 }
 </script>
 
@@ -165,19 +174,17 @@ function formatPercent(value) {
     <slot name="actions" />
 
     <template v-if="!collapsed">
-      <v-alert v-if="error" :text="error" type="error" density="compact" class="status-alert" />
-
       <template v-if="activeView === 'data'">
         <v-sheet class="initialization-stats" color="transparent">
           <div class="initialization-stat-card is-prefab">
-            <span>{{ t('prefabVsFieldWelds') }}</span>
+            <span>{{ t('prefabVsFieldDiameter') }}</span>
             <strong>{{ formatPercent(props.dashboard.prefabRate) }}</strong>
-            <small>{{ props.dashboard.prefabWeldCount || 0 }} / {{ props.dashboard.totalWeldCount || 0 }}</small>
+            <small>{{ t('diameterRatio', { completed: formatNumber(props.dashboard.prefabDiameter), total: formatNumber(props.dashboard.totalDiameter) }) }}</small>
           </div>
           <div class="initialization-stat-card is-auto">
-            <span>{{ t('autoVsPrefabWelds') }}</span>
+            <span>{{ t('autoVsPrefabDiameter') }}</span>
             <strong>{{ formatPercent(props.dashboard.autoRate) }}</strong>
-            <small>{{ props.dashboard.autoWeldCount || 0 }} / {{ props.dashboard.prefabWeldCount || 0 }}</small>
+            <small>{{ t('diameterRatio', { completed: formatNumber(props.dashboard.autoDiameter), total: formatNumber(props.dashboard.prefabDiameter) }) }}</small>
           </div>
           <div class="initialization-stat-card is-unit">
             <span>{{ t('statisticalUnits') }}</span>
@@ -190,8 +197,8 @@ function formatPercent(value) {
       <template v-else-if="activeView === 'table'">
         <div class="initialization-table-head">
           <div class="section-title-with-tip">
-            <h3>{{ t('unitWeldRatio') }}</h3>
-            <InfoTooltip :text="t('unitWeldRatioTip')" />
+            <h3>{{ t('unitDiameterRatio') }}</h3>
+            <InfoTooltip :text="t('unitDiameterRatioTip')" />
           </div>
         </div>
         <DataVTable
@@ -205,22 +212,22 @@ function formatPercent(value) {
       <template v-else>
         <div class="initialization-table-head">
           <div class="section-title-with-tip">
-            <h3>{{ t('unitWeldTypeComparison') }}</h3>
-            <InfoTooltip :text="t('unitWeldTypeComparisonTip')" />
+            <h3>{{ t('unitDiameterComparison') }}</h3>
+            <InfoTooltip :text="t('unitDiameterComparisonTip')" />
           </div>
         </div>
         <div v-if="unitRows.length" class="unit-weld-chart">
           <div class="unit-weld-legend">
-            <span class="is-total">{{ t('fieldWelds') }}</span>
-            <span class="is-prefab">{{ t('prefabWelds') }}</span>
-            <span class="is-auto">{{ t('autoWelds') }}</span>
+            <span class="is-total">{{ t('fieldWeldDiameter') }}</span>
+            <span class="is-prefab">{{ t('prefabWeldDiameter') }}</span>
+            <span class="is-auto">{{ t('autoWeldDiameter') }}</span>
           </div>
           <div v-for="row in unitRows" :key="row.unit" class="unit-weld-chart-row">
             <strong>{{ row.unit || '-' }}</strong>
             <div class="unit-weld-bars">
-              <div class="unit-weld-track"><span class="is-total" :style="{ width: unitBarWidth(row.totalWeldCount) }" /><b>{{ row.totalWeldCount || 0 }}</b></div>
-              <div class="unit-weld-track"><span class="is-prefab" :style="{ width: unitBarWidth(row.prefabWeldCount) }" /><b>{{ row.prefabWeldCount || 0 }}</b></div>
-              <div class="unit-weld-track"><span class="is-auto" :style="{ width: unitBarWidth(row.autoWeldCount) }" /><b>{{ row.autoWeldCount || 0 }}</b></div>
+              <div class="unit-weld-track"><span class="is-total" :style="{ width: unitBarWidth(row.totalDiameter) }" /><b>{{ formatNumber(row.totalDiameter) }}</b></div>
+              <div class="unit-weld-track"><span class="is-prefab" :style="{ width: unitBarWidth(row.prefabDiameter) }" /><b>{{ formatNumber(row.prefabDiameter) }}</b></div>
+              <div class="unit-weld-track"><span class="is-auto" :style="{ width: unitBarWidth(row.autoDiameter) }" /><b>{{ formatNumber(row.autoDiameter) }}</b></div>
             </div>
           </div>
         </div>

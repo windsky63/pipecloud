@@ -27,14 +27,11 @@ const viewItems = computed(() => [
 ])
 
 const isAntiCorrosion = computed(() => props.mode === 'anti-corrosion')
-const preSchedule = computed(() => props.dashboard.preSchedule || {})
-
 const statCards = computed(() => {
   if (isAntiCorrosion.value) {
     return [
       { key: 'commissionCount', label: t('antiCorrosionCommissionCount'), value: props.dashboard.commissionCount || 0, hint: t('antiCorrosionWeldCountHint', { count: props.dashboard.weldCount || 0 }) },
       { key: 'totalArea', label: t('antiCorrosionTotalArea'), value: formatNumber(props.dashboard.totalArea), hint: t('squareMeterUnit') },
-      { key: 'preSchedule', label: t('schedulablePreScheduleRows'), value: preSchedule.value.schedulableRows || 0, hint: t('preScheduleRowsRatio', { total: preSchedule.value.totalRows || 0, rejected: preSchedule.value.rejectedRows || 0 }) },
       { key: 'plans', label: t('schedulePlanCount'), value: props.dashboard.planCount || 0, hint: t('todayPlansCount', { count: props.dashboard.todayPlanCount || 0 }) },
     ]
   }
@@ -42,7 +39,6 @@ const statCards = computed(() => {
     { key: 'orderCount', label: t('cuttingOrderCount'), value: props.dashboard.orderCount || 0, hint: t('todayOrdersCount', { count: props.dashboard.todayOrderCount || 0 }) },
     { key: 'weldCount', label: t('cuttingScheduledWeldCount'), value: props.dashboard.weldCount || 0, hint: t('todayWeldsCount', { count: props.dashboard.todayWeldCount || 0 }) },
     { key: 'diameterTotal', label: t('planDiameterTotal'), value: formatNumber(props.dashboard.diameterTotal), hint: t('diameterUnit') },
-    { key: 'preSchedule', label: t('schedulablePreScheduleRows'), value: preSchedule.value.schedulableRows || 0, hint: t('preScheduleRowsRatio', { total: preSchedule.value.totalRows || 0, rejected: preSchedule.value.rejectedRows || 0 }) },
   ]
 })
 
@@ -141,8 +137,6 @@ function formatNumber(value) {
     </div>
 
     <template v-if="!collapsed">
-    <v-alert v-if="error" :text="error" type="error" density="compact" class="status-alert" />
-
     <div v-if="activeView === 'data'" class="schedule-stat-grid">
       <section
         v-for="card in statCards"
@@ -203,7 +197,7 @@ function formatNumber(value) {
 
 .schedule-stat-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 12px;
 }
 
@@ -228,10 +222,8 @@ function formatNumber(value) {
 .schedule-stat-card.is-cutting-orderCount { --card-accent: var(--primary); }
 .schedule-stat-card.is-anti-totalArea,
 .schedule-stat-card.is-cutting-weldCount { --card-accent: #0f9f6e; }
-.schedule-stat-card.is-anti-preSchedule,
 .schedule-stat-card.is-cutting-diameterTotal { --card-accent: #d98b18; }
-.schedule-stat-card.is-anti-plans,
-.schedule-stat-card.is-cutting-preSchedule { --card-accent: #7c5ce0; }
+.schedule-stat-card.is-anti-plans { --card-accent: #7c5ce0; }
 
 .schedule-stat-card span,
 .schedule-stat-card small {

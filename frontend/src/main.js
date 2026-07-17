@@ -3,6 +3,7 @@ import { createVuetify } from 'vuetify'
 import * as components from 'vuetify/components'
 import * as labsComponents from 'vuetify/labs/components'
 import * as directives from 'vuetify/directives'
+import { en, zhHans } from 'vuetify/locale'
 import 'vuetify/styles'
 import '@mdi/font/css/materialdesignicons.css'
 import './style.css'
@@ -31,6 +32,11 @@ const vuetify = createVuetify({
   },
   icons: {
     defaultSet: 'mdi',
+  },
+  locale: {
+    locale: i18n.global.locale.value === 'zh-CN' ? 'zhHans' : 'en',
+    fallback: 'en',
+    messages: { en, zhHans },
   },
   theme: {
     defaultTheme,

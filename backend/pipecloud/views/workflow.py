@@ -13,6 +13,8 @@ from pipecloud.services.db_storage import (
     table_payload,
 )
 from pipecloud.services.prefab_database import (
+    cleanup_expired_staged_plan_outputs,
+    discard_staged_plan_outputs,
     commit_staged_plan_outputs,
     generate_anti_corrosion_schedule_from_database,
     generate_cutting_schedule_from_database,
@@ -142,6 +144,8 @@ def summary(request):
     project, data_root, error = _request_project_context(request)
     if error:
         return _project_bad_request(error)
+    if project:
+        cleanup_expired_staged_plan_outputs(project)
     return JsonResponse({
         'root': _relative_path(PREFAB_ROOT),
         'dataRoot': _relative_path(data_root),
@@ -1315,6 +1319,26 @@ def commit_staged_plan(request):
         'savedCount': len(copied_files),
         'summary': [_module_payload(module, data_root, project) for module in _modules_for_project(project)],
     }, json_dumps_params={'ensure_ascii': False})
+
+
+@csrf_exempt
+@require_POST
+def discard_staged_plans(request):
+    project, _, error = _request_project_context(request, required=True)
+    if error:
+        return _project_bad_request(error)
+    try:
+        payload = json.loads(request.body.decode('utf-8') or '{}')
+        tokens = payload.get('stageTokens') or []
+        if not isinstance(tokens, list):
+            tokens = [tokens]
+        discarded_count = sum(discard_staged_plan_outputs(project, token) for token in set(tokens) if token)
+    except Exception as error:
+        return HttpResponseBadRequest(
+            json.dumps({'error': f'删除暂存计划失败：{error}'}, ensure_ascii=False),
+            content_type='application/json',
+        )
+    return JsonResponse({'ok': True, 'discardedCount': discarded_count})
 
 
 @require_GET

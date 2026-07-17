@@ -261,12 +261,10 @@ def _sync_anti_corrosion_material_inventory(project, business_date=None):
         available = max(_number(row.stock_qty) - _number(row.locked_qty) - _number(row.used_qty), Decimal('0'))
         next_stock = _qty_text(available)
         if (
-            row.anti_corrosion_status != '已完成'
-            or row.anti_corrosion_stock_qty != next_stock
+            row.anti_corrosion_stock_qty != next_stock
             or row.coated_locked_qty != _qty_text(coated_locked)
             or row.uncoated_locked_qty != '0'
         ):
-            row.anti_corrosion_status = '已完成'
             row.anti_corrosion_stock_qty = next_stock
             row.coated_locked_qty = _qty_text(coated_locked)
             row.uncoated_locked_qty = '0'
@@ -275,8 +273,8 @@ def _sync_anti_corrosion_material_inventory(project, business_date=None):
         PipeMaterialRow.objects.bulk_update(
             pipe_updates,
             [
-                'anti_corrosion_status', 'anti_corrosion_stock_qty',
-                'coated_locked_qty', 'uncoated_locked_qty', 'updated_at',
+                'anti_corrosion_stock_qty', 'coated_locked_qty',
+                'uncoated_locked_qty', 'updated_at',
             ],
             batch_size=500,
         )

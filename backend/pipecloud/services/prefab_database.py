@@ -62,9 +62,10 @@ from arrival.material_library_maintenance import (
     SOURCE_FILE_COL,
     STOCK_QTY_COL,
     PIPE_STOCK_QTY_COL,
+    UNIT_AREA_COL,
+    ANTI_CORROSION_AREA_COL,
     USED_QTY_COL,
     UNCOATED_LOCKED_QTY_COL,
-    _is_anti_corrosion_completed_series,
     add_anti_corrosion_area,
     build_fitting_flange_material_library,
     build_pipe_material_library,
@@ -140,8 +141,35 @@ CUTTING_HIDDEN_DATA_COLUMNS = {
     future_schedule.WELD_ORDER_NO_COL,
     future_schedule.WELD_DATE_COL,
 }
-WELDING_HIDDEN_DATA_COLUMNS = {'计划文件夹', '计划日期', future_schedule.SOURCE_SHEET_COL}
+WELDING_HIDDEN_DATA_COLUMNS = {
+    '计划文件夹',
+    '计划日期',
+    future_schedule.SOURCE_SHEET_COL,
+    future_schedule.CUT_ORDER_NO_COL,
+    future_schedule.CUT_DATE_COL,
+}
 MATERIAL_UNIT_COLUMNS = ('单位1', '单位2')
+DEFAULT_MASTER_ANTI_CORROSION_AREA = 1500
+DEFAULT_MASTER_CUTTING_WELDING_DIAMETER = 260
+MATERIAL_LIBRARY_EXCLUDED_COLUMNS = {
+    'pipe-library': {
+        ANTI_CORROSION_STATUS_COL,
+        UNIT_AREA_COL,
+        ANTI_CORROSION_AREA_COL,
+        ANTI_CORROSION_STOCK_QTY_COL,
+        COATED_LOCKED_QTY_COL,
+        UNCOATED_LOCKED_QTY_COL,
+    },
+    'fitting-library': {
+        UNIT_AREA_COL,
+        ANTI_CORROSION_AREA_COL,
+        ANTI_CORROSION_STOCK_QTY_COL,
+        COATED_LOCKED_QTY_COL,
+        UNCOATED_LOCKED_QTY_COL,
+    },
+    'anti-pipe-library': {ANTI_CORROSION_STATUS_COL, LOCKED_QTY_COL},
+    'anti-fitting-library': {LOCKED_QTY_COL},
+}
 
 
 PLAN_STAGE_FIELDS = {
@@ -151,6 +179,7 @@ PLAN_STAGE_FIELDS = {
 }
 
 STAGED_PLAN_WORKBOOKS = {}
+STAGED_PLAN_TTL = timedelta(hours=2)
 ANTI_CORROSION_COMMISSION_COLUMNS = [
     '防腐委托单号',
     '委托日期',
@@ -335,6 +364,10 @@ def _source_dataframe(project, source_type, source_key, model, sheet_name=None):
 
 
 def _sync_library_dataframe(project, source_key, display_name, dataframe, differential=False):
+    dataframe = dataframe.drop(
+        columns=MATERIAL_LIBRARY_EXCLUDED_COLUMNS.get(source_key, set()),
+        errors='ignore',
+    )
     existing_source = None
     if isinstance(getattr(project, 'pk', None), int):
         existing_source = DataSourceFile.objects.filter(
@@ -360,38 +393,14 @@ def _sync_library_dataframe(project, source_key, display_name, dataframe, differ
         differential=differential,
     )
     source.sheet_columns = {
-        sheet_name: list(model_field_labels(model).values()),
+        sheet_name: [
+            column
+            for column in model_field_labels(model).values()
+            if column not in MATERIAL_LIBRARY_EXCLUDED_COLUMNS.get(source_key, set())
+        ],
     }
     source.save(update_fields=['sheet_columns'])
     return source
-
-
-def _completed_material_status_keys(dataframe, key_columns):
-    if dataframe is None or dataframe.empty or ANTI_CORROSION_STATUS_COL not in dataframe.columns:
-        return set()
-    mask = _is_anti_corrosion_completed_series(dataframe[ANTI_CORROSION_STATUS_COL], dataframe.index)
-    completed_keys = set()
-    for _, row in dataframe.loc[mask].fillna('').iterrows():
-        key = tuple(_clean_text_key(row.get(column, '')) for column in key_columns)
-        if any(key):
-            completed_keys.add(key)
-    return completed_keys
-
-
-def _inherit_completed_anti_corrosion_status(dataframe, existing_dataframe, key_columns):
-    if dataframe is None or dataframe.empty:
-        return dataframe
-    out = dataframe.copy()
-    if ANTI_CORROSION_STATUS_COL not in out.columns:
-        out[ANTI_CORROSION_STATUS_COL] = ''
-    completed_keys = _completed_material_status_keys(existing_dataframe, key_columns)
-    if not completed_keys:
-        return out
-    for index, row in out.fillna('').iterrows():
-        key = tuple(_clean_text_key(row.get(column, '')) for column in key_columns)
-        if key in completed_keys:
-            out.at[index, ANTI_CORROSION_STATUS_COL] = '已完成'
-    return out
 
 
 def _inherit_material_inventory_state(dataframe, existing_dataframe, key_columns, state_columns):
@@ -614,6 +623,21 @@ def _sync_master_schedule_rows(project, plan_key, plan_date, dataframe):
             batch_size=500,
         )
     return len(prepared_rows)
+
+
+def _merge_master_schedule_frames(dataframes):
+    """Collapse staged workbook rows so each library row is synchronized once."""
+    combined = pd.concat(dataframes, ignore_index=True, sort=False).fillna('')
+    if combined.empty or '库序号' not in combined.columns:
+        return combined
+
+    def latest_non_empty(values):
+        for value in reversed(values.tolist()):
+            if value not in (None, ''):
+                return value
+        return ''
+
+    return combined.groupby('库序号', sort=False, as_index=False).agg(latest_non_empty)
 
 
 def _planned_library_seqs(project, required_field, missing_field=None):
@@ -930,11 +954,20 @@ def backfill_plan_record_summaries(project):
             date_field = 'cut_date' if record.plan_key == 'cutting' else 'weld_date'
             rows = list(
                 WeldingPlanRow.objects
-                .filter(project=project, **{date_field: record.plan_date})
-                .values('cut_order_no', 'weld_order_no', 'diameter')
+                .filter(
+                    project=project,
+                    source_file__source_type='plan',
+                    **{date_field: record.plan_date},
+                )
+                .values('library_seq', 'cut_order_no', 'weld_order_no', 'diameter')
             )
             if not rows:
                 continue
+            unique_rows = {}
+            for index, row in enumerate(rows):
+                library_seq = str(row.get('library_seq') or '').strip()
+                unique_rows.setdefault(library_seq or f'__row_{index}', row)
+            rows = list(unique_rows.values())
             order_field = 'cut_order_no' if record.plan_key == 'cutting' else 'weld_order_no'
             order_numbers = list(dict.fromkeys(
                 str(row.get(order_field) or '').strip()
@@ -953,15 +986,17 @@ def backfill_plan_record_summaries(project):
                 for row in rows
                 if pd.notna(pd.to_numeric(row.get('diameter'), errors='coerce'))
             )
-            record.summary = {
+            summary = {
                 'orderNumbers': order_numbers,
                 'relatedOrderNumbers': related_order_numbers,
                 'orderCount': len(order_numbers),
                 'weldCount': len(rows),
                 'diameterTotal': round(diameter_total, 3),
             }
-            record.save(update_fields=['summary', 'updated_at'])
-            updated += 1
+            if record.summary != summary:
+                record.summary = summary
+                record.save(update_fields=['summary', 'updated_at'])
+                updated += 1
     return updated
 
 
@@ -1132,12 +1167,49 @@ def _anti_corrosion_plan_summary(project, plan_date):
         diameter = pd.to_numeric(row.get('diameter'), errors='coerce')
         if pd.notna(diameter):
             diameter_total += float(diameter)
+
+    material_orders = list(
+        AntiCorrosionMaterialOrderRow.objects
+        .filter(
+            project=project,
+            source_file__source_type='plan',
+            commission_date=str(plan_date or ''),
+        )
+        .values('anti_corrosion_order_no', 'commission_area')
+    )
+    if material_orders:
+        commission_numbers = {
+            str(row.get('anti_corrosion_order_no') or '').strip()
+            for row in material_orders
+            if str(row.get('anti_corrosion_order_no') or '').strip()
+        }
+        commission_area = sum(
+            float(row.get('commission_area') or 0)
+            for row in material_orders
+        )
     return {
+        'orderNumbers': sorted(commission_numbers),
+        'orderCount': len(commission_numbers),
         'commissionCount': len(commission_numbers),
         'commissionArea': round(commission_area, 4),
         'weldCount': len(rows),
         'diameterTotal': round(diameter_total, 3),
     }
+
+
+def refresh_plan_record_summaries(project):
+    """Refresh chip summaries from the current plan tables, including legacy records."""
+    updated = backfill_plan_record_summaries(project)
+    ensure_project_tables(project)
+    with using_project_tables(project):
+        records = list(PlanRecord.objects.filter(project=project, plan_key='anti-corrosion'))
+        for record in records:
+            summary = _anti_corrosion_plan_summary(project, record.plan_date)
+            if record.summary != summary:
+                record.summary = summary
+                record.save(update_fields=['summary', 'updated_at'])
+                updated += 1
+    return updated
 
 
 def _sync_plan_output_files(project, output_files):
@@ -1660,10 +1732,16 @@ def _build_anti_corrosion_material_and_weld_orders(
         return pd.DataFrame(), pd.DataFrame(), 0
 
     detail_by_library_seq, detail_by_pre_schedule_seq = _indexed_detail_rows(detail_df)
-    pipe_by_no = _rows_by_key(pipe_df, pre_matcher.PIPE_UNIQUE_CODE_COL)
-    fitting_by_code = _rows_by_key(fitting_df, pre_matcher.MATERIAL_CODE_COL)
-    anti_pipe_nos = _key_set(anti_pipe_df, pre_matcher.PIPE_UNIQUE_CODE_COL)
-    anti_fitting_codes = _key_set(anti_fitting_df, pre_matcher.MATERIAL_CODE_COL)
+    # 防腐库表示“需要防腐”的材料池，而不是“已经防腐”的材料池。生成委托时
+    # 应优先从防腐库取得材料属性，不能因为材料已进入防腐库就将其排除。
+    pipe_by_no = {
+        **_rows_by_key(pipe_df, pre_matcher.PIPE_UNIQUE_CODE_COL),
+        **_rows_by_key(anti_pipe_df, pre_matcher.PIPE_UNIQUE_CODE_COL),
+    }
+    fitting_by_code = {
+        **_rows_by_key(fitting_df, pre_matcher.MATERIAL_CODE_COL),
+        **_rows_by_key(anti_fitting_df, pre_matcher.MATERIAL_CODE_COL),
+    }
 
     material_by_key = {}
     material_unique_to_key = {}
@@ -1690,7 +1768,7 @@ def _build_anti_corrosion_material_and_weld_orders(
                 if not _detail_matches_demand_identity(detail, pipe_identity):
                     continue
                 pipe_no = _clean_text_key(detail.get(pre_matcher.MATCHED_RESOURCE_COL, ''))
-                if not pipe_no or pipe_no in anti_pipe_nos:
+                if not pipe_no:
                     continue
                 key = ('pipe', pipe_no, commission_no, commission_date) if preserve_commissions else ('pipe', pipe_no)
                 unique_key = ('pipe', material_unique) if material_unique else None
@@ -1706,7 +1784,7 @@ def _build_anti_corrosion_material_and_weld_orders(
                         material_unique_to_key[unique_key] = key
                     target = material_by_key[key]
             elif '管件法兰' in material_type:
-                if not _detail_matches_demand_identity(detail, fitting_identity) or material_code in anti_fitting_codes:
+                if not _detail_matches_demand_identity(detail, fitting_identity):
                     continue
                 key = ('fitting', material_code, commission_no, commission_date) if preserve_commissions else ('fitting', material_code)
                 unique_key = ('fitting', material_unique) if material_unique else None
@@ -2095,6 +2173,7 @@ def derived_plan_file_payload(project, plan_key, plan_folder, file_name, sheet_n
 
 
 def stage_plan_output_files(project, output_files):
+    cleanup_expired_staged_plan_outputs(project)
     stage_token = uuid.uuid4().hex
     staged_files = []
     for output_file in output_files:
@@ -2160,7 +2239,42 @@ def stage_plan_output_files(project, output_files):
     return stage_token, staged_files
 
 
+def _delete_staged_sources(queryset):
+    sources = list(queryset.only('source_key'))
+    if not sources:
+        return 0
+    queryset.delete()
+    for source in sources:
+        STAGED_PLAN_WORKBOOKS.pop(source.source_key, None)
+    return len(sources)
+
+
+def discard_staged_plan_outputs(project, stage_token):
+    token = str(stage_token or '').strip()
+    if not token:
+        return 0
+    ensure_project_tables(project)
+    with using_project_tables(project), transaction.atomic():
+        return _delete_staged_sources(DataSourceFile.objects.filter(
+            project=project,
+            source_type='plan-stage',
+            source_key__startswith=f'{token}:',
+        ))
+
+
+def cleanup_expired_staged_plan_outputs(project, ttl=STAGED_PLAN_TTL):
+    cutoff = (timezone.now() - ttl).timestamp()
+    ensure_project_tables(project)
+    with using_project_tables(project), transaction.atomic():
+        return _delete_staged_sources(DataSourceFile.objects.filter(
+            project=project,
+            source_type='plan-stage',
+            file_updated_at__lt=cutoff,
+        ))
+
+
 def commit_staged_plan_outputs(project, stage_token):
+    cleanup_expired_staged_plan_outputs(project)
     stage_prefix = f'{str(stage_token or "").strip()}:'
     if stage_prefix == ':':
         raise ValueError('暂存令牌无效')
@@ -2178,6 +2292,7 @@ def commit_staged_plan_outputs(project, stage_token):
             raise FileNotFoundError('暂存计划不存在或已失效')
 
         record_groups = {}
+        master_sync_frames = {}
         for source in sources:
             parsed = _parse_stage_source_key(source.source_key)
             if not parsed:
@@ -2217,7 +2332,7 @@ def commit_staged_plan_outputs(project, stage_token):
             if plan_key == 'anti-corrosion' and not _is_anti_corrosion_commission_file(file_name):
                 should_sync_master = False
             if frames and should_sync_master:
-                _sync_master_schedule_rows(project, plan_key, plan_date, pd.concat(frames, ignore_index=True, sort=False))
+                master_sync_frames.setdefault((plan_key, plan_date), []).extend(frames)
             if frames and plan_key == 'welding':
                 cut_dates = set()
                 for dataframe in frames:
@@ -2228,10 +2343,11 @@ def commit_staged_plan_outputs(project, stage_token):
                         for text in dataframe[future_schedule.CUT_DATE_COL].fillna('').astype(str).str.strip()
                         if text
                     )
+                welding_frame = pd.concat(frames, ignore_index=True, sort=False)
                 for cut_date in cut_dates:
-                    frame = pd.concat(frames, ignore_index=True, sort=False)
+                    frame = welding_frame
                     frame = frame.loc[frame[future_schedule.CUT_DATE_COL].fillna('').astype(str).str.strip().eq(cut_date)].copy()
-                    _sync_master_schedule_rows(project, 'cutting', cut_date, frame)
+                    master_sync_frames.setdefault(('cutting', cut_date), []).append(frame)
             record_key = (plan_key, plan_date)
             if plan_key == 'welding' and file_name == WELDING_PRIMARY_PLAN_FILE_NAME:
                 record_groups.setdefault(record_key, set()).update(WELDING_PLAN_FILE_NAMES)
@@ -2250,6 +2366,14 @@ def commit_staged_plan_outputs(project, stage_token):
                 record_groups.setdefault(record_key, set()).update(CUTTING_PLAN_FILE_NAMES)
             else:
                 record_groups.setdefault(record_key, set()).add(file_name)
+        for (plan_key, plan_date), dataframes in master_sync_frames.items():
+            _sync_master_schedule_rows(
+                project,
+                plan_key,
+                plan_date,
+                _merge_master_schedule_frames(dataframes),
+            )
+
         DataSourceFile.objects.filter(
             project=project,
             source_type='plan-stage',
@@ -2327,27 +2451,32 @@ def maintain_material_libraries_from_database(project):
         anti_pipe_df = add_anti_corrosion_area(build_pipe_material_library(anti_arrival_df), PIPE_STOCK_QTY_COL)
         anti_fitting_df = add_anti_corrosion_area(build_fitting_flange_material_library(anti_arrival_df), STOCK_QTY_COL)
 
-        pipe_state_columns = [
-            PIPE_STOCK_QTY_COL, ANTI_CORROSION_STOCK_QTY_COL, LOCKED_QTY_COL,
-            COATED_LOCKED_QTY_COL, UNCOATED_LOCKED_QTY_COL, USED_QTY_COL,
-            ANTI_CORROSION_STATUS_COL, pre_matcher.REMAINING_LENGTH_COL,
+        ordinary_pipe_state_columns = [
+            PIPE_STOCK_QTY_COL, LOCKED_QTY_COL, USED_QTY_COL, pre_matcher.REMAINING_LENGTH_COL,
             pre_matcher.CUT_LENGTHS_COL, pre_matcher.CUT_LOSSES_COL, pre_matcher.CONSUMED_LENGTHS_COL,
         ]
-        fitting_state_columns = [
-            STOCK_QTY_COL, ANTI_CORROSION_STOCK_QTY_COL, LOCKED_QTY_COL,
+        ordinary_fitting_state_columns = [STOCK_QTY_COL, LOCKED_QTY_COL, USED_QTY_COL]
+        anti_pipe_state_columns = [
+            PIPE_STOCK_QTY_COL, ANTI_CORROSION_STOCK_QTY_COL,
+            COATED_LOCKED_QTY_COL, UNCOATED_LOCKED_QTY_COL, USED_QTY_COL,
+            pre_matcher.REMAINING_LENGTH_COL, pre_matcher.CUT_LENGTHS_COL,
+            pre_matcher.CUT_LOSSES_COL, pre_matcher.CONSUMED_LENGTHS_COL,
+        ]
+        anti_fitting_state_columns = [
+            STOCK_QTY_COL, ANTI_CORROSION_STOCK_QTY_COL,
             COATED_LOCKED_QTY_COL, UNCOATED_LOCKED_QTY_COL, USED_QTY_COL,
         ]
         pipe_df = _inherit_material_inventory_state(
-            pipe_df, existing_pipe_df, [pre_matcher.PIPE_UNIQUE_CODE_COL], pipe_state_columns
+            pipe_df, existing_pipe_df, [pre_matcher.PIPE_UNIQUE_CODE_COL], ordinary_pipe_state_columns
         )
         fitting_df = _inherit_material_inventory_state(
-            fitting_df, existing_fitting_df, [pre_matcher.MATERIAL_CODE_COL], fitting_state_columns
+            fitting_df, existing_fitting_df, [pre_matcher.MATERIAL_CODE_COL], ordinary_fitting_state_columns
         )
         anti_pipe_df = _inherit_material_inventory_state(
-            anti_pipe_df, existing_anti_pipe_df, [pre_matcher.PIPE_UNIQUE_CODE_COL], pipe_state_columns
+            anti_pipe_df, existing_anti_pipe_df, [pre_matcher.PIPE_UNIQUE_CODE_COL], anti_pipe_state_columns
         )
         anti_fitting_df = _inherit_material_inventory_state(
-            anti_fitting_df, existing_anti_fitting_df, [pre_matcher.MATERIAL_CODE_COL], fitting_state_columns
+            anti_fitting_df, existing_anti_fitting_df, [pre_matcher.MATERIAL_CODE_COL], anti_fitting_state_columns
         )
         _sync_library_dataframe(project, 'pipe-library', '管子材料库.xlsx', pipe_df)
         _sync_library_dataframe(project, 'fitting-library', '管件法兰材料库.xlsx', fitting_df)
@@ -2502,35 +2631,35 @@ def _apply_locked_quantity_deltas(before_df, after_df, is_pipe, track_corrosion=
     out = after_df.copy()
     if out.empty:
         return out
-    if LOCKED_QTY_COL not in out.columns:
+    if not track_corrosion and LOCKED_QTY_COL not in out.columns:
         out[LOCKED_QTY_COL] = 0
-    for column in (COATED_LOCKED_QTY_COL, UNCOATED_LOCKED_QTY_COL):
-        if column not in out.columns:
-            out[column] = 0
+    if track_corrosion:
+        for column in (COATED_LOCKED_QTY_COL, UNCOATED_LOCKED_QTY_COL):
+            if column not in out.columns:
+                out[column] = 0
     if is_pipe:
         for index in out.index.intersection(before_df.index):
             before = _number_value(before_df.at[index, pre_matcher.REMAINING_LENGTH_COL])
             after = _number_value(out.at[index, pre_matcher.REMAINING_LENGTH_COL])
             if before > after:
                 delta = before - after
-                _add_inventory_value(out, index, LOCKED_QTY_COL, delta)
-                is_coated = track_corrosion and ANTI_CORROSION_STATUS_COL in out.columns and _is_anti_corrosion_completed_series(
-                    pd.Series([out.at[index, ANTI_CORROSION_STATUS_COL]]), [index]
-                ).iloc[0]
                 if track_corrosion:
-                    _add_inventory_value(
-                        out, index, COATED_LOCKED_QTY_COL if is_coated else UNCOATED_LOCKED_QTY_COL, delta
-                    )
-                if is_coated:
-                    value = round(max(_number_value(out.at[index, ANTI_CORROSION_STOCK_QTY_COL]) - delta, 0), 3)
-                    out.at[index, ANTI_CORROSION_STOCK_QTY_COL] = f'{value:g}'
+                    anti_available = _number_value(out.at[index, ANTI_CORROSION_STOCK_QTY_COL]) if ANTI_CORROSION_STOCK_QTY_COL in out else 0
+                    coated_delta = min(anti_available, delta)
+                    uncoated_delta = delta - coated_delta
+                    if coated_delta > 0:
+                        _add_inventory_value(out, index, COATED_LOCKED_QTY_COL, coated_delta)
+                        out.at[index, ANTI_CORROSION_STOCK_QTY_COL] = f'{round(anti_available - coated_delta, 3):g}'
+                    if uncoated_delta > 0:
+                        _add_inventory_value(out, index, UNCOATED_LOCKED_QTY_COL, uncoated_delta)
+                else:
+                    _add_inventory_value(out, index, LOCKED_QTY_COL, delta)
         return out
     for index in out.index.intersection(before_df.index):
         before = _number_value(before_df.at[index, STOCK_QTY_COL])
         after = _number_value(out.at[index, STOCK_QTY_COL])
         if before > after:
             delta = before - after
-            _add_inventory_value(out, index, LOCKED_QTY_COL, delta)
             anti_available = _number_value(out.at[index, ANTI_CORROSION_STOCK_QTY_COL]) if ANTI_CORROSION_STOCK_QTY_COL in out else 0
             if track_corrosion:
                 coated_delta = min(anti_available, delta)
@@ -2540,18 +2669,18 @@ def _apply_locked_quantity_deltas(before_df, after_df, is_pipe, track_corrosion=
                     out.at[index, ANTI_CORROSION_STOCK_QTY_COL] = f'{round(anti_available - coated_delta, 3):g}'
                 if uncoated_delta > 0:
                     _add_inventory_value(out, index, UNCOATED_LOCKED_QTY_COL, uncoated_delta)
+            else:
+                _add_inventory_value(out, index, LOCKED_QTY_COL, delta)
     return out
 
 
 def _corroded_anti_material_library_seqs(detail_df, anti_pipe_df, anti_fitting_df):
     if detail_df is None or detail_df.empty:
         return set()
-    pipe_status = {}
+    pipe_stock = {}
     for _, row in anti_pipe_df.iterrows():
         resource = str(row.get(pre_matcher.PIPE_UNIQUE_CODE_COL, '') or '').strip()
-        pipe_status[resource] = bool(_is_anti_corrosion_completed_series(
-            pd.Series([row.get(ANTI_CORROSION_STATUS_COL, '')]), [0]
-        ).iloc[0])
+        pipe_stock[resource] = _number_value(row.get(ANTI_CORROSION_STOCK_QTY_COL, 0))
     fitting_stock = {
         str(row.get(pre_matcher.MATERIAL_CODE_COL, '') or '').strip(): _number_value(
             row.get(ANTI_CORROSION_STOCK_QTY_COL, 0)
@@ -2566,15 +2695,29 @@ def _corroded_anti_material_library_seqs(detail_df, anti_pipe_df, anti_fitting_d
         material_type = str(detail.get(pre_matcher.MATCH_TYPE_COL, '') or '')
         if not material_type.startswith(pre_matcher.ANTI_CORROSION_POOL):
             continue
-        ready = True
+        matched = str(detail.get(pre_matcher.MATCH_RESULT_COL, '') or '').strip() == MATCHED_STATUS
+        ready = matched
         if '管子' in material_type:
-            ready = pipe_status.get(str(detail.get(pre_matcher.MATCHED_RESOURCE_COL, '') or '').strip(), False)
+            resource = str(detail.get(pre_matcher.MATCHED_RESOURCE_COL, '') or '').strip()
+            demand_qty = _number_value(detail.get('需求数量'))
+            consumed_qty = _parse_pipe_consumption_from_reason(
+                detail.get(pre_matcher.MATCH_REASON_COL, ''), demand_qty
+            )
+            available = pipe_stock.get(resource, 0)
+            ready = matched and consumed_qty > 0 and available >= consumed_qty
+            if ready:
+                pipe_stock[resource] = available - consumed_qty
         elif '管件法兰' in material_type:
             code = str(detail.get(pre_matcher.MATERIAL_CODE_COL, '') or '').strip()
             quantity = _number_value(detail.get('匹配数量'))
-            ready = fitting_stock.get(code, 0) >= quantity
+            current_stock = fitting_stock.get(code, 0)
+            ready = (
+                matched
+                and quantity > 0
+                and current_stock >= quantity
+            )
             if ready:
-                fitting_stock[code] -= quantity
+                fitting_stock[code] = current_stock - quantity
         readiness[seq] = readiness.get(seq, True) and ready
     return {seq for seq, ready in readiness.items() if ready}
 
@@ -2824,7 +2967,6 @@ def _decrease_released_locked_quantities(
                 consumed = _parse_pipe_consumption_from_reason(
                     detail.get(pre_matcher.MATCH_REASON_COL, ''), matched_qty
                 )
-                pipe_out.at[index, LOCKED_QTY_COL] = f'{round(max(_number_value(pipe_out.at[index, LOCKED_QTY_COL]) - consumed, 0), 3):g}'
                 if track_corrosion:
                     coated = min(_number_value(pipe_out.at[index, COATED_LOCKED_QTY_COL]), consumed)
                     if coated <= 0 and resource in completed_pipe_resources:
@@ -2834,13 +2976,14 @@ def _decrease_released_locked_quantities(
                     pipe_out.at[index, UNCOATED_LOCKED_QTY_COL] = f'{round(max(_number_value(pipe_out.at[index, UNCOATED_LOCKED_QTY_COL]) - uncoated, 0), 3):g}'
                     if coated > 0:
                         _add_inventory_value(pipe_out, index, ANTI_CORROSION_STOCK_QTY_COL, coated)
+                elif LOCKED_QTY_COL in pipe_out.columns:
+                    pipe_out.at[index, LOCKED_QTY_COL] = f'{round(max(_number_value(pipe_out.at[index, LOCKED_QTY_COL]) - consumed, 0), 3):g}'
             continue
         if '管件法兰' in material_type:
             code = str(detail.get(pre_matcher.MATERIAL_CODE_COL, '')).strip()
             mask = fitting_out[pre_matcher.MATERIAL_CODE_COL].fillna('').astype(str).str.strip().eq(code)
             if mask.any():
                 index = fitting_out.index[mask][0]
-                fitting_out.at[index, LOCKED_QTY_COL] = f'{round(max(_number_value(fitting_out.at[index, LOCKED_QTY_COL]) - matched_qty, 0), 3):g}'
                 if track_corrosion:
                     coated = min(_number_value(fitting_out.at[index, COATED_LOCKED_QTY_COL]), matched_qty)
                     if coated <= 0 and code in completed_fitting_codes:
@@ -2850,6 +2993,8 @@ def _decrease_released_locked_quantities(
                     fitting_out.at[index, UNCOATED_LOCKED_QTY_COL] = f'{round(max(_number_value(fitting_out.at[index, UNCOATED_LOCKED_QTY_COL]) - uncoated, 0), 3):g}'
                     if coated > 0:
                         _add_inventory_value(fitting_out, index, ANTI_CORROSION_STOCK_QTY_COL, coated)
+                elif LOCKED_QTY_COL in fitting_out.columns:
+                    fitting_out.at[index, LOCKED_QTY_COL] = f'{round(max(_number_value(fitting_out.at[index, LOCKED_QTY_COL]) - matched_qty, 0), 3):g}'
     return pipe_out, fitting_out
 
 
@@ -3195,8 +3340,10 @@ def match_and_lock_materials_from_database(
             accepted_rows.extend(group_result['accepted_rows'])
             rejected_rows.extend(group_result['rejected_rows'])
             all_rows.extend(group_result['all_rows'])
-            pipe_states_by_pool.update(group_result['pipe_states_by_pool'])
-            fitting_stock_by_pool.update(group_result['fitting_stock_by_pool'])
+            for pool, updates in group_result['pipe_state_updates_by_pool'].items():
+                pipe_states_by_pool[pool].update(updates)
+            for pool, updates in group_result['fitting_stock_updates_by_pool'].items():
+                fitting_stock_by_pool[pool].update(updates)
             match_seq = group_result['next_seq']
 
         result_df = pd.DataFrame(all_rows)
@@ -4216,7 +4363,9 @@ def generate_future_schedule_from_database(project, persist=True, **options):
         work_df = sort_and_clean_data(available_df, COLUMNS['diameter'], COLUMNS['completed_flag'])
 
         weld_start = future_schedule._parse_schedule_date(options.get('weldStartDate')) if options.get('weldStartDate') else datetime.now().date() + timedelta(days=1)
-        target = float(options.get('targetDiameter') or EXTRACT['target_diameter'])
+        # 总排产的拆单规则彼此独立：防腐按面积，下料和焊接按寸径。
+        # 不复用单阶段运行时配置，避免修改单阶段默认值时悄然改变总排产。
+        target = float(options.get('targetDiameter') or DEFAULT_MASTER_CUTTING_WELDING_DIAMETER)
         if target > 300:
             raise ValueError('每张工作表目标寸径不能超过滚动计划最大值 300')
         orders = int(options.get('ordersPerDay') or EXTRACT['num_extractions'])
@@ -4252,7 +4401,7 @@ def generate_future_schedule_from_database(project, persist=True, **options):
         process_sequence = project_process_sequence(project)
 
         # 防腐阶段必须与独立“生成防腐委托”使用同一套预排产、材料拆单和
-        # 文件结构。总排产只生成各阶段计划，不能把计划状态当成实际完工状态。
+        # 文件结构。阶段间状态只写入本次运行的临时 dataframe，不提前污染材料库。
         anti_status_col = COLUMNS['material_anti_corrosion_status']
         anti_completed = (
             pre_matcher._to_bool_series(available_df[anti_status_col])
@@ -4283,7 +4432,7 @@ def generate_future_schedule_from_database(project, persist=True, **options):
                 first_anti_date = first_weld_date
             anti_result = generate_anti_corrosion_schedule_from_database(
                 project,
-                commission_area=options.get('commissionArea') or 1500,
+                commission_area=options.get('commissionArea') or DEFAULT_MASTER_ANTI_CORROSION_AREA,
                 selected_library_seqs=selected_seqs,
                 selection_mode='manual',
                 persist=False,
@@ -4303,6 +4452,8 @@ def generate_future_schedule_from_database(project, persist=True, **options):
                     output_files.extend(anti_output_files)
             else:
                 deferred_anti_output_files = anti_output_files
+            # 防腐委托生成成功即允许本次内存工作流继续下料，但不改写焊口的
+            # 材料防腐状态；该实际完成状态只能由定时同步任务更新。
         for weld_date in weld_dates:
             cut_date = future_schedule._previous_schedule_date(
                 weld_date,
@@ -4338,6 +4489,8 @@ def generate_future_schedule_from_database(project, persist=True, **options):
             else:
                 output_files.extend(_cutting_primary_output_files(cut_text, weld_text, all_extractions))
         for cut_text, weld_text, all_extractions in schedule_batches:
+            # 下料计划生成成功即允许继续生成焊接计划，但计划数据保持原始状态，
+            # 不把“材料下料状态”伪装成实际完成。
             if persist:
                 _sync_welding_outputs(project, weld_text, all_extractions, cut_date=cut_text)
             else:

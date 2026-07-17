@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import DataVTable from './DataVTable.vue'
 import { t } from '../services/pipecloudState'
 
@@ -51,6 +51,23 @@ const fileGroups = computed(() => {
 })
 
 const selectedPath = computed(() => props.preview?.file?.path || '')
+const expandedDates = ref([])
+
+watch(fileGroups, (groups) => {
+  const keys = groups.map((group) => group.key)
+  expandedDates.value = expandedDates.value.filter((key) => keys.includes(key))
+  if (!expandedDates.value.length && keys.length) {
+    expandedDates.value = [keys.at(-1)]
+  }
+}, { immediate: true })
+
+function typeIcon(type) {
+  const text = String(type || '')
+  if (text.includes('防腐') || text.includes('corrosion')) return 'mdi-shield-check-outline'
+  if (text.includes('下料') || text.includes('cutting')) return 'mdi-content-cut'
+  if (text.includes('焊接') || text.includes('welding')) return 'mdi-flash-outline'
+  return 'mdi-folder-outline'
+}
 const previewKey = computed(() => [
   props.preview?.file?.sourceKey || props.preview?.file?.path || 'empty',
   props.preview?.sheet || '',
@@ -77,11 +94,9 @@ const previewKey = computed(() => [
       </v-btn>
     </div>
 
-    <v-alert v-if="error" :text="error" type="error" density="compact" class="status-alert" />
-
     <div class="preview-browser">
       <div class="preview-files">
-        <v-expansion-panels v-if="fileGroups.length" multiple variant="accordion" class="date-panels">
+        <v-expansion-panels v-if="fileGroups.length" v-model="expandedDates" multiple variant="accordion" class="date-panels">
           <v-expansion-panel v-for="group in fileGroups" :key="group.key" :value="group.key">
             <v-expansion-panel-title>
               <div class="date-title">
@@ -96,7 +111,11 @@ const previewKey = computed(() => [
                   :key="`${group.key}:${typeGroup.type}`"
                   :class="['type-group', { 'has-divider': typeIndex > 0 }]"
                 >
-                  <div v-if="groupByType" class="type-title">{{ typeGroup.type }}</div>
+                  <div v-if="groupByType" class="type-title">
+                    <v-icon :icon="typeIcon(typeGroup.type)" size="15" />
+                    <span>{{ typeGroup.type }}</span>
+                    <small>{{ typeGroup.files.length }}</small>
+                  </div>
                   <button
                     v-for="file in typeGroup.files"
                     :key="file.sourceKey || file.path"
@@ -104,9 +123,12 @@ const previewKey = computed(() => [
                     type="button"
                     @click="emit('preview-file', file)"
                   >
-                    <v-icon icon="mdi-file-table-outline" size="18" />
-                    <span>{{ file.displayName || file.name }}</span>
-                    <small v-if="file.displayName && file.displayName !== file.name">{{ file.name }}</small>
+                    <span class="file-icon"><v-icon icon="mdi-file-excel-outline" size="19" /></span>
+                    <span class="file-copy">
+                      <strong>{{ file.displayName || file.name }}</strong>
+                      <small v-if="file.displayName && file.displayName !== file.name">{{ file.name }}</small>
+                    </span>
+                    <v-icon class="file-arrow" icon="mdi-chevron-right" size="17" />
                   </button>
                 </section>
               </div>
@@ -184,9 +206,10 @@ const previewKey = computed(() => [
 
 .preview-browser {
   display: grid;
-  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
-  gap: 14px;
-  align-items: start;
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: stretch;
+  height: clamp(280px, 52vh, 480px);
   min-width: 0;
 }
 
@@ -196,27 +219,46 @@ const previewKey = computed(() => [
 }
 
 .preview-files {
-  height: clamp(280px, 52vh, 480px);
-  padding-right: 5px;
+  height: 100%;
+  padding: 10px;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--soft) 82%, var(--panel));
 }
 
 .date-panels {
   display: grid;
   gap: 8px;
+  width: 100%;
 }
 
 .date-panels :deep(.v-expansion-panel) {
+  width: 100%;
+  margin-inline: 0;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 9px !important;
   background: var(--panel);
   color: var(--text);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, .04);
+  overflow: hidden;
+}
+
+.date-panels :deep(.v-expansion-panel-title) {
+  min-height: 58px;
+  padding: 10px 13px;
+}
+
+.date-panels :deep(.v-expansion-panel-title--active) {
+  color: #1d4ed8;
+  background: color-mix(in srgb, #2563eb 7%, var(--panel));
 }
 
 .date-panels :deep(.v-expansion-panel-text__wrapper) {
-  padding: 0 0 8px;
+  padding: 10px;
+  border-top: 1px solid var(--line);
 }
 
 .date-title,
@@ -230,68 +272,122 @@ const previewKey = computed(() => [
   gap: 2px;
 }
 
+.date-title strong {
+  color: var(--strong);
+  font-size: 14px;
+  letter-spacing: .01em;
+}
+
 .type-group.has-divider {
   padding-top: 10px;
   border-top: 1px solid var(--line);
 }
 
 .type-title {
-  color: var(--muted);
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  color: #475569;
   font-size: 12px;
   font-weight: 800;
+}
+
+.type-title small {
+  display: grid;
+  min-width: 22px;
+  height: 20px;
+  place-items: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, #2563eb 10%, var(--panel));
+  color: #2563eb;
+  font-size: 10px;
 }
 
 .file-button {
   appearance: none;
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  gap: 3px 8px;
+  position: relative;
+  grid-template-columns: 34px minmax(0, 1fr) 18px;
+  gap: 9px;
   align-items: center;
   width: 100%;
+  min-height: 56px;
   padding: 9px 10px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--panel);
   color: var(--text);
   text-align: left;
   cursor: pointer;
+  transition: border-color .16s ease, background .16s ease, box-shadow .16s ease, transform .16s ease;
 }
 
 .file-button:hover,
 .file-button.is-active {
-  border-color: #93b4ff;
-  background: #eaf1ff;
+  border-color: #7da4ff;
+  background: color-mix(in srgb, #2563eb 9%, var(--panel));
   color: #1d4ed8;
+  box-shadow: 0 5px 15px rgba(37, 99, 235, .12);
+  transform: translateX(2px);
 }
 
-.file-button :deep(.v-icon) {
-  grid-row: 1 / span 2;
-  color: #64748b;
+.file-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 7px;
+  background: color-mix(in srgb, #16a34a 10%, var(--panel));
+  color: #15803d;
 }
 
-.file-button span,
-.file-button small {
+.file-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.file-copy strong,
+.file-copy small {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.file-button span {
+.file-copy strong {
   color: var(--strong);
   font-size: 13px;
   font-weight: 700;
 }
 
-.file-button small {
-  grid-column: 2;
+.file-copy small {
   color: var(--muted);
   font-size: 11px;
 }
 
+.file-arrow {
+  color: #94a3b8;
+  transition: transform .16s ease;
+}
+
+.file-button:hover .file-arrow,
+.file-button.is-active .file-arrow {
+  color: #2563eb;
+  transform: translateX(2px);
+}
+
 .preview-data {
   display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 10px;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 4px 16px rgba(15, 23, 42, .04);
 }
 
 .preview-tabs {
@@ -312,6 +408,7 @@ const previewKey = computed(() => [
 @media (max-width: 820px) {
   .preview-browser {
     grid-template-columns: minmax(0, 1fr);
+    height: auto;
   }
 
   .preview-files {

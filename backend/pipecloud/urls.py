@@ -74,6 +74,7 @@ urlpatterns = [
     path('schedule/future/', workflow_views.generate_future_schedule, name='pipecloud-generate-future-schedule'),
     path('schedule/stage/file/', workflow_views.staged_plan_file_rows, name='pipecloud-staged-plan-file-rows'),
     path('schedule/stage/commit/', workflow_views.commit_staged_plan, name='pipecloud-commit-staged-plan'),
+    path('schedule/stage/discard/', workflow_views.discard_staged_plans, name='pipecloud-discard-staged-plans'),
     path('plans/<str:plan_key>/', plan_views.plan_rows, name='pipecloud-plan-rows'),
     path('plans/<str:plan_key>/move/', plan_views.move_plan_date, name='pipecloud-plan-move-date'),
     path('plans/<str:plan_key>/delete/', plan_views.delete_plan, name='pipecloud-plan-delete'),

@@ -40,6 +40,32 @@ class LibraryRowsTests(SimpleTestCase):
             ['材料代码'],
         )
 
+    def test_material_libraries_hide_irrelevant_inventory_columns(self):
+        expected_hidden = {
+            'pipe-library': {
+                '防腐状态', '单位面积', '防腐面积', '防腐库存数量',
+                '已防腐锁定数量', '未防腐锁定数量',
+            },
+            'fitting-library': {
+                '单位面积', '防腐面积', '防腐库存数量',
+                '已防腐锁定数量', '未防腐锁定数量',
+            },
+            'anti-pipe-library': {'防腐状态', '锁定数量'},
+            'anti-fitting-library': {'锁定数量'},
+        }
+        model_by_library = {
+            'pipe-library': PipeMaterialRow,
+            'fitting-library': FittingMaterialRow,
+            'anti-pipe-library': PipeMaterialRow,
+            'anti-fitting-library': FittingMaterialRow,
+        }
+
+        for library_key, hidden_columns in expected_hidden.items():
+            with self.subTest(library_key=library_key):
+                model_columns = list(model_field_labels(model_by_library[library_key]).values())
+                visible_columns = library_views._visible_library_columns(library_key, model_columns)
+                self.assertTrue(hidden_columns.isdisjoint(visible_columns))
+
     def test_library_list_tolerates_single_library_info_failure(self):
         request = RequestFactory().get('/api/libraries/')
         project = Mock()

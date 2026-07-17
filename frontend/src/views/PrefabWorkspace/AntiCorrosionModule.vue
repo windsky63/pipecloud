@@ -24,8 +24,6 @@ const props = defineProps({
   manualDateList: { type: Array, default: () => [] },
   holidayCalendarDateList: { type: Array, default: () => [] },
   overviewActions: { type: Array, default: () => [] },
-  commissionMessage: { type: String, default: '' },
-  commissionError: { type: String, default: '' },
   commissionPendingStage: { type: Object, default: null },
   commissionStageSaving: { type: Boolean, default: false },
   commissionPreviewLoading: { type: Boolean, default: false },
@@ -33,7 +31,6 @@ const props = defineProps({
   commissionPreviewData: { type: Object, default: () => ({ sheets: [], rows: [], columns: [], total: 0 }) },
   commissionPreviewColumns: { type: Array, default: () => [] },
   preScheduleLoading: { type: Boolean, default: false },
-  preScheduleError: { type: String, default: '' },
   preScheduleData: { type: Object, required: true },
   preScheduleActiveSheet: { type: String, default: '' },
   preScheduleTableColumns: { type: Array, default: () => [] },
@@ -101,14 +98,6 @@ function updateStartDate(value) {
         </v-btn>
       </div>
     </div>
-
-    <v-alert
-      v-if="preScheduleError"
-      :text="preScheduleError"
-      type="error"
-      density="compact"
-      class="status-alert"
-    />
 
     <div class="library-toolbar">
       <v-tabs
@@ -330,21 +319,6 @@ function updateStartDate(value) {
         </v-expansion-panel-text>
       </v-expansion-panel>
     </v-expansion-panels>
-
-    <v-alert
-      v-if="commissionError"
-      :text="commissionError"
-      type="error"
-      density="compact"
-      class="status-alert"
-    />
-    <v-alert
-      v-if="commissionMessage"
-      :text="commissionMessage"
-      type="success"
-      density="compact"
-      class="status-alert"
-    />
 
     <StagedPlanPreview
       :stage="commissionPendingStage"

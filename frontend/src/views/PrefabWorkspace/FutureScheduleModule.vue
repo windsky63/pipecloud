@@ -134,9 +134,6 @@ function updateWeldStartDate(value) {
       </div>
     </div>
 
-    <v-alert v-if="futureScheduleError" :text="futureScheduleError" type="error" density="compact" class="status-alert" />
-    <v-alert v-if="futureScheduleMessage" :text="futureScheduleMessage" type="success" density="compact" class="status-alert" />
-
     <v-expansion-panels v-model="configPanels" class="future-schedule-config" variant="accordion">
       <v-expansion-panel value="config">
         <v-expansion-panel-title>
@@ -342,13 +339,6 @@ function updateWeldStartDate(value) {
                 {{ t('selectedRows') }}：{{ manualSelectionSelectedCount }}
               </v-chip>
             </div>
-            <v-alert
-              v-if="manualSelectionError"
-              :text="manualSelectionError"
-              type="error"
-              density="compact"
-              class="status-alert"
-            />
             <DataVTable
               :records="manualSelectionRows"
               :columns="manualSelectionColumns"

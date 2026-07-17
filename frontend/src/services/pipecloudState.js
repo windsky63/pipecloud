@@ -22,6 +22,7 @@ const homeComponentVisibilityStorageKey = 'pipecloud.homeComponentVisibility'
 const dashboardVisibilityStorageKey = 'pipecloud.dashboardVisibility'
 const uiThemeStorageKey = 'pipecloud.uiTheme'
 const developerModeStorageKey = 'pipecloud.developerMode'
+const uiMessagePositionStorageKey = 'pipecloud.uiMessagePosition'
 
 export const navigationVisibilityDefaults = {
   home: true,
@@ -177,6 +178,13 @@ function getInitialUiTheme() {
 
 export const uiTheme = ref(getInitialUiTheme())
 
+function getInitialUiMessagePosition() {
+  if (typeof window === 'undefined') return 'top'
+  return window.localStorage.getItem(uiMessagePositionStorageKey) === 'bottom' ? 'bottom' : 'top'
+}
+
+export const uiMessagePosition = ref(getInitialUiMessagePosition())
+
 function getInitialLanguage() {
   if (typeof window === 'undefined') return 'zh-CN'
   const value = window.localStorage.getItem(languageStorageKey)
@@ -271,6 +279,13 @@ export function setUiTheme(value) {
   uiTheme.value = uiThemeOptions.some((item) => item.value === value) ? value : 'pipecloud'
   if (typeof window !== 'undefined') {
     window.localStorage.setItem(uiThemeStorageKey, uiTheme.value)
+  }
+}
+
+export function setUiMessagePosition(value) {
+  uiMessagePosition.value = value === 'bottom' ? 'bottom' : 'top'
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(uiMessagePositionStorageKey, uiMessagePosition.value)
   }
 }
 

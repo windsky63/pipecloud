@@ -25,6 +25,7 @@ from spool_analysis.project_spool_info import (
 )
 
 from ..models import (
+    AntiCorrosionMaterialOrderRow,
     ArrivalMaterialRow,
     ArrivalOrderRow,
     DataSourceFile,
@@ -896,6 +897,8 @@ def _resolve_plan_file(plan_key, plan_folder, file_name, plan_sources):
 
 
 def _plan_payload(project, plan_key, selected_date=None, plan_sources=None):
+    from pipecloud.services.prefab_database import refresh_plan_record_summaries
+
     plan_sources = plan_sources or PLAN_SOURCES
     if plan_key == 'all':
         sources = list(plan_sources.values())
@@ -906,6 +909,7 @@ def _plan_payload(project, plan_key, selected_date=None, plan_sources=None):
         sources = [source]
 
     _sync_plan_records(project, plan_sources)
+    refresh_plan_record_summaries(project)
     source_payloads = [_plan_source_payload(project, source, selected_date) for source in sources]
     all_dates = sorted({date for source in source_payloads for date in source['dates']}, reverse=True)
     records_by_source_date = {
@@ -996,6 +1000,11 @@ def _welding_dashboard_payload(project, data_root, force_refresh=False):
     history_records = [record for record in records if record.plan_date != today_date]
 
     with using_project_tables(project):
+        library_rows = list(
+            WeldLibraryRow.objects
+            .filter(project=project)
+            .values('diameter', 'completed_flag')
+        )
         source_by_key = {
             source_file.source_key: source_file
             for source_file in DataSourceFile.objects.filter(
@@ -1005,31 +1014,42 @@ def _welding_dashboard_payload(project, data_root, force_refresh=False):
             )
         }
         rows = []
-        unique_welds = {}
         unique_history_welds = {}
         unique_today_welds = {}
         for record in records:
             file_name = _plan_primary_file_name(record)
             source_file = source_by_key.get(f'welding:{record.plan_folder}:{file_name}') if file_name else None
             queryset = WeldingPlanRow.objects.filter(project=project, source_file=source_file) if source_file else WeldingPlanRow.objects.none()
-            total_rows = queryset.count()
-            completed_rows = sum(1 for value in queryset.values_list('completed_flag', flat=True) if _truthy_text(value))
-            for plan_row in queryset.values(
+            plan_values = list(queryset.values(
                 'weld_no_final',
                 'weld_no_start',
                 'pipeline',
                 'unit',
                 'diameter',
                 'completed_flag',
-            ):
+            ))
+            total_rows = len(plan_values)
+            completed_rows = sum(1 for row in plan_values if _truthy_text(row.get('completed_flag')))
+            total_diameter = sum((_dashboard_quantity(row.get('diameter')) for row in plan_values), Decimal('0'))
+            completed_diameter = sum((
+                _dashboard_quantity(row.get('diameter'))
+                for row in plan_values
+                if _truthy_text(row.get('completed_flag'))
+            ), Decimal('0'))
+            for plan_row in plan_values:
                 key = '|'.join(
                     str(plan_row.get(field) or '').strip()
                     for field in ('weld_no_final', 'weld_no_start', 'pipeline', 'unit', 'diameter')
                 )
                 completed = _truthy_text(plan_row.get('completed_flag'))
-                unique_welds[key] = unique_welds.get(key, False) or completed
                 target = unique_today_welds if record.plan_date == today_date else unique_history_welds
-                target[key] = target.get(key, False) or completed
+                item = target.setdefault(key, {
+                    'completed': False,
+                    'diameter': _dashboard_quantity(plan_row.get('diameter')),
+                })
+                item['completed'] = item['completed'] or completed
+                if not item['diameter']:
+                    item['diameter'] = _dashboard_quantity(plan_row.get('diameter'))
             rows.append({
                 'planDate': record.plan_date,
                 'planFolder': record.plan_folder,
@@ -1037,19 +1057,35 @@ def _welding_dashboard_payload(project, data_root, force_refresh=False):
                 'path': source_file.relative_path if source_file else record.relative_path,
                 'totalRows': total_rows,
                 'completedRows': completed_rows,
-                'completionRate': _percentage(completed_rows, total_rows),
+                'totalDiameter': _dashboard_number(total_diameter),
+                'completedDiameter': _dashboard_number(completed_diameter),
+                'completionRate': _percentage(completed_diameter, total_diameter),
                 'updatedAt': source_file.file_updated_at if source_file else record.folder_updated_at,
             })
 
     history_rows = [row for row in rows if row['planDate'] != today_date]
     today_rows = [row for row in rows if row['planDate'] == today_date]
 
-    total_rows = len(unique_welds)
-    completed_rows = sum(unique_welds.values())
+    total_rows = len(library_rows)
+    completed_rows = sum(1 for row in library_rows if _truthy_text(row.get('completed_flag')))
+    total_diameter = sum((_dashboard_quantity(row.get('diameter')) for row in library_rows), Decimal('0'))
+    completed_diameter = sum((
+        _dashboard_quantity(row.get('diameter'))
+        for row in library_rows
+        if _truthy_text(row.get('completed_flag'))
+    ), Decimal('0'))
     history_total_rows = len(unique_history_welds)
-    history_completed_rows = sum(unique_history_welds.values())
+    history_completed_rows = sum(1 for item in unique_history_welds.values() if item['completed'])
+    history_total_diameter = sum((item['diameter'] for item in unique_history_welds.values()), Decimal('0'))
+    history_completed_diameter = sum((
+        item['diameter'] for item in unique_history_welds.values() if item['completed']
+    ), Decimal('0'))
     today_total_rows = len(unique_today_welds)
-    today_completed_rows = sum(unique_today_welds.values())
+    today_completed_rows = sum(1 for item in unique_today_welds.values() if item['completed'])
+    today_total_diameter = sum((item['diameter'] for item in unique_today_welds.values()), Decimal('0'))
+    today_completed_diameter = sum((
+        item['diameter'] for item in unique_today_welds.values() if item['completed']
+    ), Decimal('0'))
 
     payload = {
         'projectId': project.id,
@@ -1061,13 +1097,19 @@ def _welding_dashboard_payload(project, data_root, force_refresh=False):
         'todayPlanCount': len(today_records),
         'totalRows': total_rows,
         'completedRows': completed_rows,
-        'completionRate': _percentage(completed_rows, total_rows),
+        'totalDiameter': _dashboard_number(total_diameter),
+        'completedDiameter': _dashboard_number(completed_diameter),
+        'completionRate': _percentage(completed_diameter, total_diameter),
         'historyTotalRows': history_total_rows,
         'historyCompletedRows': history_completed_rows,
-        'historyCompletionRate': _percentage(history_completed_rows, history_total_rows),
+        'historyTotalDiameter': _dashboard_number(history_total_diameter),
+        'historyCompletedDiameter': _dashboard_number(history_completed_diameter),
+        'historyCompletionRate': _percentage(history_completed_diameter, history_total_diameter),
         'todayTotalRows': today_total_rows,
         'todayCompletedRows': today_completed_rows,
-        'todayCompletionRate': _percentage(today_completed_rows, today_total_rows),
+        'todayTotalDiameter': _dashboard_number(today_total_diameter),
+        'todayCompletedDiameter': _dashboard_number(today_completed_diameter),
+        'todayCompletionRate': _percentage(today_completed_diameter, today_total_diameter),
         'recentPlans': rows[:8],
     }
     return payload
@@ -1130,23 +1172,27 @@ def _arrival_material_qty(row):
     return _dashboard_quantity(row.get('shipment_qty'))
 
 
-def _collect_stock_materials(project, model, source_keys):
-    materials = {}
-    for row in model.objects.filter(project=project, source_file__source_key__in=source_keys).values(
-        'material_code',
-        'stock_qty',
+def _collect_arrival_materials(project):
+    materials = {'pipe': {}, 'other': {}}
+    for row in ArrivalMaterialRow.objects.filter(project=project).values(
+        'material_code_ncc',
+        'actual_arrival_qty',
+        'shipment_qty',
         'material_description',
         'unit',
+        'name',
+        'material_category',
     ):
-        code = str(row.get('material_code') or '').strip()
+        code = str(row.get('material_code_ncc') or '').strip()
         if not code:
             continue
-        item = materials.setdefault(code, {
+        material_type = _arrival_material_type(row)
+        item = materials[material_type].setdefault(code, {
             'actualQty': Decimal('0'),
             'description': '',
             'unit': '',
         })
-        item['actualQty'] += _dashboard_quantity(row.get('stock_qty'))
+        item['actualQty'] += _arrival_material_qty(row)
         item['description'] = item['description'] or str(row.get('material_description') or '').strip()
         item['unit'] = str(row.get('unit') or '').strip() or item['unit']
     return materials
@@ -1233,14 +1279,9 @@ def _arrival_material_dashboard_payload(project):
         return grouped[key]
 
     with using_project_tables(project):
-        pipe_materials = _collect_stock_materials(project, PipeMaterialRow, [
-            'pipe-library',
-            'anti-pipe-library',
-        ])
-        fitting_materials = _collect_stock_materials(project, FittingMaterialRow, [
-            'fitting-library',
-            'anti-fitting-library',
-        ])
+        arrival_materials = _collect_arrival_materials(project)
+        pipe_materials = arrival_materials['pipe']
+        fitting_materials = arrival_materials['other']
 
         pipe_codes = set(pipe_materials)
         fitting_codes = set(fitting_materials)
@@ -1383,6 +1424,21 @@ def _anti_corrosion_dashboard_payload(project, data_root):
                 'updated_at',
             )
         )
+        material_area_rows = list(
+            AntiCorrosionMaterialOrderRow.objects
+            .filter(project=project, source_file__source_type='plan')
+            .values('anti_corrosion_order_no', 'commission_area')
+        )
+
+    material_area_by_commission = {}
+    for row in material_area_rows:
+        commission_no = str(row.get('anti_corrosion_order_no') or '').strip()
+        if not commission_no:
+            continue
+        material_area_by_commission[commission_no] = (
+            material_area_by_commission.get(commission_no, Decimal('0'))
+            + _dashboard_quantity(row.get('commission_area'))
+        )
 
     grouped = {}
     for row in commission_rows:
@@ -1416,6 +1472,8 @@ def _anti_corrosion_dashboard_payload(project, data_root):
 
     rows = []
     for item in grouped.values():
+        if item['commissionNo'] in material_area_by_commission:
+            item['totalArea'] = material_area_by_commission[item['commissionNo']]
         rows.append({
             'commissionNo': item['commissionNo'],
             'commissionDate': item['commissionDate'],
@@ -1666,10 +1724,31 @@ def _read_excel_rows(file_path, sheet_name):
 
 
 def _percentage(numerator, denominator):
-    denominator = int(denominator or 0)
-    if denominator <= 0:
+    try:
+        numerator_value = Decimal(str(numerator or 0))
+        denominator_value = Decimal(str(denominator or 0))
+    except (InvalidOperation, ValueError):
         return 0
-    return round(int(numerator or 0) / denominator * 100, 2)
+    if denominator_value <= 0:
+        return 0
+    return round(float(numerator_value / denominator_value * 100), 2)
+
+
+def _unit_diameter_totals_from_queryset(queryset, source=None):
+    units = {}
+    total = Decimal('0')
+    for row in queryset.values('unit', 'diameter'):
+        unit = str(row.get('unit') or '').strip() or '未分单元'
+        diameter = _dashboard_quantity(row.get('diameter'))
+        units[unit] = units.get(unit, Decimal('0')) + diameter
+        total += diameter
+    return {
+        'path': source.relative_path if source else '',
+        'exists': bool(source) or total > 0,
+        'total': _dashboard_number(total),
+        'unitColumn': '单元号' if total else '',
+        'units': {unit: _dashboard_number(value) for unit, value in units.items()},
+    }
 
 
 def _initialization_stats_payload(project, data_root, force_refresh=False):
@@ -1688,8 +1767,20 @@ def _initialization_stats_payload(project, data_root, force_refresh=False):
             WeldLibraryRow.objects.filter(project=project, welding_mode__contains='自动焊'),
             library_source,
         )
+        total_diameters = _unit_diameter_totals_from_queryset(
+            InitializationWeldRow.objects.filter(project=project),
+            total_source,
+        )
+        prefab_diameters = _unit_diameter_totals_from_queryset(
+            WeldLibraryRow.objects.filter(project=project),
+            library_source,
+        )
+        auto_diameters = _unit_diameter_totals_from_queryset(
+            WeldLibraryRow.objects.filter(project=project, welding_mode__contains='自动焊'),
+            library_source,
+        )
 
-    units = sorted(set(total_counts['units']) | set(prefab_counts['units']) | set(auto_counts['units']))
+    units = sorted(set(total_diameters['units']) | set(prefab_diameters['units']) | set(auto_diameters['units']))
 
     unit_rows = [
         {
@@ -1697,8 +1788,11 @@ def _initialization_stats_payload(project, data_root, force_refresh=False):
             'totalWeldCount': int(total_counts['units'].get(unit, 0)),
             'prefabWeldCount': int(prefab_counts['units'].get(unit, 0)),
             'autoWeldCount': int(auto_counts['units'].get(unit, 0)),
-            'prefabRate': _percentage(prefab_counts['units'].get(unit, 0), total_counts['units'].get(unit, 0)),
-            'autoRate': _percentage(auto_counts['units'].get(unit, 0), prefab_counts['units'].get(unit, 0)),
+            'totalDiameter': total_diameters['units'].get(unit, 0),
+            'prefabDiameter': prefab_diameters['units'].get(unit, 0),
+            'autoDiameter': auto_diameters['units'].get(unit, 0),
+            'prefabRate': _percentage(prefab_diameters['units'].get(unit, 0), total_diameters['units'].get(unit, 0)),
+            'autoRate': _percentage(auto_diameters['units'].get(unit, 0), prefab_diameters['units'].get(unit, 0)),
         }
         for unit in units
     ]
@@ -1715,8 +1809,11 @@ def _initialization_stats_payload(project, data_root, force_refresh=False):
         'totalWeldCount': total_counts['total'],
         'prefabWeldCount': prefab_counts['total'],
         'autoWeldCount': auto_counts['total'],
-        'prefabRate': _percentage(prefab_counts['total'], total_counts['total']),
-        'autoRate': _percentage(auto_counts['total'], prefab_counts['total']),
+        'totalDiameter': total_diameters['total'],
+        'prefabDiameter': prefab_diameters['total'],
+        'autoDiameter': auto_diameters['total'],
+        'prefabRate': _percentage(prefab_diameters['total'], total_diameters['total']),
+        'autoRate': _percentage(auto_diameters['total'], prefab_diameters['total']),
         'unitCount': len(unit_rows),
         'units': unit_rows,
     }

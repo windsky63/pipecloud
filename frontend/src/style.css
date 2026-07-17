@@ -1170,14 +1170,18 @@ html[data-theme="gray"] .cutting-vtable-host {
 }
 
 .calendar-plan-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  display: grid;
+  gap: 8px;
   padding: 14px 16px;
   border-bottom: 1px solid #e8eef6;
   background: var(--panel-soft);
+}
+
+.calendar-plan-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
 }
 
 .calendar-plan-legend {
@@ -1199,6 +1203,17 @@ html[data-theme="gray"] .cutting-vtable-host {
   text-align: center;
 }
 
+.plan-period-picker {
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.plan-period-picker:hover {
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  color: var(--primary);
+}
+
 .gantt-period-controls {
   display: flex;
   align-items: center;
@@ -1206,7 +1221,7 @@ html[data-theme="gray"] .cutting-vtable-host {
 }
 
 .plan-table-tabs {
-  flex: 0 0 auto;
+  width: max-content;
 }
 
 .vuetify-plan-calendar {
@@ -1263,6 +1278,10 @@ html[data-theme="gray"] .cutting-vtable-host {
   padding: 4px 2px;
 }
 
+.plan-chip-tooltip-overlay {
+  background: rgba(33, 33, 33, 0.8) !important;
+}
+
 .plan-chip-tooltip > strong {
   font-size: 13px;
 }
@@ -1282,6 +1301,7 @@ html[data-theme="gray"] .cutting-vtable-host {
   overflow-wrap: anywhere;
   text-align: right;
   font-weight: 600;
+  white-space: pre-line;
 }
 
 .calendar-grid {

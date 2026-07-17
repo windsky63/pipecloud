@@ -53,7 +53,7 @@ class PlanCompletionSyncTests(TestCase):
         status = WeldStatusRow.objects.get(project=self.project, library_seq='W1')
         self.assertIs(status.material_anti_corrosion_status, True)
 
-    def test_completed_anti_corrosion_material_updates_pipe_inventory_status(self):
+    def test_completed_anti_corrosion_material_updates_pipe_inventory_quantities(self):
         source = self.create_anti_corrosion_material_source()
         library_source = DataSourceFile.objects.create(
             project=self.project,
@@ -71,7 +71,7 @@ class PlanCompletionSyncTests(TestCase):
             uncoated_locked_qty='5',
             coated_locked_qty='0',
             used_qty='0',
-            anti_corrosion_status='防腐未完成',
+            anti_corrosion_status='',
             anti_corrosion_stock_qty='0',
         )
         AntiCorrosionMaterialOrderRow.objects.create(
@@ -87,7 +87,7 @@ class PlanCompletionSyncTests(TestCase):
         stats = sync_project_plan_completion(self.project, 'anti-corrosion', business_date='20260714')
 
         pipe.refresh_from_db()
-        self.assertEqual(pipe.anti_corrosion_status, '已完成')
+        self.assertEqual(pipe.anti_corrosion_status, '')
         self.assertEqual(pipe.anti_corrosion_stock_qty, '7')
         self.assertEqual(pipe.coated_locked_qty, '5')
         self.assertEqual(pipe.uncoated_locked_qty, '0')

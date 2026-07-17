@@ -270,8 +270,6 @@ watch(() => props.arrivalImportCompleteKey, () => {
       />
     </div>
 
-    <v-alert v-if="arrivalError" :text="arrivalError" type="error" density="compact" class="status-alert" />
-
     <v-tabs :model-value="arrivalActiveTab" color="primary" class="arrival-tabs" @update:model-value="$emit('change-tab', $event)">
       <v-tab value="overview">{{ t('arrivalManagement') }}</v-tab>
       <v-tab value="arrivalFiles">{{ t('arrivalOrder') }}</v-tab>

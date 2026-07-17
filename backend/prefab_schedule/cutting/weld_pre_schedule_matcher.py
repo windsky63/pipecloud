@@ -1,3 +1,4 @@
+from collections import ChainMap
 from pathlib import Path
 import sys
 
@@ -87,13 +88,6 @@ def _copy_pipe_state(state):
     copied['loss_list'] = list(state.get('loss_list', []))
     copied['consumed_list'] = list(state.get('consumed_list', []))
     return copied
-
-
-def _copy_all_pipe_states(pipe_states):
-    return {
-        material_code: [_copy_pipe_state(state) for state in states]
-        for material_code, states in pipe_states.items()
-    }
 
 
 def _material_codes_for_demands(demands):
@@ -570,14 +564,10 @@ def _simulate_group_matches_by_inventory(
     fitting_stock_by_pool,
     start_seq,
 ):
-    group_pipe_states = {
-        pool: _copy_all_pipe_states(states)
-        for pool, states in pipe_states_by_pool.items()
-    }
-    group_fitting_stock = {
-        pool: stock.copy()
-        for pool, stock in fitting_stock_by_pool.items()
-    }
+    """Stage only material-code-level changes; leave shared inventory untouched until group acceptance."""
+    pools = (ORDINARY_POOL, ANTI_CORROSION_POOL)
+    group_pipe_updates = {pool: {} for pool in pools}
+    group_fitting_updates = {pool: {} for pool in pools}
     accepted_rows = []
     rejected_rows = []
     all_rows = []
@@ -586,43 +576,48 @@ def _simulate_group_matches_by_inventory(
 
     for _, row in group_df.iterrows():
         pipe_demands, fitting_demands = _build_weld_material_demands(row)
-        next_pipe_states = {
-            pool: _copy_all_pipe_states(states)
-            for pool, states in group_pipe_states.items()
-        }
-        next_fitting_stock = {
-            pool: stock.copy()
-            for pool, stock in group_fitting_stock.items()
-        }
+        row_pipe_updates = {pool: {} for pool in pools}
+        row_fitting_updates = {pool: {} for pool in pools}
         row_details = []
         row_ok = True
 
-        for pool in (ORDINARY_POOL, ANTI_CORROSION_POOL):
+        for pool in pools:
             pool_pipe_demands = _demands_for_pool(pipe_demands, pool)
+            pool_fitting_demands = _demands_for_pool(fitting_demands, pool)
+            if not pool_pipe_demands and not pool_fitting_demands:
+                continue
+
+            pipe_states = ChainMap(
+                group_pipe_updates[pool],
+                pipe_states_by_pool.get(pool, {}),
+            )
             pipe_ok, updated_pipe_states, pipe_details = _try_allocate_pipe_demands(
                 row,
                 match_seq,
                 pool_pipe_demands,
-                next_pipe_states[pool],
+                pipe_states,
             )
             row_details.extend(pipe_details)
             if pipe_ok:
-                next_pipe_states[pool].update(updated_pipe_states)
+                row_pipe_updates[pool].update(updated_pipe_states)
 
-            pool_fitting_demands = _demands_for_pool(fitting_demands, pool)
             fitting_ok = False
             updated_fitting_stock = {}
             fitting_details = []
             if pipe_ok:
+                fitting_stock = ChainMap(
+                    group_fitting_updates[pool],
+                    fitting_stock_by_pool.get(pool, {}),
+                )
                 fitting_ok, updated_fitting_stock, fitting_details = _try_allocate_fitting_demands(
                     row,
                     match_seq,
                     pool_fitting_demands,
-                    next_fitting_stock[pool],
+                    fitting_stock,
                 )
             row_details.extend(fitting_details)
             if fitting_ok:
-                next_fitting_stock[pool].update(updated_fitting_stock)
+                row_fitting_updates[pool].update(updated_fitting_stock)
             if not pipe_ok or not fitting_ok:
                 row_ok = False
 
@@ -634,8 +629,9 @@ def _simulate_group_matches_by_inventory(
             row_out[REASON_COL] = ''
             accepted_rows.append(row_out)
             all_rows.append(row_out.copy())
-            group_pipe_states = next_pipe_states
-            group_fitting_stock = next_fitting_stock
+            for pool in pools:
+                group_pipe_updates[pool].update(row_pipe_updates[pool])
+                group_fitting_updates[pool].update(row_fitting_updates[pool])
             match_seq += 1
         else:
             reasons = [
@@ -654,8 +650,8 @@ def _simulate_group_matches_by_inventory(
         'rejected_rows': rejected_rows,
         'all_rows': all_rows,
         'detail_rows': detail_rows,
-        'pipe_states_by_pool': group_pipe_states,
-        'fitting_stock_by_pool': group_fitting_stock,
+        'pipe_state_updates_by_pool': group_pipe_updates,
+        'fitting_stock_updates_by_pool': group_fitting_updates,
         'next_seq': match_seq,
     }
 

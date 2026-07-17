@@ -1,7 +1,8 @@
 ﻿<script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useTheme } from 'vuetify'
+import { useLocale, useTheme } from 'vuetify'
 import AppSidebar from './components/AppSidebar.vue'
+import UiMessageCenter from './components/UiMessageCenter.vue'
 import {
   language,
   lastRun,
@@ -13,8 +14,10 @@ import {
 } from './services/pipecloudState'
 import { projectGateMessage, selectedProjectId } from './services/projectState'
 import { loadLibraries } from './services/weldLibraryState'
+import { clearUiMessages, publishUiMessage, uiMessageHistory } from './services/uiMessages'
 
 const vuetifyTheme = useTheme()
+const vuetifyLocale = useLocale()
 const runLogCollapsedStorageKey = 'pipecloud.runLogCollapsed'
 const runLogTogglePositionStorageKey = 'pipecloud.runLogTogglePosition'
 const runLogToggleSize = 42
@@ -26,14 +29,6 @@ const runLogCollapsed = ref(
 const runLogTogglePosition = ref(readRunLogTogglePosition())
 let runLogDragState = null
 let suppressRunLogToggleClick = false
-const projectGateVisible = computed({
-  get: () => Boolean(projectGateMessage.value),
-  set: (value) => {
-    if (!value) {
-      projectGateMessage.value = ''
-    }
-  },
-})
 const runLogText = computed(() => {
   if (!lastRun.value) return t('runLogEmpty')
   return [lastRun.value.stdout, lastRun.value.stderr].filter(Boolean).join('\n') || t('runLogNoOutput')
@@ -141,6 +136,7 @@ watch(uiTheme, (themeName) => {
 
 watch(language, (locale) => {
   document.documentElement.lang = locale
+  vuetifyLocale.current.value = locale === 'zh-CN' ? 'zhHans' : 'en'
 }, { immediate: true })
 
 watch(selectedProjectId, async (projectId) => {
@@ -148,6 +144,10 @@ watch(selectedProjectId, async (projectId) => {
   if (!projectId) return
   await loadSummary()
 })
+
+watch(projectGateMessage, (message) => {
+  publishUiMessage('project-gate', 'warning', message)
+}, { immediate: true })
 
 onMounted(() => {
   if (!summary.value.modules.length) {
@@ -165,6 +165,7 @@ onBeforeUnmount(() => {
 
 <template>
   <v-app>
+    <UiMessageCenter />
     <v-layout class="app-shell">
       <AppSidebar />
 
@@ -211,14 +212,38 @@ onBeforeUnmount(() => {
                 @click="runLogCollapsed = true"
               />
             </div>
-            <pre>{{ runLogText }}</pre>
+            <section class="run-log-section run-log-messages">
+              <div class="run-log-section-head">
+                <strong>{{ t('messageCenter') }}</strong>
+                <v-btn
+                  v-if="uiMessageHistory.length"
+                  size="x-small"
+                  variant="text"
+                  prepend-icon="mdi-delete-sweep-outline"
+                  @click="clearUiMessages"
+                >
+                  {{ t('clearMessages') }}
+                </v-btn>
+              </div>
+              <div v-if="uiMessageHistory.length" class="run-log-message-list">
+                <div v-for="message in uiMessageHistory" :key="message.id" :class="['run-log-message', `is-${message.type}`]">
+                  <v-icon :icon="message.type === 'error' ? 'mdi-alert-circle-outline' : message.type === 'warning' ? 'mdi-alert-outline' : message.type === 'success' ? 'mdi-check-circle-outline' : 'mdi-information-outline'" size="16" />
+                  <span>{{ message.text }}</span>
+                  <time>{{ new Date(message.timestamp).toLocaleTimeString(language, { hour12: false }) }}</time>
+                </div>
+              </div>
+              <div v-else class="run-log-message-empty">{{ t('noMessages') }}</div>
+            </section>
+            <section class="run-log-section run-log-backend">
+              <div class="run-log-section-head">
+                <strong>{{ t('backendMessages') }}</strong>
+              </div>
+              <pre>{{ runLogText }}</pre>
+            </section>
           </div>
         </v-navigation-drawer>
       </template>
 
-      <v-snackbar v-model="projectGateVisible" color="warning" timeout="2600">
-        {{ projectGateMessage }}
-      </v-snackbar>
     </v-layout>
   </v-app>
 </template>
@@ -273,10 +298,74 @@ onBeforeUnmount(() => {
 
 .run-log-panel {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto repeat(2, minmax(0, 1fr));
+  gap: 12px;
   height: 100%;
   padding: 16px;
   background: var(--panel);
+}
+
+.run-log-section {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+.run-log-section-head {
+  display: flex;
+  min-height: 38px;
+  padding: 5px 8px 5px 12px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+  color: var(--strong);
+  font-size: 13px;
+}
+
+.run-log-message-list {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.run-log-message {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 7px;
+  align-items: start;
+  padding: 8px;
+  border-left: 3px solid #64748b;
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.run-log-message.is-error { border-left-color: #dc2626; }
+.run-log-message.is-warning { border-left-color: #d97706; }
+.run-log-message.is-success { border-left-color: #16a34a; }
+.run-log-message.is-info { border-left-color: #2563eb; }
+
+.run-log-message span {
+  line-height: 1.45;
+}
+
+.run-log-message time {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.run-log-message-empty {
+  display: grid;
+  min-height: 72px;
+  place-items: center;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .run-log-head {
@@ -284,7 +373,6 @@ onBeforeUnmount(() => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 12px;
 }
 
 .run-log-head h2 {
@@ -298,12 +386,11 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.run-log-panel pre {
+.run-log-backend pre {
   min-height: 0;
   margin: 0;
   overflow: auto;
   padding: 14px;
-  border-radius: 6px;
   background: #111827;
   color: #d1fae5;
   font-family: Consolas, "Courier New", monospace;

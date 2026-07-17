@@ -91,7 +91,14 @@ def split_arrival_materials_by_anti_corrosion(arrival_df):
     anti_mask = requirement.fillna('').astype(str).str.strip().str.lower().str.startswith(ANTI_CORROSION_PREFIX)
     ordinary_df = out.loc[~anti_mask].copy()
     anti_corrosion_df = out.loc[anti_mask].copy()
-    ordinary_df = ordinary_df.drop(columns=[UNIT_AREA_COL, ANTI_CORROSION_AREA_COL], errors='ignore')
+    ordinary_df = ordinary_df.drop(columns=[
+        ANTI_CORROSION_STATUS_COL,
+        ANTI_CORROSION_STOCK_QTY_COL,
+        COATED_LOCKED_QTY_COL,
+        UNCOATED_LOCKED_QTY_COL,
+        UNIT_AREA_COL,
+        ANTI_CORROSION_AREA_COL,
+    ], errors='ignore')
     if NEED_ANTI_CORROSION_COL not in ordinary_df.columns:
         ordinary_df[NEED_ANTI_CORROSION_COL] = '否'
     return ordinary_df, anti_corrosion_df

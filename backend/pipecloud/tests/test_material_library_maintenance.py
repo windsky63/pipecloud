@@ -61,7 +61,7 @@ class MaterialAntiCorrosionSplitTests(SimpleTestCase):
 
         ordinary_df, anti_corrosion_df = split_arrival_materials_by_anti_corrosion(arrival_df)
 
-        self.assertIn(ANTI_CORROSION_STATUS_COL, ordinary_df.columns)
+        self.assertNotIn(ANTI_CORROSION_STATUS_COL, ordinary_df.columns)
         self.assertNotIn(UNIT_AREA_COL, ordinary_df.columns)
         self.assertNotIn(ANTI_CORROSION_AREA_COL, ordinary_df.columns)
         self.assertEqual(anti_corrosion_df[ANTI_CORROSION_STATUS_COL].tolist(), ['已完成'])
@@ -100,7 +100,7 @@ class MaterialAntiCorrosionSplitTests(SimpleTestCase):
 
 
 class MaterialLibraryDatabaseSyncTests(SimpleTestCase):
-    def test_uses_model_columns_for_library_display(self):
+    def test_uses_visible_model_columns_for_library_display(self):
         dataframe = pd.DataFrame([{'材料代码': 'M1', '库存数量': 1}])
         source = Mock()
 
@@ -113,13 +113,15 @@ class MaterialLibraryDatabaseSyncTests(SimpleTestCase):
             )
 
         self.assertIs(result, source)
-        self.assertEqual(source.sheet_columns, {
-            'Sheet1': list(
-                prefab_database.model_field_labels(
-                    prefab_database.FittingMaterialRow,
-                ).values()
-            ),
-        })
+        excluded = prefab_database.MATERIAL_LIBRARY_EXCLUDED_COLUMNS['fitting-library']
+        expected_columns = [
+            column
+            for column in prefab_database.model_field_labels(
+                prefab_database.FittingMaterialRow,
+            ).values()
+            if column not in excluded
+        ]
+        self.assertEqual(source.sheet_columns, {'Sheet1': expected_columns})
         source.save.assert_called_once_with(update_fields=['sheet_columns'])
 
     def test_batch_pipe_release_matches_sequential_release_order(self):
@@ -198,6 +200,13 @@ class ArrivalMaterialDashboardTests(TestCase):
                 'weld-library',
             )
         }
+        self.arrival_source = DataSourceFile.objects.create(
+            project=self.project,
+            source_type='arrival',
+            source_key='arrival:test.xlsx',
+            display_name='test.xlsx',
+            relative_path='database://arrival/test.xlsx',
+        )
 
     def test_material_locking_rows_is_empty_before_first_run(self):
         response = self.client.get(
@@ -270,7 +279,7 @@ class ArrivalMaterialDashboardTests(TestCase):
         self.assertEqual(common.material, '公共字段原值')
         self.assertIs(status.material_arrival_status, True)
 
-    def test_actual_quantity_uses_official_libraries_and_caps_rate(self):
+    def test_actual_quantity_uses_arrival_rows_and_caps_rate(self):
         WeldLibraryRow.objects.create(
             project=self.project,
             source_file=self.sources['weld-library'],
@@ -282,29 +291,33 @@ class ArrivalMaterialDashboardTests(TestCase):
             material_code_2='F001',
             quantity_2='5',
         )
-        PipeMaterialRow.objects.create(
+        ArrivalMaterialRow.objects.create(
             project=self.project,
-            source_file=self.sources['pipe-library'],
-            material_code='P001',
-            stock_qty='8',
+            source_file=self.arrival_source,
+            material_code_ncc='P001',
+            actual_arrival_qty='8',
+            unit='根',
         )
-        PipeMaterialRow.objects.create(
+        ArrivalMaterialRow.objects.create(
             project=self.project,
-            source_file=self.sources['anti-pipe-library'],
-            material_code='P001',
-            stock_qty='7',
+            source_file=self.arrival_source,
+            material_code_ncc='P001',
+            shipment_qty='7',
+            unit='根',
         )
-        FittingMaterialRow.objects.create(
+        ArrivalMaterialRow.objects.create(
             project=self.project,
-            source_file=self.sources['fitting-library'],
-            material_code='F001',
-            stock_qty='3',
+            source_file=self.arrival_source,
+            material_code_ncc='F001',
+            actual_arrival_qty='3',
+            unit='个',
         )
-        FittingMaterialRow.objects.create(
+        ArrivalMaterialRow.objects.create(
             project=self.project,
-            source_file=self.sources['anti-fitting-library'],
-            material_code='F001',
-            stock_qty='4',
+            source_file=self.arrival_source,
+            material_code_ncc='F001',
+            actual_arrival_qty='4',
+            unit='个',
         )
         payload = _arrival_material_dashboard_payload(self.project)
 
@@ -336,11 +349,12 @@ class ArrivalMaterialDashboardTests(TestCase):
             material_code_1='P002',
             quantity_1='10',
         )
-        PipeMaterialRow.objects.create(
+        ArrivalMaterialRow.objects.create(
             project=self.project,
-            source_file=self.sources['pipe-library'],
-            material_code='P001',
-            stock_qty='15',
+            source_file=self.arrival_source,
+            material_code_ncc='P001',
+            actual_arrival_qty='15',
+            unit='根',
         )
 
         payload = _arrival_material_dashboard_payload(self.project)
@@ -351,6 +365,40 @@ class ArrivalMaterialDashboardTests(TestCase):
         self.assertEqual(payload['summaries']['pipe']['extraQty'], 5)
         self.assertEqual(payload['summaries']['pipe']['differenceQty'], 10)
         self.assertEqual(payload['summaries']['pipe']['arrivalRate'], 50)
+
+    def test_material_locking_does_not_reduce_arrival_rate(self):
+        WeldLibraryRow.objects.create(
+            project=self.project,
+            source_file=self.sources['weld-library'],
+            library_seq='W-1',
+            material_mark_1='P',
+            material_code_1='P001',
+            quantity_1='10',
+        )
+        ArrivalMaterialRow.objects.create(
+            project=self.project,
+            source_file=self.arrival_source,
+            material_code_ncc='P001',
+            actual_arrival_qty='10',
+            unit='根',
+        )
+        stock = PipeMaterialRow.objects.create(
+            project=self.project,
+            source_file=self.sources['pipe-library'],
+            material_code='P001',
+            stock_qty='10',
+            locked_qty='0',
+        )
+
+        before_locking = _arrival_material_dashboard_payload(self.project)
+        stock.stock_qty = '0'
+        stock.locked_qty = '10'
+        stock.save(update_fields=['stock_qty', 'locked_qty'])
+        after_locking = _arrival_material_dashboard_payload(self.project)
+
+        self.assertEqual(before_locking['summaries']['pipe']['arrivalRate'], 100)
+        self.assertEqual(after_locking['summaries']['pipe']['arrivalRate'], 100)
+        self.assertEqual(after_locking['summaries']['pipe']['actualQty'], 10)
 
     def test_dashboard_groups_arrival_orders_by_date_and_material_type(self):
         source = DataSourceFile.objects.create(
@@ -496,9 +544,110 @@ class ArrivalMaterialDashboardTests(TestCase):
         )
         self.assertEqual(result['locked_count'], 1)
         self.assertIn(ordinary.locked_qty, ['', '0'])
-        self.assertEqual(anti.locked_qty, '10')
+        self.assertIn(anti.locked_qty, ['', '0'])
         self.assertEqual(anti.uncoated_locked_qty, '10')
         self.assertIn(anti.coated_locked_qty, ['', '0'])
+
+    def test_coated_anti_pipe_lock_uses_coated_stock_without_status_field(self):
+        WeldLibraryRow.objects.create(
+            project=self.project,
+            source_file=self.sources['weld-library'],
+            library_seq='W-COATED',
+            material_mark_1='P',
+            material_code_1='P-COATED',
+            material_paint_1='PA1',
+            quantity_1='10',
+        )
+        PipeMaterialRow.objects.create(
+            project=self.project,
+            source_file=self.sources['anti-pipe-library'],
+            pipe_no='ANTI-COATED-1',
+            material_code='P-COATED',
+            stock_qty='10',
+            anti_corrosion_stock_qty='10',
+            anti_corrosion_status='',
+        )
+
+        result = prefab_database.match_and_lock_materials_from_database(self.project)
+
+        pipe = PipeMaterialRow.objects.get(
+            project=self.project,
+            source_file__source_key='anti-pipe-library',
+            pipe_no='ANTI-COATED-1',
+        )
+        status = WeldStatusRow.objects.get(project=self.project, library_seq='W-COATED')
+        self.assertEqual(result['locked_count'], 1)
+        self.assertEqual(pipe.anti_corrosion_status, '')
+        self.assertEqual(pipe.anti_corrosion_stock_qty, '0')
+        self.assertEqual(pipe.coated_locked_qty, '10')
+        self.assertIn(pipe.uncoated_locked_qty, ['', '0'])
+        self.assertIs(status.material_anti_corrosion_status, True)
+
+    def test_releasing_coated_anti_pipe_lock_restores_coated_stock(self):
+        WeldLibraryRow.objects.create(
+            project=self.project,
+            source_file=self.sources['weld-library'],
+            library_seq='W-RELEASE-COATED',
+            material_mark_1='P',
+            material_code_1='P-RELEASE-COATED',
+            material_paint_1='PA1',
+            quantity_1='10',
+        )
+        PipeMaterialRow.objects.create(
+            project=self.project,
+            source_file=self.sources['anti-pipe-library'],
+            pipe_no='ANTI-RELEASE-1',
+            material_code='P-RELEASE-COATED',
+            stock_qty='10',
+            anti_corrosion_stock_qty='10',
+        )
+        prefab_database.match_and_lock_materials_from_database(self.project)
+
+        result = prefab_database.release_material_locks_from_database(
+            self.project,
+            ['W-RELEASE-COATED'],
+        )
+
+        pipe = PipeMaterialRow.objects.get(
+            project=self.project,
+            source_file__source_key='anti-pipe-library',
+            pipe_no='ANTI-RELEASE-1',
+        )
+        self.assertEqual(result['released_count'], 1)
+        self.assertEqual(pipe.anti_corrosion_stock_qty, '10')
+        self.assertIn(pipe.locked_qty, ['', '0'])
+        self.assertIn(pipe.coated_locked_qty, ['', '0'])
+        self.assertIn(pipe.uncoated_locked_qty, ['', '0'])
+
+    def test_missing_anti_corrosion_fitting_is_reported_as_shortage(self):
+        missing_code = 'F150S40C15020SHT3406NBT47008'
+        WeldLibraryRow.objects.create(
+            project=self.project,
+            source_file=self.sources['weld-library'],
+            library_seq='W-MISSING-ANTI-FITTING',
+            material_mark_1='E',
+            material_code_1=missing_code,
+            material_paint_1='PA1',
+            quantity_1='1',
+        )
+        FittingMaterialRow.objects.create(
+            project=self.project,
+            source_file=self.sources['fitting-library'],
+            material_code='F-UNRELATED',
+            stock_qty='1',
+        )
+
+        result = prefab_database.match_and_lock_materials_from_database(self.project)
+
+        self.assertEqual(result['locked_count'], 0)
+        self.assertEqual(result['rejected_count'], 1)
+        self.assertEqual(result['pending_count'], 1)
+        rejected = WeldPreScheduleRow.objects.get(
+            project=self.project,
+            source_file__source_key='material-locking',
+            library_seq='W-MISSING-ANTI-FITTING',
+        )
+        self.assertIn('库存不足', rejected.pre_schedule_reason)
 
     def test_rerun_material_locking_releases_reusable_previous_locks(self):
         for index, seq in enumerate(('W-1', 'W-2'), start=1):

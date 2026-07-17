@@ -45,8 +45,7 @@ const saveMessage = ref('')
 const selectedDate = ref('')
 const calendarMonth = ref('')
 const ganttDate = ref('')
-const ganttMonthMenu = ref(false)
-const ganttDateMenu = ref(false)
+const planPeriodMenu = ref(false)
 const selectedPlan = ref(null)
 const selectedFile = ref(null)
 const selectedSheet = ref('')
@@ -317,28 +316,46 @@ function calendarPlanColor(name) {
 
 function planTooltipRows(plan) {
   const summary = plan?.summary || {}
+  const firstDefined = (...values) => values.find((value) => value !== undefined && value !== null && value !== '')
+  const weldCount = firstDefined(summary.weldCount, summary.plannedWeldCount, summary.planned_weld_count, summary['焊口数量'])
+  const diameterTotal = firstDefined(summary.diameterTotal, summary.diameter_total, summary['直径总和'], summary['合计寸径'])
+  const commissionArea = firstDefined(
+    summary.commissionArea,
+    summary.totalArea,
+    summary.commission_area,
+    summary['委托面积'],
+    summary['防腐面积'],
+  )
   const rows = [
     { label: t('planDate'), value: compactDateToIso(plan?.planDate) || plan?.planDate || '-' },
   ]
   const orderNumbers = summary.orderNumbers || []
   if (orderNumbers.length) {
     rows.push({
-      label: plan?.planKey === 'cutting' ? t('cuttingOrderNumbers') : t('weldingOrderNumbers'),
-      value: orderNumbers.join('、'),
+      label: plan?.planKey === 'anti-corrosion'
+        ? t('antiCorrosionCommissionNo')
+        : plan?.planKey === 'cutting'
+          ? t('cuttingOrderNumbers')
+          : t('weldingOrderNumbers'),
+      value: orderNumbers.join('\n'),
     })
   }
   const relatedOrderNumbers = summary.relatedOrderNumbers || []
   if (plan?.planKey === 'cutting' && relatedOrderNumbers.length) {
-    rows.push({ label: t('relatedWeldingOrderNumbers'), value: relatedOrderNumbers.join('、') })
+    rows.push({ label: t('relatedWeldingOrderNumbers'), value: relatedOrderNumbers.join('\n') })
   }
-  if (summary.weldCount !== undefined) {
-    rows.push({ label: t('weldCount'), value: summary.weldCount })
+  const orderCount = firstDefined(summary.orderCount, orderNumbers.length)
+  if (['cutting', 'welding'].includes(plan?.planKey) && orderCount !== undefined) {
+    rows.push({ label: t('planOrderCount'), value: orderCount })
   }
-  if (plan?.planKey === 'anti-corrosion' && summary.commissionArea !== undefined) {
-    rows.push({ label: t('commissionCoatingArea'), value: `${summary.commissionArea} ${t('squareMeterUnit')}` })
+  if (weldCount !== undefined) {
+    rows.push({ label: t('weldCount'), value: weldCount })
   }
-  if (summary.diameterTotal !== undefined) {
-    rows.push({ label: t('planDiameterTotal'), value: summary.diameterTotal })
+  if (plan?.planKey === 'anti-corrosion' && commissionArea !== undefined) {
+    rows.push({ label: t('commissionCoatingArea'), value: `${commissionArea} ${t('squareMeterUnit')}` })
+  }
+  if (diameterTotal !== undefined) {
+    rows.push({ label: t('planDiameterTotal'), value: diameterTotal })
   }
   return rows
 }
@@ -435,9 +452,8 @@ function openCalendarPlan(date, plan) {
   })
 }
 
-function setCalendarMonthFromTimeline(timeline, fallbackDate = selectedDate.value) {
-  const firstTimelineDate = (timeline || []).find((day) => parseCompactDate(day.date))?.date
-  calendarMonth.value = compactDateToIso(firstTimelineDate || fallbackDate) || formatCalendarMonth(new Date())
+function setCalendarMonthToCurrent() {
+  calendarMonth.value = formatCalendarMonth(new Date())
 }
 
 function moveCalendarMonth(offset) {
@@ -452,30 +468,18 @@ function moveGanttDate(offset) {
   ganttDate.value = formatDateIso(current)
 }
 
-function normalizePickerDate(value) {
+function selectPlanTableDate(value) {
   const candidate = Array.isArray(value) ? value[0] : value
-  if (candidate instanceof Date) return formatDateIso(candidate)
-  const text = String(candidate || '').slice(0, 10)
-  return parseIsoDate(text) ? text : ''
-}
-
-function selectGanttMonth(value) {
-  const month = String(value || '').slice(0, 7)
-  if (!/^\d{4}-\d{2}$/.test(month)) return
-  const current = parseIsoDate(ganttModelValue.value) || new Date()
-  const target = parseIsoDate(`${month}-01`)
-  if (!target) return
-  const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate()
-  target.setDate(Math.min(current.getDate(), lastDay))
-  ganttDate.value = formatDateIso(target)
-  ganttMonthMenu.value = false
-}
-
-function selectGanttDate(value) {
-  const selected = normalizePickerDate(value)
-  if (!selected) return
-  ganttDate.value = selected
-  ganttDateMenu.value = false
+  const selected = candidate instanceof Date
+    ? formatDateIso(candidate)
+    : String(candidate || '').slice(0, 10)
+  if (!parseIsoDate(selected)) return
+  if (planTableViewTab.value === 'gantt') {
+    ganttDate.value = selected
+  } else {
+    calendarMonth.value = selected
+  }
+  planPeriodMenu.value = false
 }
 
 function movePlanTablePeriod(offset) {
@@ -846,7 +850,7 @@ async function loadPlan(date = selectedDate.value) {
     planData.value = payload
     selectedDate.value = payload.selectedDate || ''
     if (isGanttView.value && !calendarMonth.value) {
-      setCalendarMonthFromTimeline(payload.timeline || [], payload.selectedDate)
+      setCalendarMonthToCurrent()
     }
     resetPlanSelection()
     if (!isGanttView.value) {
@@ -1544,46 +1548,29 @@ onBeforeUnmount(() => {
 
     <div v-else class="calendar-plan">
       <div class="calendar-plan-head">
-        <div class="calendar-plan-nav">
-          <v-btn icon="mdi-chevron-left" variant="text" size="small" @click="movePlanTablePeriod(-1)" />
-          <strong>{{ planTablePeriodTitle }}</strong>
-          <v-btn icon="mdi-chevron-right" variant="text" size="small" @click="movePlanTablePeriod(1)" />
-        </div>
         <v-tabs v-model="planTableViewTab" class="plan-table-tabs" color="primary" density="compact">
           <v-tab value="calendar">{{ t('dateTable') }}</v-tab>
           <v-tab value="gantt">{{ t('ganttChart') }}</v-tab>
         </v-tabs>
-        <div v-if="planTableViewTab === 'gantt'" class="gantt-period-controls">
-          <v-menu v-model="ganttMonthMenu" :close-on-content-click="false">
-            <template #activator="{ props }">
-              <v-btn v-bind="props" prepend-icon="mdi-calendar-month-outline" size="small" variant="outlined">
-                {{ t('ganttMonth') }}：{{ ganttModelValue.slice(0, 7) }}
-              </v-btn>
-            </template>
-            <v-card class="pa-3" min-width="280">
-              <v-text-field
-                :model-value="ganttModelValue.slice(0, 7)"
-                :label="t('ganttMonth')"
-                type="month"
-                density="compact"
-                hide-details
-                @update:model-value="selectGanttMonth"
+        <div class="calendar-plan-toolbar">
+          <div class="calendar-plan-nav">
+            <v-btn icon="mdi-chevron-left" variant="text" size="small" @click="movePlanTablePeriod(-1)" />
+            <v-menu v-model="planPeriodMenu" :close-on-content-click="false">
+              <template #activator="{ props }">
+                <strong v-bind="props" class="plan-period-picker">{{ planTablePeriodTitle }}</strong>
+              </template>
+              <v-date-picker
+                :model-value="planTableViewTab === 'gantt' ? ganttModelValue : calendarModelValue"
+                @update:model-value="selectPlanTableDate"
               />
-            </v-card>
-          </v-menu>
-          <v-menu v-model="ganttDateMenu" :close-on-content-click="false">
-            <template #activator="{ props }">
-              <v-btn v-bind="props" prepend-icon="mdi-calendar-today-outline" size="small" variant="outlined">
-                {{ t('ganttDate') }}：{{ ganttModelValue }}
-              </v-btn>
-            </template>
-            <v-date-picker :model-value="ganttModelValue" @update:model-value="selectGanttDate" />
-          </v-menu>
-        </div>
-        <div class="calendar-plan-legend">
-          <v-chip color="success" variant="flat" size="small">防腐</v-chip>
-          <v-chip color="primary" variant="flat" size="small">下料</v-chip>
-          <v-chip color="warning" variant="flat" size="small">焊接</v-chip>
+            </v-menu>
+            <v-btn icon="mdi-chevron-right" variant="text" size="small" @click="movePlanTablePeriod(1)" />
+          </div>
+          <div class="calendar-plan-legend">
+            <v-chip color="success" variant="flat" size="small">防腐</v-chip>
+            <v-chip color="primary" variant="flat" size="small">下料</v-chip>
+            <v-chip color="warning" variant="flat" size="small">焊接</v-chip>
+          </div>
         </div>
       </div>
 
@@ -1621,6 +1608,7 @@ onBeforeUnmount(() => {
               <v-tooltip
                 v-for="plan in dayPlans(day.iso)"
                 :key="`${day.iso}-${plan.id}`"
+                content-class="plan-chip-tooltip-overlay"
                 location="top"
                 open-delay="120"
                 max-width="420"
@@ -1687,6 +1675,7 @@ onBeforeUnmount(() => {
                 <v-tooltip
                   v-for="plan in row.items"
                   :key="plan.key"
+                  content-class="plan-chip-tooltip-overlay"
                   location="top"
                   open-delay="120"
                   max-width="420"

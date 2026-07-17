@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 from django.test import TestCase
 
-from pipecloud.models import MasterScheduleRow, PlanRecord, Project
+from pipecloud.models import AntiCorrosionMaterialOrderRow, DataSourceFile, MasterScheduleRow, PlanRecord, Project
 from pipecloud.services import prefab_database
 from pipecloud.services.prefab_database import (
     _anti_corrosion_plan_summary,
@@ -16,6 +16,41 @@ from pipecloud.views.common import _anti_corrosion_dashboard_payload
 
 
 class AntiCorrosionDashboardTests(TestCase):
+    def test_dashboard_area_uses_material_order_commission_area(self):
+        project = Project.objects.create(project_name='防腐面积口径测试项目')
+        source = DataSourceFile.objects.create(
+            project=project,
+            source_type='plan',
+            source_key='anti-corrosion:20260709:防腐材料单.xlsx',
+            display_name='防腐材料单.xlsx',
+            relative_path='database://plan/anti-corrosion/20260709/防腐材料单.xlsx',
+        )
+        MasterScheduleRow.objects.create(
+            project=project,
+            library_seq='W1',
+            anti_corrosion_order_no='FFWT-20260709-001',
+            anti_corrosion_date='20260709',
+            stage_payload={'anti-corrosion': {
+                '防腐委托单号': 'FFWT-20260709-001',
+                '委托日期': '20260709',
+                '防腐面积': '999',
+            }},
+        )
+        for index, area in enumerate(('30.25', '20.5'), start=1):
+            AntiCorrosionMaterialOrderRow.objects.create(
+                project=project,
+                source_file=source,
+                row_index=index,
+                anti_corrosion_order_no='FFWT-20260709-001',
+                commission_date='20260709',
+                commission_area=area,
+            )
+
+        payload = _anti_corrosion_dashboard_payload(project, Path('unused'))
+
+        self.assertEqual(payload['totalArea'], 50.75)
+        self.assertEqual(payload['rows'][0]['totalArea'], 50.75)
+
     def test_dashboard_counts_commission_plan_rows(self):
         project = Project.objects.create(project_name='防腐看板测试项目')
 
@@ -152,7 +187,7 @@ class AntiCorrosionDashboardTests(TestCase):
         self.assertEqual(payload['commissionCount'], 0)
         self.assertEqual(payload['segmentCount'], 0)
 
-    def test_material_order_skips_pipe_already_in_anti_corrosion_library(self):
+    def test_material_order_includes_uncoated_pipe_from_anti_corrosion_library(self):
         pre_df = pd.DataFrame([
             {
                 '预排产序号': 1,
@@ -229,10 +264,10 @@ class AntiCorrosionDashboardTests(TestCase):
         self.assertEqual(missing_count, 0)
         self.assertNotIn('管子序号', material_df.columns)
         self.assertNotIn('管子唯一编号', material_df.columns)
-        self.assertEqual(material_df['匹配库存标识'].tolist(), ['PIPE-002'])
-        self.assertEqual(material_df['委托数量'].tolist(), ['12'])
-        self.assertEqual(weld_df['库序号'].tolist(), ['W2'])
-        self.assertEqual(weld_df['防腐委托单号'].tolist(), ['FFWT-20260709-001'])
+        self.assertEqual(material_df['匹配库存标识'].tolist(), ['PIPE-001', 'PIPE-002'])
+        self.assertEqual(material_df['委托数量'].tolist(), ['2', '12'])
+        self.assertEqual(weld_df['库序号'].tolist(), ['W1', 'W2'])
+        self.assertEqual(weld_df['防腐委托单号'].tolist(), ['FFWT-20260709-001', 'FFWT-20260709-001'])
 
     def test_material_order_deduplicates_repeated_material_unique_code(self):
         pre_df = pd.DataFrame([

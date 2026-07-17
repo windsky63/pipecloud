@@ -96,8 +96,6 @@ const holidayDatesMenu = ref(false)
       </div>
     </div>
 
-    <v-alert v-if="weldingPreScheduleError" :text="weldingPreScheduleError" type="error" density="compact" class="status-alert" />
-
     <div class="library-toolbar">
       <v-tabs
         :model-value="weldingPreScheduleActiveSheet"
@@ -148,8 +146,6 @@ const holidayDatesMenu = ref(false)
       </div>
     </div>
 
-    <v-alert v-if="weldingScheduleError" :text="weldingScheduleError" type="error" density="compact" class="status-alert" />
-    <v-alert v-if="weldingScheduleMessage" :text="weldingScheduleMessage" type="success" density="compact" class="status-alert" />
     <v-expansion-panels v-model="configPanels" class="welding-schedule-config" variant="accordion">
       <v-expansion-panel value="config">
         <v-expansion-panel-title>

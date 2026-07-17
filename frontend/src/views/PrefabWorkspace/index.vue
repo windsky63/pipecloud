@@ -15,7 +15,9 @@ import {
   fetchMaterialLockingRows,
   releaseMaterialLockingRows,
   fetchInitializationStats,
+  beaconDiscardStagedPlans,
   commitStagedPlan,
+  discardStagedPlans,
   fetchStagedPlanFileRows,
   generateFutureSchedule,
   fetchTodayArrival,
@@ -36,6 +38,7 @@ import { selectedProjectId, selectedProjectParams } from '../../services/project
 import { localizedModuleTitle } from '../../services/navigationLabels'
 import { getBasicVTableTheme, getVTablePalette, vTableThemeKey } from '../../services/vtableTheme'
 import { attachVTableColumnSelectionCount, createVTableSelectionLayout } from '../../services/vtableSelectionCount'
+import { publishUiMessage } from '../../services/uiMessages'
 import {
   errorMessage,
   beaconCancelRunningInitialization,
@@ -336,6 +339,38 @@ const antiCorrosionPendingPreview = ref({
 const antiCorrosionSelectedRows = ref([])
 const antiCorrosionPreScheduleLoading = ref(false)
 const antiCorrosionPreScheduleError = ref('')
+
+const workspaceMessageSources = [
+  ['workspace', 'error', errorMessage],
+  ['initialization', 'error', initializationError],
+  ['arrival', 'error', arrivalError],
+  ['arrival-dashboard', 'error', arrivalDashboardError],
+  ['anti-corrosion-dashboard', 'error', antiCorrosionDashboardError],
+  ['cutting-dashboard', 'error', cuttingDashboardError],
+  ['welding-dashboard', 'error', weldingDashboardError],
+  ['material-locking-selection', 'error', materialLockingSelectionError],
+  ['future-selection', 'error', futureScheduleSelectionError],
+  ['cutting-visualization', 'error', cuttingError],
+  ['cutting-pre-schedule', 'error', preScheduleError],
+  ['anti-corrosion-pre-schedule', 'error', antiCorrosionPreScheduleError],
+  ['welding-pre-schedule', 'error', weldingPreScheduleError],
+  ['anti-corrosion-commission', 'error', antiCorrosionCommissionError],
+  ['anti-corrosion-preview', 'error', antiCorrosionPendingPreviewError],
+  ['cutting-schedule', 'error', cuttingScheduleError],
+  ['cutting-preview', 'error', cuttingPendingPreviewError],
+  ['welding-schedule', 'error', weldingScheduleError],
+  ['welding-preview', 'error', weldingPendingPreviewError],
+  ['future-schedule', 'error', futureScheduleError],
+  ['future-preview', 'error', futurePendingPreviewError],
+  ['anti-corrosion-commission-success', 'success', antiCorrosionCommissionMessage],
+  ['cutting-schedule-success', 'success', cuttingScheduleMessage],
+  ['welding-schedule-success', 'success', weldingScheduleMessage],
+  ['future-schedule-success', 'success', futureScheduleMessage],
+]
+
+workspaceMessageSources.forEach(([key, type, source]) => {
+  watch(source, (message) => publishUiMessage(key, type, message), { immediate: true })
+})
 const antiCorrosionPreScheduleActiveSheet = ref('')
 const antiCorrosionPreScheduleData = ref({
   path: '',
@@ -1908,6 +1943,10 @@ async function executeAction(actionKey) {
       return
     }
   }
+  if (actionKey === 'anti-corrosion-schedule' && !String(antiCorrosionPreScheduleData.value.path || '').trim()) {
+    antiCorrosionCommissionError.value = t('antiCorrosionCommissionNeedsPreSchedule')
+    return
+  }
   if (actionKey === 'anti-corrosion-schedule' && antiCorrosionCommissionOptions.value.selectionMode === 'manual') {
     if (!antiCorrosionSelectedRows.value.length) {
       antiCorrosionCommissionError.value = t('manualAntiCorrosionCommissionNeedsSelection')
@@ -1922,18 +1961,21 @@ async function executeAction(actionKey) {
   }
   const options = actionOptionsPayload(actionKey)
   if (actionKey === 'auto-weld-schedule') {
+    await discardPendingStage(weldingPendingStage)
     weldingScheduleError.value = ''
     weldingScheduleMessage.value = ''
     weldingPendingStage.value = null
     resetWeldingPendingPreview()
   }
   if (actionKey === 'cutting-schedule') {
+    await discardPendingStage(cuttingPendingStage)
     cuttingScheduleError.value = ''
     cuttingScheduleMessage.value = ''
     cuttingPendingStage.value = null
     resetCuttingPendingPreview()
   }
   if (actionKey === 'anti-corrosion-schedule') {
+    await discardPendingStage(antiCorrosionPendingStage)
     antiCorrosionCommissionError.value = ''
     antiCorrosionCommissionMessage.value = ''
     antiCorrosionPendingStage.value = null
@@ -1947,6 +1989,7 @@ async function executeAction(actionKey) {
       const files = buildStagedFileRows(payload.stagedFiles || [])
       weldingPendingStage.value = {
         token: payload.stageToken,
+        projectId: selectedProjectId.value,
         files,
       }
       weldingScheduleMessage.value = t('plansStagedForSave', { count: payload.stagedFiles?.length || 0 })
@@ -1964,6 +2007,7 @@ async function executeAction(actionKey) {
       const files = buildStagedFileRows(payload.stagedFiles || [])
       cuttingPendingStage.value = {
         token: payload.stageToken,
+        projectId: selectedProjectId.value,
         files,
       }
       cuttingScheduleMessage.value = t('cuttingScheduleStagedForSave', { count: files.length })
@@ -1978,6 +2022,7 @@ async function executeAction(actionKey) {
       const files = buildStagedFileRows(payload.stagedFiles || [])
       antiCorrosionPendingStage.value = {
         token: payload.stageToken,
+        projectId: selectedProjectId.value,
         files,
       }
       antiCorrosionCommissionMessage.value = t('commissionStagedForSave', { count: files.length })
@@ -2030,6 +2075,7 @@ async function resolveInitializationLeave(shouldLeave) {
 }
 
 function handleInitializationBeforeUnload(event) {
+  beaconDiscardAllPendingStages()
   if (runningKey.value !== 'prefab-weld-library') return
   event.preventDefault()
   event.returnValue = t('initializationLeavePrompt')
@@ -2320,6 +2366,7 @@ async function executeFutureSchedule() {
   futureScheduleLoading.value = true
   futureScheduleError.value = ''
   futureScheduleMessage.value = ''
+  await discardPendingStage(futurePendingStage)
   resetFuturePendingPreview()
   try {
     const payload = await generateFutureSchedule(selectedProjectParams(), futureScheduleOptionsPayload())
@@ -2333,6 +2380,7 @@ async function executeFutureSchedule() {
       const stagedFiles = buildStagedFileRows(payload.stagedFiles || [])
       futurePendingStage.value = {
         token: payload.stageToken,
+        projectId: selectedProjectId.value,
         files: stagedFiles,
       }
       futureScheduleMessage.value = t('plansStagedForSave', { count: payload.stagedFiles?.length || 0 })
@@ -2367,8 +2415,8 @@ async function commitPendingStage(stageRef, setMessage, setError, savingRef) {
       })
       : t('stagedPlansSaved', { count: payload.savedFiles?.length || 0 })
     setMessage(warningText)
-    await loadSummary()
-    await Promise.all([
+    savingRef.value = false
+    void Promise.all([
       loadAntiCorrosionDashboard(),
       loadCuttingDashboard(),
       loadWeldingDashboard(),
@@ -2492,7 +2540,54 @@ const weldingPreScheduleTableColumns = computed(() => {
 const antiCorrosionCommissionPreviewColumns = computed(() => {
   return buildDynamicColumns(antiCorrosionPendingPreview.value.columns)
 })
-watch(selectedProjectId, () => scheduleWorkspaceLoad({ includeSummary: true }))
+function pendingStageRefs() {
+  return [
+    antiCorrosionPendingStage,
+    cuttingPendingStage,
+    weldingPendingStage,
+    futurePendingStage,
+  ]
+}
+
+function stageProjectParams(stage) {
+  const params = new URLSearchParams()
+  const projectId = stage?.projectId || selectedProjectId.value
+  if (projectId) params.set('project_id', String(projectId))
+  return params
+}
+
+async function discardPendingStage(stageRef) {
+  const stage = stageRef.value
+  if (!stage?.token) return
+  stageRef.value = null
+  try {
+    await discardStagedPlans(stageProjectParams(stage), [stage.token])
+  } catch {
+    // The backend TTL cleanup remains the fallback when navigation happens
+    // during a network interruption.
+  }
+}
+
+async function discardAllPendingStages() {
+  await Promise.allSettled(pendingStageRefs().map((stageRef) => discardPendingStage(stageRef)))
+}
+
+function beaconDiscardAllPendingStages() {
+  const groups = new Map()
+  pendingStageRefs().forEach((stageRef) => {
+    const stage = stageRef.value
+    if (!stage?.token) return
+    const params = stageProjectParams(stage).toString()
+    if (!groups.has(params)) groups.set(params, [])
+    groups.get(params).push(stage.token)
+  })
+  groups.forEach((tokens, params) => beaconDiscardStagedPlans(params, tokens))
+}
+
+watch(selectedProjectId, async () => {
+  await discardAllPendingStages()
+  scheduleWorkspaceLoad({ includeSummary: true })
+})
 watch(vTableThemeKey, async () => {
   if (cuttingVTable) {
     await cuttingVTable.updateOption(cuttingVTableOptions(), {
@@ -2507,10 +2602,15 @@ onMounted(async () => {
   await runWorkspaceLoad({ includeSummary: !summary.value.modules.length })
 })
 
-onBeforeRouteLeave(() => confirmInitializationLeave())
+onBeforeRouteLeave(async () => {
+  const shouldLeave = await confirmInitializationLeave()
+  if (shouldLeave) await discardAllPendingStages()
+  return shouldLeave
+})
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', handleInitializationBeforeUnload)
+  beaconDiscardAllPendingStages()
   cancelWorkspaceLoad()
   releaseCuttingVTable()
   if (resizeObserver) {
@@ -2526,8 +2626,6 @@ onBeforeUnmount(() => {
       <v-btn color="secondary" variant="tonal" :loading="loading || cuttingLoading || weldingDashboardLoading" prepend-icon="mdi-refresh" @click="refreshWorkspace">{{ t('refreshStatus') }}</v-btn>
     </template>
   </PrefabWorkspaceHeader>
-
-  <v-alert v-if="errorMessage" :text="errorMessage" type="error" density="compact" class="status-alert" />
 
   <InitializationModule
     v-if="activeModule && showInitializationStats"
@@ -2638,8 +2736,6 @@ onBeforeUnmount(() => {
     :schedule-calendar-end="scheduleCalendarEnd"
     :manual-date-list="antiCorrosionManualDateList"
     :holiday-calendar-date-list="antiCorrosionHolidayCalendarDateList"
-    :commission-message="antiCorrosionCommissionMessage"
-    :commission-error="antiCorrosionCommissionError"
     :commission-pending-stage="antiCorrosionPendingStage"
     :commission-stage-saving="antiCorrosionStageSaving"
     :commission-preview-loading="antiCorrosionPendingPreviewLoading"
@@ -2648,7 +2744,6 @@ onBeforeUnmount(() => {
     :commission-preview-columns="antiCorrosionCommissionPreviewColumns"
     :overview-actions="antiCorrosionOverviewActions"
     :pre-schedule-loading="antiCorrosionPreScheduleLoading"
-    :pre-schedule-error="antiCorrosionPreScheduleError"
     :pre-schedule-data="antiCorrosionPreScheduleData"
     :pre-schedule-active-sheet="antiCorrosionPreScheduleActiveSheet"
     :pre-schedule-table-columns="antiCorrosionPreScheduleTableColumns"

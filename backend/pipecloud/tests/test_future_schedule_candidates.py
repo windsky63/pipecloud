@@ -45,6 +45,7 @@ class FutureScheduleCandidateTests(TestCase):
             '库序号': 'READY',
             '寸径': 10,
             '材料防腐状态': False,
+            '材料下料状态': False,
             '材料焊接状态': False,
             '_run_picked': False,
         }])
@@ -55,8 +56,13 @@ class FutureScheduleCandidateTests(TestCase):
         cutting_files = [{'plan_key': 'cutting', 'file_name': '下料排产单.xlsx'}]
         welding_files = [{'plan_key': 'welding', 'file_name': '管段焊口表.xlsx'}]
 
+        extraction_targets = []
+        cutting_stage_states = []
+        welding_stage_states = []
+
         def extract_once(work_df, **kwargs):
             self.assertFalse(work_df['材料防腐状态'].any())
+            extraction_targets.append(kwargs['target_diameter'])
             work_df.loc[:, '_run_picked'] = True
             return [{'info': {'抽取次数': 1}, 'data': work_df.copy()}]
 
@@ -74,11 +80,24 @@ class FutureScheduleCandidateTests(TestCase):
                 return_value=(value for value in [date(2026, 7, 20)]),
             ),
             patch('pipecloud.services.prefab_database.match_anti_corrosion_pre_schedule_from_database', return_value={'_result_df': candidate_df.copy()}),
-            patch('pipecloud.services.prefab_database.generate_anti_corrosion_schedule_from_database', return_value={'_output_files': anti_files.copy()}),
+            patch(
+                'pipecloud.services.prefab_database.generate_anti_corrosion_schedule_from_database',
+                return_value={'_output_files': anti_files.copy()},
+            ) as generate_anti,
             patch('pipecloud.services.prefab_database.extract_welds_multiple_times', side_effect=extract_once),
             patch('pipecloud.services.prefab_database.future_schedule._append_master_rows', side_effect=append_master),
-            patch('pipecloud.services.prefab_database._cutting_primary_output_files', return_value=cutting_files.copy()),
-            patch('pipecloud.services.prefab_database._welding_primary_output_files', return_value=welding_files.copy()),
+            patch(
+                'pipecloud.services.prefab_database._cutting_primary_output_files',
+                side_effect=lambda *args: (
+                    cutting_stage_states.append(args[2][0]['data'].copy()) or cutting_files.copy()
+                ),
+            ),
+            patch(
+                'pipecloud.services.prefab_database._welding_primary_output_files',
+                side_effect=lambda *args, **kwargs: (
+                    welding_stage_states.append(args[1][0]['data'].copy()) or welding_files.copy()
+                ),
+            ),
         ):
             result = generate_future_schedule_from_database(
                 self.project,
@@ -95,6 +114,11 @@ class FutureScheduleCandidateTests(TestCase):
             ['防腐材料单.xlsx', '防腐焊口单.xlsx'],
         )
         self.assertFalse(candidate_df['材料防腐状态'].all())
+        self.assertEqual(generate_anti.call_args.kwargs['commission_area'], 1500)
+        self.assertEqual(extraction_targets, [260])
+        self.assertFalse(cutting_stage_states[0]['材料防腐状态'].any())
+        self.assertFalse(welding_stage_states[0]['材料防腐状态'].any())
+        self.assertFalse(welding_stage_states[0]['材料下料状态'].any())
 
     def test_auto_dates_are_consumed_lazily_without_max_days(self):
         candidate_df = pd.DataFrame([{
