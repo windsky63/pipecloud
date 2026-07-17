@@ -1,3 +1,6 @@
+@import 'vuetify/styles' layer(vuetify);
+@import '@mdi/font/css/materialdesignicons.css' layer(vendor-icons);
+
 :root {
   --nav: #23324a;
   --nav-light: #2f415f;
@@ -422,7 +425,7 @@ html[data-theme="dark"] .v-overlay-container .v-list-item[aria-selected="true"] 
   color: #bfdbfe;
 }
 
-.section-head span {
+.v-application .section-head span {
   margin: 0;
   color: var(--muted);
 }
@@ -446,20 +449,18 @@ html[data-theme="dark"] .v-overlay-container .v-list-item[aria-selected="true"] 
   line-height: 1.5;
 }
 
-.workflow,
-.module-panel {
+.v-application .module-panel {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
 }
 
-.workflow,
-.module-panel {
+.v-application .module-panel {
   margin-bottom: 18px;
   padding: 16px;
 }
 
-.section-head {
+.v-application .section-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -467,25 +468,19 @@ html[data-theme="dark"] .v-overlay-container .v-list-item[aria-selected="true"] 
   margin-bottom: 14px;
 }
 
-.section-head h2 {
+.v-application .section-head h2 {
   margin: 0;
   font-size: 18px;
+  line-height: 1.3;
 }
 
-.section-title-with-tip {
+.v-application .section-title-with-tip {
   display: flex;
   align-items: center;
   gap: 4px;
   min-width: 0;
 }
 
-.workflow-steps {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(130px, 1fr));
-  gap: 10px;
-}
-
-.workflow-steps .v-btn,
 .module-actions .v-btn {
   height: 38px;
   margin-left: 0;
@@ -495,31 +490,32 @@ html[data-theme="dark"] .v-overlay-container .v-list-item[aria-selected="true"] 
   min-height: 640px;
 }
 
-.home-project-layout {
+.v-application .home-project-layout {
   display: grid;
-  grid-template-columns: minmax(440px, .45fr) minmax(560px, .55fr);
+  grid-template-columns: minmax(0, 45fr) minmax(0, 55fr);
   gap: 14px;
   align-items: stretch;
+  width: 100%;
 }
 
-.home-project-layout.is-single {
+.v-application .home-project-layout.is-single {
   grid-template-columns: minmax(0, 1fr);
 }
 
-.home-project-layout > .project-panel {
+.v-application .home-project-layout > .project-panel {
   display: flex;
   flex-direction: column;
   height: 720px;
   min-height: 0;
 }
 
-.home-project-layout > .project-panel.weld-panel.is-empty {
+.v-application .home-project-layout > .project-panel.weld-panel.is-empty {
   height: auto;
   min-height: 0;
   align-self: start;
 }
 
-.home-project-layout > .project-panel.weld-panel.is-loading.is-empty {
+.v-application .home-project-layout > .project-panel.weld-panel.is-loading.is-empty {
   height: auto;
   min-height: 0;
 }
@@ -2205,9 +2201,6 @@ html[data-theme="dark"] .plan-edit-empty {
     min-width: 0;
   }
 
-  .workflow-steps {
-    grid-template-columns: repeat(3, minmax(180px, 1fr));
-  }
 }
 
 @media (max-width: 720px) {

@@ -35,7 +35,7 @@ const runLogMeta = computed(() => {
   return t('runLogMeta', { name: lastRun.value.name, code: lastRun.value.returnCode })
 })
 watch(uiTheme, (themeName) => {
-  vuetifyTheme.global.name.value = themeName
+  vuetifyTheme.change(themeName)
   document.documentElement.dataset.theme = themeName === 'pipecloudDark'
     ? 'dark'
     : themeName === 'pipecloudGray'
@@ -235,9 +235,14 @@ onMounted(() => {
 
 .run-log-message-list {
   display: grid;
+  min-height: 0;
   gap: 7px;
   padding: 8px;
+  align-content: start;
+  grid-auto-rows: max-content;
+  overflow-x: hidden;
   overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .run-log-message {
@@ -259,7 +264,9 @@ onMounted(() => {
 .run-log-message.is-info { border-left-color: #2563eb; }
 
 .run-log-message span {
+  min-width: 0;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .run-log-message time {

@@ -15,7 +15,7 @@ python manage.py runserver
 
 操作系统或部署平台注入的环境变量优先于 `.env`。数据库密码和生产环境的 `DJANGO_SECRET_KEY` 不应提交到仓库；当 `DJANGO_DEBUG=false` 时必须显式配置安全密钥。配置读取集中在 `backend/env.py`，布尔值、端口和任务执行时间会在启动阶段校验。
 
-定时任务应作为独立常驻进程运行：
+开发环境执行 `runserver` 时会自动启动定时任务子进程，并在后端停止或自动重载时同步关闭。可通过 `PIPECLOUD_SCHEDULER_AUTOSTART_WITH_RUNSERVER=false` 关闭自动启动。生产环境使用 WSGI/ASGI 服务时，仍应由进程管理器单独运行：
 
 ```bash
 python manage.py run_scheduler
@@ -27,6 +27,8 @@ python manage.py run_scheduler
 python manage.py update_plan_completion --dry-run
 python manage.py update_plan_completion --date 20260630
 ```
+
+主页数据看板默认在后端进程内按项目和看板类型缓存 60 秒。成功的数据修改请求会立即使对应项目的缓存失效，页面上的刷新按钮会跳过缓存重新计算；可通过 `PIPECLOUD_DASHBOARD_CACHE_TIMEOUT` 调整秒数，设为 `0` 可关闭。多实例生产部署时建议将 Django 默认缓存替换为 Redis 等共享缓存。
 
 测试：
 

@@ -28,21 +28,15 @@ import ScheduleDashboardPanel from '../../components/ScheduleDashboardPanel.vue'
 import UnsavedChangesDialog from '../../components/UnsavedChangesDialog.vue'
 import WeldingDashboardPanel from '../../components/WeldingDashboardPanel.vue'
 import {
-  errorMessage as workflowErrorMessage,
   displayDataPath,
   homeComponentVisibility,
   loadSummary,
-  loading as workflowLoading,
-  runAction,
-  runningKey,
   setHomeComponentVisibility,
   summary,
   t,
-  workflowActions,
 } from '../../services/pipecloudState'
 import { selectedProjectId, selectedProjectParams, setSelectedProjectId } from '../../services/projectState'
 import { getBasicVTableTheme, getVTablePalette, isDarkVTableTheme, vTableThemeKey } from '../../services/vtableTheme'
-import { localizedActionName } from '../../services/navigationLabels'
 import { attachVTableColumnSelectionCount, createVTableSelectionLayout } from '../../services/vtableSelectionCount'
 import { watchUiMessageSources } from '../../services/uiMessages'
 
@@ -149,7 +143,6 @@ const showAntiCorrosionDashboard = computed(() => homeComponentVisibility.value.
 const showCuttingDashboard = computed(() => homeComponentVisibility.value.cuttingDashboard)
 const showWeldingDashboard = computed(() => homeComponentVisibility.value.weldingDashboard)
 const showArrivalDashboard = computed(() => homeComponentVisibility.value.arrivalDashboard)
-const showHomeWorkflow = computed(() => homeComponentVisibility.value.workflow)
 const showProjectData = computed(() => homeComponentVisibility.value.projectData)
 const showProjectWeldInfo = computed(() => homeComponentVisibility.value.projectWeldInfo)
 const showHomeProjectLayout = computed(() => showProjectData.value || showProjectWeldInfo.value)
@@ -630,7 +623,11 @@ function toggleProjectFormProcessSequence(value) {
   projectFormProcessSequence.value = value
 }
 
-async function loadInitializationDashboard(options = {}) {
+function dashboardParams(forceRefresh) {
+  return selectedProjectParams(forceRefresh ? { refresh: '1' } : undefined)
+}
+
+async function loadInitializationDashboard(options = {}, forceRefresh = false) {
   const projectId = selectedProjectId.value
   if (!projectId) {
     initializationDashboard.value = emptyInitializationDashboard()
@@ -641,7 +638,7 @@ async function loadInitializationDashboard(options = {}) {
   initializationDashboardLoading.value = true
   initializationDashboardError.value = ''
   try {
-    const payload = await fetchInitializationStats(selectedProjectParams(), options)
+    const payload = await fetchInitializationStats(dashboardParams(forceRefresh), options)
     if (options.signal?.aborted || projectId !== selectedProjectId.value) return
     initializationDashboard.value = payload
   } catch (error) {
@@ -655,7 +652,7 @@ async function loadInitializationDashboard(options = {}) {
   }
 }
 
-async function loadWeldingDashboard(options = {}) {
+async function loadWeldingDashboard(options = {}, forceRefresh = false) {
   const projectId = selectedProjectId.value
   if (!projectId) {
     weldingDashboard.value = emptyWeldingDashboard()
@@ -666,7 +663,7 @@ async function loadWeldingDashboard(options = {}) {
   weldingDashboardLoading.value = true
   weldingDashboardError.value = ''
   try {
-    const payload = await fetchWeldingDashboard(selectedProjectParams(), options)
+    const payload = await fetchWeldingDashboard(dashboardParams(forceRefresh), options)
     if (options.signal?.aborted || projectId !== selectedProjectId.value) return
     weldingDashboard.value = payload
   } catch (error) {
@@ -680,7 +677,7 @@ async function loadWeldingDashboard(options = {}) {
   }
 }
 
-async function loadAntiCorrosionDashboard(options = {}) {
+async function loadAntiCorrosionDashboard(options = {}, forceRefresh = false) {
   const projectId = selectedProjectId.value
   if (!projectId) {
     antiCorrosionDashboard.value = emptyAntiCorrosionDashboard()
@@ -690,7 +687,7 @@ async function loadAntiCorrosionDashboard(options = {}) {
   antiCorrosionDashboardLoading.value = true
   antiCorrosionDashboardError.value = ''
   try {
-    const payload = await fetchAntiCorrosionDashboard(selectedProjectParams(), options)
+    const payload = await fetchAntiCorrosionDashboard(dashboardParams(forceRefresh), options)
     if (options.signal?.aborted || projectId !== selectedProjectId.value) return
     antiCorrosionDashboard.value = payload
   } catch (error) {
@@ -702,7 +699,7 @@ async function loadAntiCorrosionDashboard(options = {}) {
   }
 }
 
-async function loadCuttingDashboard(options = {}) {
+async function loadCuttingDashboard(options = {}, forceRefresh = false) {
   const projectId = selectedProjectId.value
   if (!projectId) {
     cuttingDashboard.value = emptyCuttingDashboard()
@@ -712,7 +709,7 @@ async function loadCuttingDashboard(options = {}) {
   cuttingDashboardLoading.value = true
   cuttingDashboardError.value = ''
   try {
-    const payload = await fetchCuttingDashboard(selectedProjectParams(), options)
+    const payload = await fetchCuttingDashboard(dashboardParams(forceRefresh), options)
     if (options.signal?.aborted || projectId !== selectedProjectId.value) return
     cuttingDashboard.value = payload
   } catch (error) {
@@ -724,7 +721,7 @@ async function loadCuttingDashboard(options = {}) {
   }
 }
 
-async function loadArrivalDashboard(options = {}) {
+async function loadArrivalDashboard(options = {}, forceRefresh = false) {
   const projectId = selectedProjectId.value
   if (!projectId) {
     arrivalDashboard.value = emptyArrivalDashboard()
@@ -735,7 +732,7 @@ async function loadArrivalDashboard(options = {}) {
   arrivalDashboardLoading.value = true
   arrivalDashboardError.value = ''
   try {
-    const payload = await fetchArrivalDashboard(selectedProjectParams(), options)
+    const payload = await fetchArrivalDashboard(dashboardParams(forceRefresh), options)
     if (options.signal?.aborted || projectId !== selectedProjectId.value) return
     arrivalDashboard.value = payload
   } catch (error) {
@@ -924,13 +921,6 @@ function handleBeforeUnload(event) {
   event.returnValue = t('unsavedLeaveConfirm')
 }
 
-async function executeWorkflowAction(actionKey) {
-  const started = await runAction(actionKey)
-  if (!started) return
-  await loadProjects()
-  await loadHomeProjectData(weldPage.value)
-}
-
 onMounted(async () => {
   window.addEventListener('beforeunload', handleBeforeUnload)
   if (!summary.value.modules.length) {
@@ -1004,8 +994,6 @@ onBeforeUnmount(() => {
   </PageHeader>
 
   <v-alert v-if="errorMessage" :text="errorMessage" type="error" density="compact" class="status-alert" />
-  <v-alert v-if="workflowErrorMessage" :text="workflowErrorMessage" type="error" density="compact" class="status-alert" />
-
   <InitializationDashboardPanel
     v-if="showInitializationDashboard"
     :title="t('initializationDashboardTitle')"
@@ -1016,7 +1004,7 @@ onBeforeUnmount(() => {
     :collapsed="initializationDashboardCollapsed"
     show-refresh
     collapsible
-    @refresh="loadInitializationDashboard"
+    @refresh="loadInitializationDashboard({}, true)"
     @hide="setHomeComponentVisibility('initializationDashboard', false)"
     @toggle="initializationDashboardCollapsed = !initializationDashboardCollapsed"
   />
@@ -1031,7 +1019,7 @@ onBeforeUnmount(() => {
     :collapsed="weldingDashboardCollapsed"
     show-refresh
     collapsible
-    @refresh="loadWeldingDashboard"
+    @refresh="loadWeldingDashboard({}, true)"
     @hide="setHomeComponentVisibility('weldingDashboard', false)"
     @toggle="weldingDashboardCollapsed = !weldingDashboardCollapsed"
   />
@@ -1047,7 +1035,7 @@ onBeforeUnmount(() => {
     :collapsed="antiCorrosionDashboardCollapsed"
     show-refresh
     collapsible
-    @refresh="loadAntiCorrosionDashboard"
+    @refresh="loadAntiCorrosionDashboard({}, true)"
     @hide="setHomeComponentVisibility('antiCorrosionDashboard', false)"
     @toggle="antiCorrosionDashboardCollapsed = !antiCorrosionDashboardCollapsed"
   />
@@ -1063,7 +1051,7 @@ onBeforeUnmount(() => {
     :collapsed="cuttingDashboardCollapsed"
     show-refresh
     collapsible
-    @refresh="loadCuttingDashboard"
+    @refresh="loadCuttingDashboard({}, true)"
     @hide="setHomeComponentVisibility('cuttingDashboard', false)"
     @toggle="cuttingDashboardCollapsed = !cuttingDashboardCollapsed"
   />
@@ -1078,31 +1066,10 @@ onBeforeUnmount(() => {
     :collapsed="arrivalDashboardCollapsed"
     show-refresh
     collapsible
-    @refresh="loadArrivalDashboard"
+    @refresh="loadArrivalDashboard({}, true)"
     @hide="setHomeComponentVisibility('arrivalDashboard', false)"
     @toggle="arrivalDashboardCollapsed = !arrivalDashboardCollapsed"
   />
-
-  <v-card v-if="showHomeWorkflow" class="workflow" variant="flat">
-    <div class="section-head">
-      <div class="section-title-with-tip">
-        <h2>{{ t('workflow') }}</h2>
-        <InfoTooltip :text="t('workflowTip')" />
-      </div>
-    </div>
-    <div class="workflow-steps">
-      <v-btn
-        v-for="(action, index) in workflowActions"
-        :key="action.key"
-        :loading="runningKey === action.key"
-        :disabled="workflowLoading || Boolean(runningKey) || !selectedProject"
-        prepend-icon="mdi-check-circle-outline"
-        @click="executeWorkflowAction(action.key)"
-      >
-        {{ index + 1 }}. {{ localizedActionName(action) }}
-      </v-btn>
-    </div>
-  </v-card>
 
   <v-sheet v-if="showHomeProjectLayout" class="home-project-layout" :class="{ 'is-single': !showProjectData || !showProjectWeldInfo }" color="transparent">
     <v-card v-if="showProjectData" class="module-panel project-panel" variant="flat">

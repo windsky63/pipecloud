@@ -44,6 +44,15 @@ class OperationLogMiddleware:
         response = self.get_response(request)
         if request.method not in WRITE_METHODS or not request.path.startswith('/api/pipecloud/'):
             return response
+        project_id = request.GET.get('project_id') or request.GET.get('projectId') or request.POST.get('project_id')
+        if response.status_code < 400:
+            try:
+                from pipecloud.services.dashboard_cache import invalidate_dashboard_cache
+
+                invalidate_dashboard_cache(project_id)
+            except Exception:
+                # Cache invalidation must never turn a successful write into an error.
+                pass
         try:
             from pipecloud.models import OperationLog, Project
 
@@ -53,7 +62,6 @@ class OperationLogMiddleware:
                 detail = _clean_detail(json.loads(request.body.decode('utf-8')))
             elif request.FILES:
                 detail = {'files': [file.name for file in request.FILES.values()]}
-            project_id = request.GET.get('projectId')
             project = Project.objects.filter(pk=project_id).only('project_name').first() if project_id else None
             user = getattr(request, 'user', None)
             user_name = user.get_username() if user and user.is_authenticated else request.headers.get('X-User-Name', '匿名用户')

@@ -99,28 +99,33 @@ function formatNumber(value) {
         <h2>{{ title }}</h2>
         <InfoTooltip v-if="description" :text="description" />
       </div>
-      <v-btn-toggle
-        v-if="!collapsed"
-        v-model="activeView"
-        class="dashboard-icon-toggle"
-        mandatory
-        density="compact"
-        color="primary"
-        variant="text"
-      >
-        <v-btn
-          v-for="item in viewItems"
-          :key="item.value"
-          :value="item.value"
-          icon
-          variant="text"
-          :aria-label="item.label"
-        >
-          <v-icon :icon="item.icon" />
-          <v-tooltip activator="parent" location="top">{{ item.label }}</v-tooltip>
-        </v-btn>
-      </v-btn-toggle>
       <div class="dashboard-panel-actions">
+        <v-btn-toggle
+          v-if="!collapsed"
+          v-model="activeView"
+          class="dashboard-icon-toggle"
+          mandatory
+          density="compact"
+          color="primary"
+          variant="text"
+        >
+          <v-btn
+            v-for="item in viewItems"
+            :key="item.value"
+            :value="item.value"
+            icon
+            variant="text"
+            :aria-label="item.label"
+          >
+            <v-icon :icon="item.icon" />
+            <v-tooltip activator="parent" location="top">{{ item.label }}</v-tooltip>
+          </v-btn>
+        </v-btn-toggle>
+        <span
+          v-if="!collapsed && (showRefresh || collapsible)"
+          class="dashboard-action-divider"
+          aria-hidden="true"
+        />
         <v-btn v-if="showRefresh" icon variant="text" :aria-label="t('refresh')" @click="emit('refresh')">
           <v-icon icon="mdi-refresh" />
           <v-tooltip activator="parent" location="top">{{ t('refresh') }}</v-tooltip>
@@ -183,16 +188,23 @@ function formatNumber(value) {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 10px;
+  min-height: 36px;
+  flex-shrink: 0;
 }
 
-.schedule-dashboard-head {
-  grid-template-columns: minmax(0, 1fr) auto auto;
-}
-
-.dashboard-icon-toggle :deep(.v-btn) {
+.dashboard-icon-toggle :deep(.v-btn),
+.dashboard-panel-actions > .v-btn {
   min-width: 36px;
   width: 36px;
   height: 36px;
+}
+
+.dashboard-action-divider {
+  width: 1px;
+  height: 24px;
+  flex: 0 0 1px;
+  background: var(--line);
 }
 
 .schedule-stat-grid {

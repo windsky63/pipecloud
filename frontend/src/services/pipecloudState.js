@@ -14,7 +14,6 @@ let runningActionController = null
 let summaryRequestId = 0
 
 const showRunLogStorageKey = 'pipecloud.showRunLog'
-const showWorkflowStorageKey = 'pipecloud.showWorkflow'
 const sidebarCollapsedStorageKey = 'pipecloud.sidebarCollapsed'
 const navigationVisibilityStorageKey = 'pipecloud.navigationVisibility'
 const navigationRouteVisibilityStorageKey = 'pipecloud.navigationRouteVisibility'
@@ -42,7 +41,6 @@ export const homeComponentVisibilityDefaults = {
   cuttingDashboard: false,
   weldingDashboard: false,
   arrivalDashboard: true,
-  workflow: true,
   projectData: true,
   projectWeldInfo: true,
 }
@@ -78,13 +76,6 @@ function getInitialShowRunLog() {
 
 export const showRunLog = ref(getInitialShowRunLog())
 
-function getInitialShowWorkflow() {
-  if (typeof window === 'undefined') return true
-  return window.localStorage.getItem(showWorkflowStorageKey) !== 'false'
-}
-
-export const showWorkflow = ref(getInitialShowWorkflow())
-
 function getInitialHomeComponentVisibility() {
   const defaults = { ...homeComponentVisibilityDefaults }
   if (typeof window === 'undefined') return defaults
@@ -94,9 +85,6 @@ function getInitialHomeComponentVisibility() {
       items[key] = typeof value[key] === 'boolean' ? value[key] : homeComponentVisibilityDefaults[key]
       return items
     }, {})
-    if (typeof value.workflow !== 'boolean') {
-      result.workflow = getInitialShowWorkflow()
-    }
     return result
   } catch {
     return defaults
@@ -206,25 +194,11 @@ export function setShowRunLog(value) {
   }
 }
 
-export function setShowWorkflow(value) {
-  showWorkflow.value = Boolean(value)
-  setHomeComponentVisibility('workflow', showWorkflow.value)
-  if (typeof window !== 'undefined') {
-    window.localStorage.setItem(showWorkflowStorageKey, showWorkflow.value ? 'true' : 'false')
-  }
-}
-
 export function setHomeComponentVisibility(key, value) {
   if (!homeComponentVisibilityKeys.includes(key)) return
   homeComponentVisibility.value = {
     ...homeComponentVisibility.value,
     [key]: Boolean(value),
-  }
-  if (key === 'workflow') {
-    showWorkflow.value = Boolean(value)
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(showWorkflowStorageKey, showWorkflow.value ? 'true' : 'false')
-    }
   }
   if (typeof window !== 'undefined') {
     window.localStorage.setItem(homeComponentVisibilityStorageKey, JSON.stringify(homeComponentVisibility.value))
@@ -295,23 +269,6 @@ export function setLanguage(value) {
     window.localStorage.setItem(languageStorageKey, language.value)
   }
 }
-
-export const actionOrder = [
-  'prefab-weld-library',
-  'arrival-library',
-  'material-locking',
-  'anti-corrosion-pre-schedule',
-  'weld-pre-schedule',
-  'cutting-schedule',
-  'welding-pre-schedule',
-  'auto-weld-schedule',
-]
-
-export const workflowActions = computed(() => {
-  return actionOrder
-    .map((key) => summary.value.actions.find((item) => item.key === key))
-    .filter(Boolean)
-})
 
 export function formatTime(timestamp) {
   if (!timestamp) return t('notGenerated')

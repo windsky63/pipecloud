@@ -34,10 +34,15 @@ from pipecloud.services.prefab_database import (
     update_weld_material_arrival_status_from_database,
     _plan_file_models,
 )
+from pipecloud.services.dashboard_cache import dashboard_payload
 
 
 _INITIALIZATION_TASKS = {}
 _INITIALIZATION_TASKS_LOCK = threading.Lock()
+
+
+def _force_dashboard_refresh(request):
+    return str(request.GET.get('refresh') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 def _register_initialization_task(task_id):
@@ -175,7 +180,12 @@ def initialization_stats(request):
     if error:
         return _project_bad_request(error)
     try:
-        payload = _initialization_stats_payload(project, data_root)
+        payload, _ = dashboard_payload(
+            project.id,
+            'initialization',
+            lambda: _initialization_stats_payload(project, data_root),
+            force_refresh=_force_dashboard_refresh(request),
+        )
     except Exception as error:
         return HttpResponseBadRequest(
             json.dumps({'error': f'读取初始化统计失败：{error}'}, ensure_ascii=False),
@@ -246,7 +256,12 @@ def welding_dashboard(request):
     if error:
         return _project_bad_request(error)
     try:
-        payload = _welding_dashboard_payload(project, data_root)
+        payload, _ = dashboard_payload(
+            project.id,
+            'welding',
+            lambda: _welding_dashboard_payload(project, data_root),
+            force_refresh=_force_dashboard_refresh(request),
+        )
     except Exception as error:
         return HttpResponseBadRequest(
             json.dumps({'error': f'读取焊接排产完成统计失败：{error}'}, ensure_ascii=False),
@@ -261,7 +276,12 @@ def arrival_dashboard(request):
     if error:
         return _project_bad_request(error)
     try:
-        payload = _arrival_material_dashboard_payload(project)
+        payload, _ = dashboard_payload(
+            project.id,
+            'arrival',
+            lambda: _arrival_material_dashboard_payload(project),
+            force_refresh=_force_dashboard_refresh(request),
+        )
     except Exception as error:
         return HttpResponseBadRequest(
             json.dumps({'error': f'读取到货材料统计失败：{error}'}, ensure_ascii=False),
@@ -276,7 +296,12 @@ def anti_corrosion_dashboard(request):
     if error:
         return _project_bad_request(error)
     try:
-        payload = _anti_corrosion_dashboard_payload(project, data_root)
+        payload, _ = dashboard_payload(
+            project.id,
+            'anti-corrosion',
+            lambda: _anti_corrosion_dashboard_payload(project, data_root),
+            force_refresh=_force_dashboard_refresh(request),
+        )
     except Exception as error:
         return HttpResponseBadRequest(
             json.dumps({'error': f'读取防腐排产统计失败：{error}'}, ensure_ascii=False),
@@ -291,7 +316,12 @@ def cutting_dashboard(request):
     if error:
         return _project_bad_request(error)
     try:
-        payload = _cutting_dashboard_payload(project, data_root)
+        payload, _ = dashboard_payload(
+            project.id,
+            'cutting',
+            lambda: _cutting_dashboard_payload(project, data_root),
+            force_refresh=_force_dashboard_refresh(request),
+        )
     except Exception as error:
         return HttpResponseBadRequest(
             json.dumps({'error': f'读取下料排产统计失败：{error}'}, ensure_ascii=False),

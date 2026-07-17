@@ -104,7 +104,6 @@ const homeComponentItems = computed(() => [
   { key: 'cuttingDashboard', title: t('cuttingDashboardTitle'), icon: 'mdi-saw-blade' },
   { key: 'weldingDashboard', title: t('weldingDashboardTitle'), icon: 'mdi-chart-line' },
   { key: 'arrivalDashboard', title: t('arrivalDashboardTitle'), icon: 'mdi-truck-check-outline' },
-  { key: 'workflow', title: t('workflow'), icon: 'mdi-source-branch-sync' },
   { key: 'projectData', title: t('projectData'), icon: 'mdi-table-cog' },
   { key: 'projectWeldInfo', title: t('projectWeldInfo'), icon: 'mdi-table-search' },
 ].filter((item) => homeComponentVisibilityKeys.includes(item.key)))

@@ -50,13 +50,13 @@ CSRF_TRUSTED_ORIGINS = env_list(
 # Application definition
 
 INSTALLED_APPS = [
+    'pipecloud',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'pipecloud',
 ]
 
 MIDDLEWARE = [
@@ -145,7 +145,18 @@ USE_I18N = True
 
 USE_TZ = True
 
+DASHBOARD_CACHE_TIMEOUT = env_int('PIPECLOUD_DASHBOARD_CACHE_TIMEOUT', 60, minimum=0)
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'pipecloud-dashboard-cache',
+        'TIMEOUT': DASHBOARD_CACHE_TIMEOUT,
+        'OPTIONS': {'MAX_ENTRIES': 1000},
+    },
+}
+
 SCHEDULED_MAINTENANCE_JOBS = build_scheduled_maintenance_jobs()
+SCHEDULER_AUTOSTART_WITH_RUNSERVER = env_bool('PIPECLOUD_SCHEDULER_AUTOSTART_WITH_RUNSERVER', True)
 PLAN_COMPLETION_SYNC_MISFIRE_GRACE_SECONDS = env_int(
     'PIPECLOUD_PLAN_COMPLETION_SYNC_MISFIRE_GRACE_SECONDS',
     3600,
