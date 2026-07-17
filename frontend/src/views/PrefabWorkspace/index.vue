@@ -38,7 +38,7 @@ import { selectedProjectId, selectedProjectParams } from '../../services/project
 import { localizedModuleTitle } from '../../services/navigationLabels'
 import { getBasicVTableTheme, getVTablePalette, vTableThemeKey } from '../../services/vtableTheme'
 import { attachVTableColumnSelectionCount, createVTableSelectionLayout } from '../../services/vtableSelectionCount'
-import { publishUiMessage } from '../../services/uiMessages'
+import { watchUiMessageSources } from '../../services/uiMessages'
 import {
   errorMessage,
   beaconCancelRunningInitialization,
@@ -368,9 +368,7 @@ const workspaceMessageSources = [
   ['future-schedule-success', 'success', futureScheduleMessage],
 ]
 
-workspaceMessageSources.forEach(([key, type, source]) => {
-  watch(source, (message) => publishUiMessage(key, type, message), { immediate: true })
-})
+watchUiMessageSources(workspaceMessageSources)
 const antiCorrosionPreScheduleActiveSheet = ref('')
 const antiCorrosionPreScheduleData = ref({
   path: '',

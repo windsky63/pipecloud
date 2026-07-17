@@ -12,6 +12,7 @@ import { formatTime, t } from '../../services/pipecloudState'
 import { selectedProjectId, selectedProjectParams } from '../../services/projectState'
 import { getBasicVTableTheme, vTableThemeKey } from '../../services/vtableTheme'
 import { attachVTableColumnSelectionCount, createVTableSelectionLayout } from '../../services/vtableSelectionCount'
+import { publishUiMessage, watchUiMessageSources } from '../../services/uiMessages'
 
 const ROW_KEY_FIELD = '__libraryRowKey'
 const SELECT_FIELD = '__libraryRowSelected'
@@ -126,11 +127,6 @@ const undoStack = ref([])
 const selectedRowKeys = ref(new Set())
 const deletedRowKeys = ref(new Set())
 const tableContainer = ref(null)
-const snackbar = ref({
-  show: false,
-  text: '',
-  color: 'success',
-})
 const confirmDialog = ref({
   show: false,
   title: '',
@@ -495,13 +491,14 @@ function recordChanges(changes, label, type = 'cell') {
   return true
 }
 
-function notify(color, text) {
-  snackbar.value = {
-    show: true,
-    color,
-    text,
-  }
+function notify(type, text) {
+  publishUiMessage('weld-library', type, text)
 }
+
+watchUiMessageSources([
+  ['weld-library-list-error', 'error', libraryError],
+  ['weld-library-table-error', 'error', tableError],
+])
 
 function askConfirm({ title, text, confirmText = t('confirm'), color = 'primary' }) {
   return new Promise((resolve) => {
@@ -1159,10 +1156,6 @@ onBeforeUnmount(() => {
 
     <div ref="tableContainer" class="vtable-host" @wheel.stop @touchmove.stop />
   </v-card>
-
-  <v-snackbar v-model="snackbar.show" :color="snackbar.color" timeout="2600">
-    {{ snackbar.text }}
-  </v-snackbar>
 
   <v-dialog v-model="confirmDialog.show" max-width="420">
     <v-card>

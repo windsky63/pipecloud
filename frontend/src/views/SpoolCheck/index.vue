@@ -6,12 +6,16 @@ import SpoolCheckHeader from './SpoolCheckHeader.vue'
 import SpoolStructureViewer from './SpoolStructureViewer.vue'
 import { t } from '../../services/pipecloudState'
 import { selectedProjectId } from '../../services/projectState'
+import { watchUiMessageSources } from '../../services/uiMessages'
 
 const allUnitsKey = '__all_units__'
 const activeTab = ref('structure')
 const loading = ref(false)
 const structureLoading = ref(false)
 const errorMessage = ref('')
+watchUiMessageSources([
+  ['spool-check-error', 'error', errorMessage],
+])
 const payload = ref(null)
 const selectedSpoolNo = ref('')
 const selectedUnit = ref(allUnitsKey)

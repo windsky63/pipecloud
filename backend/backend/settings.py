@@ -10,34 +10,41 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
-import os
 from pathlib import Path
+
+from .env import env, env_bool, env_int, env_list, load_env_file
+from .scheduled_jobs import build_scheduled_maintenance_jobs
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Local development may use backend/.env. Deployment systems should inject
+# process variables; load_env_file never overwrites values they provide.
+load_env_file(BASE_DIR / '.env')
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-change-me-for-local-development')
+DEBUG = env_bool('DJANGO_DEBUG', True)
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv('DJANGO_DEBUG', 'true').lower() in {'1', 'true', 'yes', 'on'}
+# Production startup fails immediately without an explicit secret. The local
+# fallback is accepted only while DEBUG is enabled.
+SECRET_KEY = env(
+    'DJANGO_SECRET_KEY',
+    'django-insecure-change-me-for-local-development' if DEBUG else None,
+    required=not DEBUG,
+)
 
-ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'testserver']
+ALLOWED_HOSTS = env_list('DJANGO_ALLOWED_HOSTS', ['127.0.0.1', 'localhost', 'testserver'])
 
 # Comma-separated origins, including the scheme and port. Trust the local Vite
 # development server by default while keeping CSRF validation enabled.
-CSRF_TRUSTED_ORIGINS = [
-    origin.strip()
-    for origin in os.getenv(
-        'DJANGO_CSRF_TRUSTED_ORIGINS',
-        'http://localhost:5173,http://127.0.0.1:5173',
-    ).split(',')
-    if origin.strip()
-]
+CSRF_TRUSTED_ORIGINS = env_list(
+    'DJANGO_CSRF_TRUSTED_ORIGINS',
+    ['http://localhost:5173', 'http://127.0.0.1:5173'],
+)
 
 
 # Application definition
@@ -86,11 +93,11 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
-MYSQL_DATABASE = os.getenv('MYSQL_DATABASE', 'pipecloud')
-MYSQL_USER = os.getenv('MYSQL_USER', 'root')
-MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD', '123456')
-MYSQL_HOST = os.getenv('MYSQL_HOST', '127.0.0.1')
-MYSQL_PORT = os.getenv('MYSQL_PORT', '3306')
+MYSQL_DATABASE = env('MYSQL_DATABASE', 'pipecloud')
+MYSQL_USER = env('MYSQL_USER', 'root')
+MYSQL_PASSWORD = env('MYSQL_PASSWORD', '')
+MYSQL_HOST = env('MYSQL_HOST', '127.0.0.1')
+MYSQL_PORT = env_int('MYSQL_PORT', 3306, minimum=1, maximum=65535)
 
 DATABASES = {
     'default': {
@@ -130,69 +137,19 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/6.0/topics/i18n/
 
-LANGUAGE_CODE = 'zh-hans'
+LANGUAGE_CODE = env('DJANGO_LANGUAGE_CODE', 'zh-hans')
 
-TIME_ZONE = 'Asia/Shanghai'
+TIME_ZONE = env('DJANGO_TIME_ZONE', 'Asia/Shanghai')
 
 USE_I18N = True
 
 USE_TZ = True
 
-PLAN_ROLLOVER_HOUR = int(os.getenv('PIPECLOUD_PLAN_ROLLOVER_HOUR', '21'))
-PLAN_ROLLOVER_MINUTE = int(os.getenv('PIPECLOUD_PLAN_ROLLOVER_MINUTE', '0'))
-PLAN_ROLLOVER_MISFIRE_GRACE_SECONDS = int(
-    os.getenv('PIPECLOUD_PLAN_ROLLOVER_MISFIRE_GRACE_SECONDS', '3600')
-)
-
-SCHEDULED_MAINTENANCE_JOBS = [
-    {
-        'key': 'sync-anti-corrosion-completion',
-        'kind': 'completion-sync',
-        'command': 'sync_anti_corrosion_completion',
-        'name': '同步防腐计划中防腐完成情况',
-        'hour': int(os.getenv('PIPECLOUD_ANTI_CORROSION_COMPLETION_SYNC_HOUR', '21')),
-        'minute': int(os.getenv('PIPECLOUD_ANTI_CORROSION_COMPLETION_SYNC_MINUTE', '0')),
-        'enabled': os.getenv('PIPECLOUD_ANTI_CORROSION_COMPLETION_SYNC_ENABLED', 'true').lower() != 'false',
-    },
-    {
-        'key': 'sync-cutting-completion',
-        'kind': 'completion-sync',
-        'command': 'sync_cutting_completion',
-        'name': '同步下料计划中下料完成情况',
-        'hour': int(os.getenv('PIPECLOUD_CUTTING_COMPLETION_SYNC_HOUR', '21')),
-        'minute': int(os.getenv('PIPECLOUD_CUTTING_COMPLETION_SYNC_MINUTE', '5')),
-        'enabled': os.getenv('PIPECLOUD_CUTTING_COMPLETION_SYNC_ENABLED', 'true').lower() != 'false',
-    },
-    {
-        'key': 'sync-welding-completion',
-        'kind': 'completion-sync',
-        'command': 'sync_welding_completion',
-        'name': '同步焊接计划中焊接完成情况',
-        'hour': int(os.getenv('PIPECLOUD_WELDING_COMPLETION_SYNC_HOUR', '21')),
-        'minute': int(os.getenv('PIPECLOUD_WELDING_COMPLETION_SYNC_MINUTE', '10')),
-        'enabled': os.getenv('PIPECLOUD_WELDING_COMPLETION_SYNC_ENABLED', 'true').lower() != 'false',
-    },
-    {
-        'key': 'rollover-cutting-plan',
-        'kind': 'plan-rollover',
-        'command': 'rollover_cutting_plan',
-        'name': '滚动未完成下料计划',
-        'hour': int(os.getenv('PIPECLOUD_CUTTING_PLAN_ROLLOVER_HOUR', '21')),
-        'minute': int(os.getenv('PIPECLOUD_CUTTING_PLAN_ROLLOVER_MINUTE', '20')),
-        'enabled': os.getenv('PIPECLOUD_CUTTING_PLAN_ROLLOVER_ENABLED', 'true').lower() != 'false',
-    },
-    {
-        'key': 'rollover-welding-plan',
-        'kind': 'plan-rollover',
-        'command': 'rollover_welding_plan',
-        'name': '滚动未完成焊接计划',
-        'hour': int(os.getenv('PIPECLOUD_WELDING_PLAN_ROLLOVER_HOUR', '21')),
-        'minute': int(os.getenv('PIPECLOUD_WELDING_PLAN_ROLLOVER_MINUTE', '30')),
-        'enabled': os.getenv('PIPECLOUD_WELDING_PLAN_ROLLOVER_ENABLED', 'true').lower() != 'false',
-    },
-]
-PLAN_COMPLETION_SYNC_MISFIRE_GRACE_SECONDS = int(
-    os.getenv('PIPECLOUD_PLAN_COMPLETION_SYNC_MISFIRE_GRACE_SECONDS', str(PLAN_ROLLOVER_MISFIRE_GRACE_SECONDS))
+SCHEDULED_MAINTENANCE_JOBS = build_scheduled_maintenance_jobs()
+PLAN_COMPLETION_SYNC_MISFIRE_GRACE_SECONDS = env_int(
+    'PIPECLOUD_PLAN_COMPLETION_SYNC_MISFIRE_GRACE_SECONDS',
+    3600,
+    minimum=1,
 )
 
 

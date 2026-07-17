@@ -1,6 +1,7 @@
 import { i18n } from '../i18n'
+import { API_BASE_URL } from '../config/runtime'
 
-export const API_PREFIX = '/api/pipecloud'
+export const API_PREFIX = API_BASE_URL
 
 export async function requestJson(path, options = {}) {
   let response

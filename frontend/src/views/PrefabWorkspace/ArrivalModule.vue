@@ -6,6 +6,7 @@ import FileUploadDropzone from '../../components/FileUploadDropzone.vue'
 import InfoTooltip from '../../components/InfoTooltip.vue'
 import { localizedModuleDescription } from '../../services/navigationLabels'
 import { dashboardVisibility, displayDataPath, formatTime, setDashboardVisibility, t } from '../../services/pipecloudState'
+import { watchUiMessageSources } from '../../services/uiMessages'
 
 const props = defineProps({
   activeModule: { type: Object, required: true },
@@ -47,6 +48,9 @@ const dashboardCollapsed = ref(false)
 const arrivalImportResults = ref([])
 const arrivalImportActiveIndex = ref(0)
 const arrivalImportError = ref('')
+watchUiMessageSources([
+  ['arrival-import-error', 'error', arrivalImportError],
+])
 const previewLoading = ref(false)
 const activeArrivalImportResult = computed(() => arrivalImportResults.value[arrivalImportActiveIndex.value] || null)
 const arrivalImportPreview = computed(() => {

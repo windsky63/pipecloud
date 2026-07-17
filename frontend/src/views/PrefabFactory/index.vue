@@ -8,6 +8,7 @@ import DataVTable from '../../components/DataVTable.vue'
 import { t } from '../../services/pipecloudState'
 import { createPipeComponentRenderer, normalizePipeComponentType } from '../../services/pipeComponentRenderer'
 import { selectedProjectId, selectedProjectParams } from '../../services/projectState'
+import { watchUiMessageSources } from '../../services/uiMessages'
 
 const sceneHost = ref(null)
 const treeList = ref(null)
@@ -15,6 +16,10 @@ const loading = ref(true)
 const errorMessage = ref('')
 const materialLoading = ref(false)
 const materialError = ref('')
+watchUiMessageSources([
+  ['factory-model-error', 'error', errorMessage],
+  ['factory-material-error', 'error', materialError],
+])
 const todayMaterialPayload = ref({
   date: '',
   total: 0,

@@ -12,6 +12,7 @@ import {
 } from '../../api/developer'
 import { loadSummary, runAction, runningKey, summary, t } from '../../services/pipecloudState'
 import { localizedActionName } from '../../services/navigationLabels'
+import { watchUiMessageSources } from '../../services/uiMessages'
 
 const materialLibraryRunning = ref(false)
 const activeControlTab = ref('database')
@@ -23,6 +24,10 @@ const operationLogs = ref([])
 const scheduledTaskRunningKey = ref('')
 const message = ref('')
 const errorMessage = ref('')
+watchUiMessageSources([
+  ['developer-controls-success', 'success', message],
+  ['developer-controls-error', 'error', errorMessage],
+])
 const scheduledTaskLogs = ref([])
 const databaseOverview = ref({
   totalTables: 0,

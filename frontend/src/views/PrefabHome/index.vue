@@ -44,6 +44,7 @@ import { selectedProjectId, selectedProjectParams, setSelectedProjectId } from '
 import { getBasicVTableTheme, getVTablePalette, isDarkVTableTheme, vTableThemeKey } from '../../services/vtableTheme'
 import { localizedActionName } from '../../services/navigationLabels'
 import { attachVTableColumnSelectionCount, createVTableSelectionLayout } from '../../services/vtableSelectionCount'
+import { watchUiMessageSources } from '../../services/uiMessages'
 
 const projectRows = ref([])
 const projectColumns = ref([])
@@ -84,6 +85,15 @@ const projectDialog = ref(false)
 const projectSettingsDialog = ref(false)
 const projectForm = ref({})
 const projectFormError = ref('')
+watchUiMessageSources([
+  ['home-project-error', 'error', errorMessage],
+  ['home-weld-error', 'error', weldErrorMessage],
+  ['home-initialization-dashboard-error', 'error', initializationDashboardError],
+  ['home-welding-dashboard-error', 'error', weldingDashboardError],
+  ['home-anti-corrosion-dashboard-error', 'error', antiCorrosionDashboardError],
+  ['home-cutting-dashboard-error', 'error', cuttingDashboardError],
+  ['home-arrival-dashboard-error', 'error', arrivalDashboardError],
+])
 const projectConstraintLoading = ref(false)
 const projectConstraintSaving = ref(false)
 const processSequence = ref(null)

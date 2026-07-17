@@ -10,6 +10,7 @@ import {
 import PageHeader from '../../components/PageHeader.vue'
 import { t } from '../../services/pipecloudState'
 import { selectedProjectId, selectedProjectParams } from '../../services/projectState'
+import { publishUiMessage, watchUiMessageSources } from '../../services/uiMessages'
 
 const loading = ref(false)
 const exporting = ref(false)
@@ -20,6 +21,9 @@ const opened = ref([])
 const projectName = ref('')
 const exportProgress = ref(0)
 const exportProgressMessage = ref('')
+watchUiMessageSources([
+  ['file-export-error', 'error', errorMessage],
+])
 let exportRunToken = 0
 
 function collectFileIds(nodes, result = []) {
@@ -85,6 +89,7 @@ async function exportSelected() {
     }
     exportProgress.value = 100
     exportProgressMessage.value = status.message || t('batchExportCompleted')
+    publishUiMessage('file-export-success', 'success', exportProgressMessage.value)
     const blob = await downloadProjectFileExport(exportParams, task.jobId)
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')

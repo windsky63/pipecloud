@@ -1,16 +1,18 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import PrefabHome from '../views/PrefabHome/index.vue'
-import PrefabWorkspace from '../views/PrefabWorkspace/index.vue'
-import PlanViewer from '../views/PlanViewer/index.vue'
-import SystemSettings from '../views/SystemSettings/index.vue'
-import DeveloperControls from '../views/DeveloperControls/index.vue'
-import WeldLibraryViewer from '../views/WeldLibraryViewer/index.vue'
-import FileParser from '../views/FileParser/index.vue'
-import SpoolCheck from '../views/SpoolCheck/index.vue'
-import FileExport from '../views/FileExport/index.vue'
 import { hasSelectedProject, notifyProjectRequired, setSelectedProjectId } from '../services/projectState'
 import { developerMode } from '../services/pipecloudState'
 
+// 页面统一按路由懒加载。大型表格、Excel 和 3D 依赖只在进入相应页面时下载。
+const PrefabHome = () => import('../views/PrefabHome/index.vue')
+const PrefabWorkspace = () => import('../views/PrefabWorkspace/index.vue')
+const PlanViewer = () => import('../views/PlanViewer/index.vue')
+const SystemSettings = () => import('../views/SystemSettings/index.vue')
+const DeveloperControls = () => import('../views/DeveloperControls/index.vue')
+const WeldLibraryViewer = () => import('../views/WeldLibraryViewer/index.vue')
+const FileParser = () => import('../views/FileParser/index.vue')
+const SpoolCheck = () => import('../views/SpoolCheck/index.vue')
+const FileExport = () => import('../views/FileExport/index.vue')
+const PrefabFactory = () => import('../views/PrefabFactory/index.vue')
 
 const routes = [
   { path: '/', redirect: '/prefab/initialization' },
@@ -34,9 +36,8 @@ const routes = [
   },
   { path: '/parser', redirect: '/files/parser' },
   { path: '/spool-check', name: 'spool-check', component: SpoolCheck },
-  { path: '/factory', name: 'prefab-factory', component: () => import('../views/PrefabFactory/index.vue') },
-  // 添加404通配路由
-  { path: '/:pathMatch(.*)*', name: 'not-found', redirect: '/home' }
+  { path: '/factory', name: 'prefab-factory', component: PrefabFactory },
+  { path: '/:pathMatch(.*)*', name: 'not-found', redirect: '/home' },
 ]
 
 
@@ -48,7 +49,7 @@ const router = createRouter({
 const projectFreeRoutes = new Set(['prefab-home', 'prefab-factory', 'settings', 'developer-controls'])
 
 router.beforeEach(async (to) => {
-  // 处理不存在的路由（通过匹配到 not-found 路由名称）
+  // 守卫顺序很重要：先处理特殊路由，再执行项目上下文校验。
   if (to.name === 'not-found') {
     return { name: 'prefab-home' }
   }
@@ -56,7 +57,7 @@ router.beforeEach(async (to) => {
   if (to.name === 'developer-controls' && !developerMode.value) {
     return { name: 'settings' }
   }
-  
+
   if (projectFreeRoutes.has(to.name)) return true
   if (await hasSelectedProject()) return true
 

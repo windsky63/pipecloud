@@ -1,12 +1,14 @@
 ﻿<script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import { useLocale, useTheme } from 'vuetify'
 import AppSidebar from './components/AppSidebar.vue'
 import UiMessageCenter from './components/UiMessageCenter.vue'
+import { useRunLogPanel } from './composables/useRunLogPanel'
 import {
   language,
   lastRun,
   loadSummary,
+  errorMessage as workflowErrorMessage,
   showRunLog,
   summary,
   t,
@@ -14,21 +16,16 @@ import {
 } from './services/pipecloudState'
 import { projectGateMessage, selectedProjectId } from './services/projectState'
 import { loadLibraries } from './services/weldLibraryState'
-import { clearUiMessages, publishUiMessage, uiMessageHistory } from './services/uiMessages'
+import { clearUiMessages, uiMessageHistory, watchUiMessageSources } from './services/uiMessages'
 
 const vuetifyTheme = useTheme()
 const vuetifyLocale = useLocale()
-const runLogCollapsedStorageKey = 'pipecloud.runLogCollapsed'
-const runLogTogglePositionStorageKey = 'pipecloud.runLogTogglePosition'
-const runLogToggleSize = 42
-const runLogCollapsed = ref(
-  typeof window === 'undefined'
-    ? false
-    : window.localStorage.getItem(runLogCollapsedStorageKey) === 'true',
-)
-const runLogTogglePosition = ref(readRunLogTogglePosition())
-let runLogDragState = null
-let suppressRunLogToggleClick = false
+const {
+  runLogCollapsed,
+  runLogToggleStyle,
+  startRunLogToggleDrag,
+  openRunLogFromToggle,
+} = useRunLogPanel()
 const runLogText = computed(() => {
   if (!lastRun.value) return t('runLogEmpty')
   return [lastRun.value.stdout, lastRun.value.stderr].filter(Boolean).join('\n') || t('runLogNoOutput')
@@ -37,94 +34,6 @@ const runLogMeta = computed(() => {
   if (!lastRun.value) return t('runLogNotRun')
   return t('runLogMeta', { name: lastRun.value.name, code: lastRun.value.returnCode })
 })
-const runLogToggleStyle = computed(() => {
-  if (!runLogTogglePosition.value) {
-    return { right: '24px', bottom: '24px' }
-  }
-  return {
-    left: `${runLogTogglePosition.value.x}px`,
-    top: `${runLogTogglePosition.value.y}px`,
-  }
-})
-
-function readRunLogTogglePosition() {
-  if (typeof window === 'undefined') return null
-  try {
-    const value = JSON.parse(window.localStorage.getItem(runLogTogglePositionStorageKey) || 'null')
-    if (typeof value?.x === 'number' && typeof value?.y === 'number') {
-      return value
-    }
-  } catch {
-    return null
-  }
-  return null
-}
-
-function clampRunLogTogglePosition(x, y) {
-  if (typeof window === 'undefined') return { x, y }
-  const margin = 8
-  return {
-    x: Math.max(margin, Math.min(x, window.innerWidth - runLogToggleSize - margin)),
-    y: Math.max(margin, Math.min(y, window.innerHeight - runLogToggleSize - margin)),
-  }
-}
-
-function persistRunLogTogglePosition() {
-  if (typeof window === 'undefined' || !runLogTogglePosition.value) return
-  window.localStorage.setItem(runLogTogglePositionStorageKey, JSON.stringify(runLogTogglePosition.value))
-}
-
-function startRunLogToggleDrag(event) {
-  if (event.button !== undefined && event.button !== 0) return
-  const rect = event.currentTarget.getBoundingClientRect()
-  runLogDragState = {
-    offsetX: event.clientX - rect.left,
-    offsetY: event.clientY - rect.top,
-    startX: event.clientX,
-    startY: event.clientY,
-    moved: false,
-  }
-  window.addEventListener('pointermove', moveRunLogToggle)
-  window.addEventListener('pointerup', stopRunLogToggleDrag, { once: true })
-}
-
-function moveRunLogToggle(event) {
-  if (!runLogDragState) return
-  const nextPosition = clampRunLogTogglePosition(
-    event.clientX - runLogDragState.offsetX,
-    event.clientY - runLogDragState.offsetY,
-  )
-  runLogTogglePosition.value = nextPosition
-  const distance = Math.hypot(event.clientX - runLogDragState.startX, event.clientY - runLogDragState.startY)
-  if (distance > 4) {
-    runLogDragState.moved = true
-  }
-}
-
-function stopRunLogToggleDrag() {
-  if (!runLogDragState) return
-  suppressRunLogToggleClick = runLogDragState.moved
-  if (runLogDragState.moved) {
-    persistRunLogTogglePosition()
-  }
-  runLogDragState = null
-  window.removeEventListener('pointermove', moveRunLogToggle)
-}
-
-function openRunLogFromToggle() {
-  if (suppressRunLogToggleClick) {
-    suppressRunLogToggleClick = false
-    return
-  }
-  runLogCollapsed.value = false
-}
-
-watch(runLogCollapsed, (value) => {
-  if (typeof window !== 'undefined') {
-    window.localStorage.setItem(runLogCollapsedStorageKey, value ? 'true' : 'false')
-  }
-})
-
 watch(uiTheme, (themeName) => {
   vuetifyTheme.global.name.value = themeName
   document.documentElement.dataset.theme = themeName === 'pipecloudDark'
@@ -145,9 +54,10 @@ watch(selectedProjectId, async (projectId) => {
   await loadSummary()
 })
 
-watch(projectGateMessage, (message) => {
-  publishUiMessage('project-gate', 'warning', message)
-}, { immediate: true })
+watchUiMessageSources([
+  ['project-gate', 'warning', projectGateMessage],
+  ['workflow', 'error', workflowErrorMessage],
+])
 
 onMounted(() => {
   if (!summary.value.modules.length) {
@@ -158,9 +68,6 @@ onMounted(() => {
   }
 })
 
-onBeforeUnmount(() => {
-  window.removeEventListener('pointermove', moveRunLogToggle)
-})
 </script>
 
 <template>

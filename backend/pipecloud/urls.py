@@ -1,18 +1,18 @@
-from importlib import import_module
-
 from django.urls import path
 
-file_parser_views = import_module('pipecloud.views.file_parser')
-file_export_views = import_module('pipecloud.views.file_exports')
-developer_views = import_module('pipecloud.views.developer')
-factory_views = import_module('pipecloud.views.factory')
-library_views = import_module('pipecloud.views.libraries')
-plan_views = import_module('pipecloud.views.plans')
-project_views = import_module('pipecloud.views.projects')
-workflow_views = import_module('pipecloud.views.workflow')
-upload_views = import_module('pipecloud.views.uploads')
+from .views import developer as developer_views
+from .views import factory as factory_views
+from .views import file_exports as file_export_views
+from .views import file_parser as file_parser_views
+from .views import libraries as library_views
+from .views import plans as plan_views
+from .views import projects as project_views
+from .views import uploads as upload_views
+from .views import workflow as workflow_views
 
 
+# Endpoint behavior belongs in the domain modules above; this file remains the
+# single declarative map of the public API.
 urlpatterns = [
     path('developer/plan-rollover/', developer_views.run_plan_rollover, name='pipecloud-developer-plan-rollover'),
     path('developer/scheduled-tasks/', developer_views.scheduled_tasks, name='pipecloud-developer-scheduled-tasks'),

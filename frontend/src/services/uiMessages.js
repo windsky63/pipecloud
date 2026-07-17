@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const MAX_MESSAGES = 80
 const MESSAGE_TIMEOUT = 10_000
@@ -41,6 +41,16 @@ export function publishUiMessage(key, type, text) {
     removeTransientMessage(message.id)
   }, MESSAGE_TIMEOUT))
   return message.id
+}
+
+// Keep page-local state useful for contextual alerts while ensuring every
+// user-facing operation result also reaches the application message center.
+export function watchUiMessageSources(sources) {
+  return sources.map(([key, type, source]) => watch(
+    source,
+    (message) => publishUiMessage(key, type, message),
+    { immediate: true },
+  ))
 }
 
 export function dismissUiMessage(id) {

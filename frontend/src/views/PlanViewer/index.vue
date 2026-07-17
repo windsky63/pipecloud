@@ -18,6 +18,7 @@ import { formatSize, formatTime, t } from '../../services/pipecloudState'
 import { selectedProjectId, selectedProjectParams } from '../../services/projectState'
 import { getBasicVTableTheme, vTableThemeKey } from '../../services/vtableTheme'
 import { attachVTableColumnSelectionCount, createVTableSelectionLayout } from '../../services/vtableSelectionCount'
+import { watchUiMessageSources } from '../../services/uiMessages'
 
 const route = useRoute()
 const router = useRouter()
@@ -42,6 +43,11 @@ const saving = ref(false)
 const errorMessage = ref('')
 const fileError = ref('')
 const saveMessage = ref('')
+watchUiMessageSources([
+  ['plan-viewer-error', 'error', errorMessage],
+  ['plan-file-error', 'error', fileError],
+  ['plan-save-success', 'success', saveMessage],
+])
 const selectedDate = ref('')
 const calendarMonth = ref('')
 const ganttDate = ref('')

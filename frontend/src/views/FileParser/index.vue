@@ -21,6 +21,7 @@ import FileUploadDropzone from '../../components/FileUploadDropzone.vue'
 import UnsavedChangesDialog from '../../components/UnsavedChangesDialog.vue'
 import { t } from '../../services/pipecloudState'
 import { selectedProjectId, selectedProjectParams, setSelectedProjectId } from '../../services/projectState'
+import { publishUiMessage, watchUiMessageSources } from '../../services/uiMessages'
 
 const route = useRoute()
 const parsing = ref(false)
@@ -44,15 +45,13 @@ const parserJob = ref(null)
 const uploadProgress = ref(null)
 let parserJobTimer = null
 
-const snackbar = ref({
-  show: false,
-  text: '',
-  color: 'success',
-})
-
-function notify(color, text) {
-  snackbar.value = { show: true, color, text }
+function notify(type, text) {
+  publishUiMessage('file-parser', type, text)
 }
+
+watchUiMessageSources([
+  ['file-parser-error', 'error', parseError],
+])
 
 function clearResult() {
   stopParserJobPolling()
@@ -1019,10 +1018,6 @@ watch(() => route.query.tab, (tab) => {
 
     </v-card>
   </v-sheet>
-
-  <v-snackbar v-model="snackbar.show" :color="snackbar.color" timeout="2600">
-    {{ snackbar.text }}
-  </v-snackbar>
 
   <UnsavedChangesDialog ref="unsavedChangesDialog" />
 </template>
